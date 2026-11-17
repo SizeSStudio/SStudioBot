@@ -57,10 +57,12 @@ docs/DESIGN.md  完整设计文档
 
 还没有一键安装。大致顺序（细节见 [DESIGN §1.3、§7、§10](docs/DESIGN.md)）：
 
-1. 建用户 `sbot`、`sbot-w`，数据目录 `/srv/sbot`，代码放 `/srv/sbot/app/core`，`npm install`。
+1. 建用户 `sbot`、`sbot-w`，数据目录 `/srv/sbot`（→ `/srv/data/sbot`），装好 `/opt/node`。
 2. 在 `/srv/sbot/config/` 建配置仓库，模板在 `core/seed/config/`：`people.yaml` 填主人的飞书 open_id，`models.yaml` 填各档上游。密钥写进 `secrets.env`（只写不读，不进备份）。
-3. 装 `deploy/core/sbot-core.service`，再按需装 `deploy/worker/`（后台任务）、`deploy/lens/`（镜头）、每晚备份。
+3. `sudo bash deploy/core/install.sh`：装 systemd unit 和 `sbot-deploy`，从 GitHub 拉 `main` 部署、启动核心，并打开自动部署（每 3 分钟跟一次 `main`，起不来自动回滚）。再按需装 `deploy/worker/`（后台任务）、`deploy/lens/`（镜头）。
 4. `tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`，在 `config/console.yaml` 里列出能进控制台的 tailnet 账号。
+
+自己 fork 的话，在 `/etc/sbot/deploy.env` 里设 `SBOT_DEPLOY_REPO` 指向你的仓库。
 
 ## 参与
 

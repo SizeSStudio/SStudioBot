@@ -8,7 +8,7 @@ T=/srv/data/sbot/testhomes/$(basename "$t" .ts)-$(date +%m%d%H%M%S)
 sudo -n mkdir -p "$T/config" "$T/app"
 sudo -n cp /srv/sbot/config/models.yaml /srv/sbot/config/people.yaml "$T/config/"
 sudo -n rsync -a --exclude node_modules ~/sbot-dev/app/ "$T/app/"
-sudo -n ln -s /srv/sbot/app/core/node_modules "$T/app/node_modules"
+sudo -n ln -s /srv/data/sbot-app/current/core/node_modules "$T/app/node_modules"
 sudo -n chown -R sbot:sbot "$T"
 echo "home: $T"
 sudo -n -u sbot env PATH=/opt/node/bin:/opt/sbot/bin:/usr/bin:/bin SBOT_HOME="$T" SBOT_SECRETS=/srv/sbot/secrets.env \

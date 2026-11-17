@@ -37,8 +37,11 @@ import { reviewDayText, reviewWeekText, reviewMonthText } from "./reflect.ts";
 import { postHealthCard } from "./health.ts";
 import { LensEngine, queueMonthReadings } from "./lens.ts";
 import { installImproveHooks, runImprove, runImproveReview } from "./improve.ts";
+import { revision, announceRelease } from "./release.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
+const coreDir = join(here, "..");
+const rev = revision(coreDir);
 for (const d of [P.sessions, P.logs, P.larkHome]) mkdirSync(d, { recursive: true });
 if (!ownerFeishu()) throw new Error("config/people.yaml: owner.ids.feishu is required");
 if (!existsSync(join(P.config, ".git"))) { git(P.config, "init", "-q", "-b", "main"); commitIfDirty(P.config, "initial config"); }
@@ -79,7 +82,7 @@ const feishu = new FeishuAdapter(
   (ev) => { void onCardAction(ev); },
 );
 feishu.start();
-const consoleSrv = startConsole({ feishu, dispatcher, scheduler, startedAt: Date.now() });
+const consoleSrv = startConsole({ feishu, dispatcher, scheduler, startedAt: Date.now(), rev: rev ? `${rev.sha.slice(0, 7)} ${rev.subject}` : undefined });
 tasks.start();
 lenses.start();
 observer.start();
@@ -89,7 +92,8 @@ sentinel.start();
 const sweep = setInterval(() => { sweepApprovals().catch((e) => log("main", "approval sweep failed", { err: String(e?.message ?? e) })); }, 60_000);
 void sweepApprovals().catch(() => {});
 dispatcher.kick();
-log("main", "core up", { home: P.home, pid: process.pid });
+log("main", "core up", { home: P.home, pid: process.pid, rev: rev?.sha.slice(0, 7) ?? "dev" });   // sbot-deploy waits for this line
+void announceRelease(coreDir);
 
 let quitting = false;
 async function shutdown(sig: string) {

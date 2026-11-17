@@ -1,0 +1,11 @@
+# Polishing phase: main goes live within a few minutes of a merge. One git fetch of a public repo per run.
+[Unit]
+Description=SStudioBot: poll main and deploy it
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=3min
+RandomizedDelaySec=20s
+
+[Install]
+WantedBy=timers.target

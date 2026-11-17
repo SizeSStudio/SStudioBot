@@ -31,7 +31,7 @@ export const SOCK = process.env.SBOT_CONSOLE_SOCK ?? "/run/sbot/console.sock";
 const STATIC = join(dirname(fileURLToPath(import.meta.url)), "..", "console");
 const KNOWN_SECRETS = ["FEISHU_APP_SECRET"];
 
-export interface ConsoleDeps { feishu?: FeishuAdapter; dispatcher?: Dispatcher; scheduler?: Scheduler; startedAt: number }
+export interface ConsoleDeps { feishu?: FeishuAdapter; dispatcher?: Dispatcher; scheduler?: Scheduler; startedAt: number; rev?: string }
 
 import { HttpError, bad } from "./console-data.ts";
 import * as V from "./console-data.ts";
@@ -75,7 +75,7 @@ async function status(d: ConsoleDeps) {
   const { cap, budget } = quietConf();
   return {
     now, tz: TZ, owner: ownerName(),
-    core: { pid: process.pid, startedAt: d.startedAt, node: process.version, rssMb: Math.round(process.memoryUsage().rss / 1048576), busyLanes: d.dispatcher?.busyLanes ?? [] },
+    core: { pid: process.pid, startedAt: d.startedAt, rev: d.rev ?? null, node: process.version, rssMb: Math.round(process.memoryUsage().rss / 1048576), busyLanes: d.dispatcher?.busyLanes ?? [] },
     feishu: d.feishu?.streams ?? {},
     lark: { user: await larkUserReady() },
     observer: {

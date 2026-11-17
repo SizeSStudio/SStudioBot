@@ -1,0 +1,14 @@
+# Deploy whatever is on main (DESIGN §1.3). Started by sbot-deploy.timer, or by hand: systemctl start sbot-deploy
+# Install: deploy/core/install.sh. To stop auto-deploying: systemctl disable --now sbot-deploy.timer
+[Unit]
+Description=SStudioBot: deploy the core from GitHub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# SBOT_DEPLOY_BRANCH / SBOT_DEPLOY_REPO overrides, e.g. track a release branch once things are stable
+EnvironmentFile=-/etc/sbot/deploy.env
+ExecStart=/usr/local/lib/sbot/sbot-deploy --if-new
+TimeoutStartSec=20min
+Nice=10

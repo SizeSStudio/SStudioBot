@@ -202,7 +202,8 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 | 路径 | 内容 | 属主 |
 |---|---|---|
 | `/opt/node` → `/opt/node-v26.13.1` | 官方 Node LTS，自带 TS 类型擦除。只给 sbot 用，系统自带的 nodejs 不动（它编译时没带 TS） | root |
-| `/srv/sbot` → `/srv/data/sbot` | `app/` 代码、`db/` SQLite（WAL）、`config/`（git）、`agent-home/`（git，wiki 层）、`sessions/`、`logs/`、`cache/raw/`、`backup-staging/`、`secrets.env`（0600） | `sbot` 0700 |
+| `/srv/data/sbot-app` | 代码：`releases/<sha>/core`、`deps/<hash>/node_modules`、`current` → 正在跑的 release（见下面“上线”） | `root:sbot` 0750，不在核心服务的可写路径里 |
+| `/srv/sbot` → `/srv/data/sbot` | `db/` SQLite（WAL）、`config/`（git）、`agent-home/`（git，wiki 层）、`sessions/`、`logs/`、`cache/raw/`、`backup-staging/`、`secrets.env`（0600） | `sbot` 0700 |
 | `/srv/sbot-w` → `/srv/data/sbot-w` | `tasks/<id>/` | `sbot-w` 0750（`sbot` 在 `sbot-w` 组里，能读 worker 产出；反过来不行） |
 | rustfs `sbot-raw` 桶 | 原始资料，按 sha256 存，只增不改（§8.5） | 核心 |
 | rustfs `sbot-backup` 桶 | 每晚的 SQLite 快照（`.backup`）+ `config`、`agent-home` 的 git bundle | 核心 |
@@ -216,6 +217,20 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 - **rustfs 凭证**：用 rustfs 的 IAM 给 sbot 单独建一个只能访问这两个桶的 key，放进 `secrets.env`，不用管理员 key（M0 做）。
 - **异地副本**：`sbot-backup` 和数据在同一块盘上，只防误删，不防坏盘。M3 前加一份异地副本，比如 Mac 每周拉一次，或者推到另一个对象存储。
 - **国内网页**：SG 出口抓少数国内 CDN 会 403。遇到时只让这类请求走代理，不为此换机器。
+
+**上线（2026-11-17）**：代码在公开仓库，`main` 就是线上跑的东西。
+- 所有改动走 PR，CI（泄露检查、语法检查）过了才能合。
+- 主机上 `sbot-deploy.timer` 每 3 分钟看一次 `main`。有新提交就执行 `sbot-deploy`：
+  1. 从 GitHub 拉进本地镜像（公开仓库，不需要凭证）。
+  2. 把 `core/` 导出到 `releases/<sha>/`，写入 `REVISION` 和 `HISTORY`。
+  3. 按 `package.json` + lock 的哈希共用一份 `node_modules`（`npm ci --ignore-scripts`）。
+  4. 原子切换 `current`，重启核心。
+- 健康检查：新进程要打出 `core up`，15 秒后还是同一个进程。不满足就自动切回上一个 release，并在那个 release 里留一个 `ROLLBACK_FROM`。
+- 核心启动时在管理群说一声：更新了哪些提交，或者哪次更新没起来、已经退回。同一个版本重启不再说。
+- 想马上上线：`scripts/deploy.sh`；回滚：`scripts/deploy.sh --ref <sha>`。
+- 代码放在 root 拥有、核心服务写不到的目录里。核心被攻破也改不了自己的代码。之前代码在 `sbot` 自己的目录下，`sbot` 可以把整个目录换掉。
+- 只自动上线 `core/`。unit、`sbot-deploy` 本身、worker 沙箱这些 root 级的东西，改了要手动跑对应的 `install.sh`。
+- 打磨期合并即上线。稳定以后改成跟一个 release 分支（`/etc/sbot/deploy.env` 里设 `SBOT_DEPLOY_BRANCH`），或者关掉 timer 手动发。
 
 ---
 

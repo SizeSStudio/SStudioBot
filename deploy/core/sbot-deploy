@@ -73,7 +73,7 @@ if [ ! -d "$APP/deps/$h/node_modules" ]; then
   say "installing dependencies ($h)"
   tmp=$(mktemp -d "$APP/deps/.new-XXXXXX")
   cp "$rel/core/package.json" "$rel/core/package-lock.json" "$tmp/"
-  (cd "$tmp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --cache "$APP/.npm-cache" --loglevel=error)
+  (cd "$tmp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --update-notifier=false --cache "$APP/.npm-cache" --loglevel=error)
   mv -T "$tmp" "$APP/deps/$h"
 fi
 ln -sfn "../../../deps/$h/node_modules" "$rel/core/node_modules"

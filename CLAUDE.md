@@ -14,6 +14,7 @@
 - PR 描述写清楚动了什么、怎么验证的。动到闸门、审批、LLM 代理、worker 沙箱或 `deploy/worker/` 的，在描述开头单独标出来。
 - Claude 开的 PR：CI 过了、相关冒烟测试过了，可以自己合并并部署。SStudioBot 自己开的 PR 一律等主人合并。
 - 检查：`bash scripts/leak-guard.sh`；`node --check <file>`。冒烟测试在服务器上跑，每次用一个新的一次性 home（`core/test/vps-test-home.sh` 顶部有用法）；端口 7829–7831 可以并行；不要删 testhomes。
+- 上线：合并到 `main` 后几分钟内服务器自己部署（`sbot-deploy.timer`），想马上上线就 `bash scripts/deploy.sh`，回滚用 `--ref <sha>`。核心起不来会自动退回上一个版本，管理群会收到通知。只有 `core/` 会自动上线；`deploy/` 下的东西（unit、沙箱、`sbot-deploy` 本身）合并后要手动在服务器上跑对应的 `install.sh`，PR 描述里写明。
 
 ## 底线
 

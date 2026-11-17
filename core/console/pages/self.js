@@ -47,7 +47,7 @@ PAGES.status = (body) => {
       s.sentinel.active.length ? pill("serious", `${s.sentinel.active.length} 项`) : pill("ok", "正常"), s.sentinel.active.length ? `data-href="#/inbox"` : ""),
     row("收件 / 发件", `等处理 ${s.inbox.waiting ?? 0} · 处理中 ${s.inbox.processing ?? 0} · 待发 ${s.outbox.pending ?? 0} · 24 小时发送失败 ${s.outbox.failed24h ?? 0}`,
       (s.outbox.failed24h ?? 0) ? pill("failed", "有失败") : pill("ok", "正常")),
-    row("核心进程", `pid ${s.core.pid} · 启动 ${rel(s.core.startedAt)} · 内存 ${s.core.rssMb} MB · node ${s.core.node}`, pill("ok", "运行中")),
+    row("核心进程", `${s.core.rev ? `版本 ${s.core.rev} · ` : ""}pid ${s.core.pid} · 启动 ${rel(s.core.startedAt)} · 内存 ${s.core.rssMb} MB · node ${s.core.node}`, pill("ok", "运行中")),
   ].join("");
   const running = [
     ...s.runs.map((r) => row(`${ROLE[r.role] ?? r.role} · ${LANE(r.lane)}`, `${TIER[r.tier] ?? r.tier ?? ""} · 开始 ${rel(r.started)}`, pill("running"), r.lane ? `data-href="#/sessions/${encodeURIComponent(r.lane)}"` : "")),

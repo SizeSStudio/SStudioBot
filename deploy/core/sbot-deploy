@@ -1,0 +1,114 @@
+#!/bin/bash
+# Deploy the core from GitHub (DESIGN §1.3). Runs as root; installed to /usr/local/lib/sbot/sbot-deploy by install.sh.
+#
+#   sbot-deploy                 deploy the tip of $SBOT_DEPLOY_BRANCH (default main)
+#   sbot-deploy --if-new        same, but quiet when it is already live or already failed once (the timer uses this)
+#   sbot-deploy --ref <sha>     deploy (or roll back to) a commit; it must be on the branch
+#   sbot-deploy --status        print what is live and the last deploys
+#
+# Layout, all root:sbot and outside the service's ReadWritePaths, so the core can't change its own code:
+#   /srv/data/sbot-app/src.git               bare mirror of the public repo (no credentials)
+#   /srv/data/sbot-app/releases/<sha>/core   git archive of core/ + REVISION + HISTORY
+#   /srv/data/sbot-app/deps/<hash>/          node_modules, shared by every release with the same package.json + lock
+#   /srv/data/sbot-app/current               → releases/<sha>  (switched atomically; sbot-core.service runs current/core)
+#   /srv/data/sbot-app/deploys.log           one line per deploy
+# After the switch the core is restarted and must log "core up" and stay up; otherwise the previous release comes back
+# and gets a ROLLBACK_FROM file, so it can tell the admin group what happened.
+# Only core/ is deployed. Units, this script and the worker sandbox (deploy/) are root-level: install those by hand.
+set -euo pipefail
+REPO="${SBOT_DEPLOY_REPO:-https://github.com/SizeSStudio/SStudioBot.git}"
+BRANCH="${SBOT_DEPLOY_BRANCH:-main}"
+APP="${SBOT_DEPLOY_APP:-/srv/data/sbot-app}"   # overridable for tests only
+UNIT="${SBOT_DEPLOY_UNIT:-sbot-core.service}"
+export PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin
+umask 027
+
+ref=""; if_new=0; restart=1
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ref) ref="${2:?--ref needs a commit}"; shift 2 ;;
+    --if-new) if_new=1; shift ;;
+    --no-restart) restart=0; shift ;;
+    --status) echo "live: $(readlink "$APP/current" 2>/dev/null | sed 's#^releases/##')"; tail -n 5 "$APP/deploys.log" 2>/dev/null || true; exit 0 ;;
+    *) echo "usage: sbot-deploy [--if-new] [--ref <sha>] [--no-restart] [--status]" >&2; exit 2 ;;
+  esac
+done
+[ "$(id -u)" = 0 ] || { echo "sbot-deploy: run as root" >&2; exit 2; }
+
+install -d -o root -g sbot -m 0750 "$APP" "$APP/releases" "$APP/deps"
+exec 9>"$APP/.lock"
+flock -n 9 || { echo "sbot-deploy: another deploy is running"; exit 0; }
+
+say() { echo "sbot-deploy: $*"; }
+note() { echo "$(date -Is) $*" >> "$APP/deploys.log"; }
+
+# 1. fetch. Hooks off: nothing from the network runs here.
+G=(git -C "$APP/src.git" -c core.hooksPath=/dev/null)
+[ -d "$APP/src.git" ] || git init -q --bare "$APP/src.git"
+"${G[@]}" fetch -q --no-tags "$REPO" "+refs/heads/$BRANCH:refs/heads/$BRANCH"
+sha=$("${G[@]}" rev-parse --verify "${ref:-$BRANCH}^{commit}")
+"${G[@]}" merge-base --is-ancestor "$sha" "$BRANCH" || { say "$sha is not on $BRANCH; only merged code is deployed"; exit 1; }
+prev=$(readlink "$APP/current" 2>/dev/null | sed 's#^releases/##' || true)
+if [ "$sha" = "$prev" ]; then [ "$if_new" = 1 ] || say "$sha is already live"; exit 0; fi
+# the timer doesn't retry a commit that already failed; the next merge (or a manual run) does
+if [ "$if_new" = 1 ] && grep " $sha FAILED" "$APP/deploys.log" >/dev/null 2>&1; then exit 0; fi
+say "deploying ${sha:0:7} (live: ${prev:0:7})"
+
+# 2. release dir: core/ at that commit, plus what the core reports about itself
+rel="$APP/releases/$sha"
+if [ ! -d "$rel" ]; then
+  tmp=$(mktemp -d "$APP/releases/.new-XXXXXX")
+  "${G[@]}" archive "$sha" core | tar -x --no-same-owner -C "$tmp"
+  if [ -n "$(find "$tmp" -type l -print -quit)" ]; then say "core/ at $sha contains symlinks; refusing"; exit 1; fi
+  [ -f "$tmp/core/package-lock.json" ] || { say "core/package-lock.json missing at $sha"; exit 1; }
+  "${G[@]}" log -1 --format='%H%n%cI%n%s' "$sha" > "$tmp/core/REVISION"
+  "${G[@]}" log -n 50 --format='%H %s' "$sha" > "$tmp/core/HISTORY"
+  mv -T "$tmp" "$rel"
+fi
+rm -f "$rel/core/ROLLBACK_FROM"
+
+# 3. dependencies, keyed by package.json + lock. No install scripts: none of the deps need one, and this runs as root.
+h=$(cat "$rel/core/package.json" "$rel/core/package-lock.json" | sha256sum | cut -c1-16)
+if [ ! -d "$APP/deps/$h/node_modules" ]; then
+  say "installing dependencies ($h)"
+  tmp=$(mktemp -d "$APP/deps/.new-XXXXXX")
+  cp "$rel/core/package.json" "$rel/core/package-lock.json" "$tmp/"
+  (cd "$tmp" && npm ci --omit=dev --ignore-scripts --no-audit --no-fund --cache "$APP/.npm-cache" --loglevel=error)
+  mv -T "$tmp" "$APP/deps/$h"
+fi
+ln -sfn "../../../deps/$h/node_modules" "$rel/core/node_modules"
+chown -hR root:sbot "$rel" "$APP/deps/$h"
+chmod -R u=rwX,g=rX,o= "$rel" "$APP/deps/$h"
+
+# 4. switch + restart + health
+switch() { ln -sfn "releases/$1" "$APP/.current-new" && mv -Tf "$APP/.current-new" "$APP/current"; }
+healthy() {   # the new process logs "core up" and is still the same running process 15 s later
+  local since="$1" pid t
+  for t in $(seq 1 90); do
+    if journalctl -u "$UNIT" --since "$since" -o cat 2>/dev/null | grep '\[main\] core up' >/dev/null; then
+      pid=$(systemctl show -p MainPID --value "$UNIT"); sleep 15
+      [ "$(systemctl is-active "$UNIT")" = active ] && [ "$(systemctl show -p MainPID --value "$UNIT")" = "$pid" ]
+      return
+    fi
+    [ "$(systemctl is-failed "$UNIT")" = failed ] && return 1
+    sleep 2
+  done
+  return 1
+}
+switch "$sha"
+if [ "$restart" = 0 ]; then note "$sha switched (no restart) prev=$prev"; say "switched; restart $UNIT to run it"; exit 0; fi
+since=$(date '+%Y-%m-%d %H:%M:%S')
+systemctl restart "$UNIT"
+if healthy "$since"; then
+  note "$sha ok prev=$prev"; say "${sha:0:7} is live"; exit 0
+fi
+journalctl -u "$UNIT" --since "$since" -o cat --no-pager 2>/dev/null | tail -n 30 >&2 || true
+if [ -n "$prev" ] && [ -d "$APP/releases/$prev" ]; then
+  say "${sha:0:7} did not come up; rolling back to ${prev:0:7}" >&2
+  echo "$sha" > "$APP/releases/$prev/core/ROLLBACK_FROM"; chgrp sbot "$APP/releases/$prev/core/ROLLBACK_FROM"
+  switch "$prev"; since=$(date '+%Y-%m-%d %H:%M:%S'); systemctl restart "$UNIT"
+  if healthy "$since"; then note "$sha FAILED, rolled back to $prev"; else note "$sha FAILED, rollback to $prev also unhealthy"; fi
+else
+  note "$sha FAILED, nothing to roll back to"
+fi
+exit 1

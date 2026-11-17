@@ -8,7 +8,7 @@ Wants=network-online.target
 User=sbot
 Group=sbot
 Slice=sbot.slice
-WorkingDirectory=/srv/sbot/app/core
+WorkingDirectory=/srv/data/sbot-app/current/core
 Environment=SBOT_HOME=/srv/sbot
 Environment=SBOT_LARK_CLI=/opt/sbot/bin/lark-cli
 Environment=PATH=/opt/node/bin:/opt/sbot/bin:/usr/bin:/bin

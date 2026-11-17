@@ -254,9 +254,9 @@ ok(gp.ok && gp.n === 2 && gm.some((t) => t.startsWith("[main] 修好了登录") 
 ok((await S.pollSource(code)).n === 0, "git: nothing new → nothing");
 
 // ---- sources.yaml read by the poller and the console ----
-writeFileSync(join(P.config, "sources.yaml"), `feishu: { dm: true }\nsources:\n  - { id: page, kind: fetch, url: "${url}", every: 2h }\n  - { id: hidden, kind: fetch, url: "https://u:pw@example.com/x?token=abc", enabled: false }\n`);
+writeFileSync(join(P.config, "sources.yaml"), `feishu: { dm: true }\nsources:\n  - { id: page, kind: fetch, url: "${url}", every: 2h }\n  - { id: hidden, kind: fetch, url: "https://u:pw@localhost/x?token=abc", enabled: false }\n`);
 const sv = S.sourcesView();
-ok(sv.dm === true && sv.sources.length === 2 && sv.sources[1].what === "https://example.com/x" && sv.sources[0].every === "2h", "console view: DM switch, sources, urls without credentials or query");
+ok(sv.dm === true && sv.sources.length === 2 && sv.sources[1].what === "https://localhost/x" && sv.sources[0].every === "2h", "console view: DM switch, sources, urls without credentials or query");
 page += "<p>v3 加了导出</p>";
 ok((await S.runSourceNow("page")).n === 1, "run a configured source now");
 web.close();

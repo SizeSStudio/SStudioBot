@@ -23,6 +23,9 @@ import { sendText } from "./cards.ts";
 import { activationOf, userIdentityReady } from "./observer.ts";
 import { proactiveToday } from "./digest.ts";
 import { SCHEMAS, CONFIG_FILES, widening } from "./schemas.ts";
+import { runSourceNow, sourcesView } from "./sources.ts";
+import { applyImport, exampleText, importsList, previewImport, promptText, undoImport } from "./importer.ts";
+import { sourcesConf } from "./config.ts";
 import type { FeishuAdapter } from "./feishu.ts";
 import type { Dispatcher } from "./dispatcher.ts";
 import type { Scheduler } from "./timers.ts";
@@ -79,12 +82,14 @@ async function status(d: ConsoleDeps) {
     feishu: d.feishu?.streams ?? {},
     lark: { user: await larkUserReady() },
     observer: {
-      lastPoll: Number(kvGet("observer.cursor") ?? 0) || null, chats: one("SELECT COUNT(*) n FROM chats")!.n,
-      last24h: Object.fromEntries(all("SELECT triage_status s, COUNT(*) n FROM messages WHERE surface='feishu:group' AND ts>? GROUP BY 1", now - 86400_000).map((r) => [r.s, r.n])),
+      lastPoll: Number(kvGet("observer.cursor") ?? 0) || null, chats: one("SELECT COUNT(*) n FROM chats WHERE COALESCE(chat_mode,'')<>'p2p'")!.n,
+      // groups, DMs (when on) and sources all go through Triage (§17.3)
+      last24h: Object.fromEntries(all("SELECT triage_status s, COUNT(*) n FROM messages WHERE (surface IN ('feishu:group','feishu:p2p') OR surface LIKE 'source:%') AND ts>? GROUP BY 1", now - 86400_000).map((r) => [r.s, r.n])),
     },
     runs: all("SELECT id, lane, role, tier, model, started FROM runs WHERE status='running' ORDER BY started"),
     tasks: all("SELECT id, status, goal, question, started, last_output_at FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY ts"),
     approvals: all("SELECT id, kind, title, ts, expires_at FROM approvals WHERE status='pending' ORDER BY id"),
+    asks: one("SELECT COUNT(*) n FROM events WHERE state='open' AND level IN ('reply','decide') AND ts>=?", now - 14 * 86400_000)!.n,   // = 待办's 要你回 / 拍板
     inbox: one("SELECT SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) waiting, SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END) processing FROM inbox")!,
     outbox: one("SELECT SUM(CASE WHEN status IN ('queued','sending') THEN 1 ELSE 0 END) pending, SUM(CASE WHEN status IN ('failed','unknown') AND ts>? THEN 1 ELSE 0 END) failed24h FROM outbox", now - 86400_000)!,
     usage: { calls: today.n, cost: today.c, output: today.o, errors: today.bad ?? 0, budget: models().budgets?.daily_cost ?? null, alertAt: budget },
@@ -204,7 +209,7 @@ function usage(days: number) {
 
 function groups() {
   const counts = new Map(all("SELECT chat_id, COUNT(*) n, MAX(ts) last FROM messages WHERE surface='feishu:group' AND ts>? GROUP BY chat_id", Date.now() - 7 * 86400_000).map((r) => [r.chat_id, r]));
-  return all("SELECT chat_id, name, external, muted, chat_mode FROM chats").map((c) => {
+  return all("SELECT chat_id, name, external, muted, chat_mode FROM chats WHERE COALESCE(chat_mode,'')<>'p2p'").map((c) => {   // DMs: sources.yaml
     const { act, why } = activationOf(c.chat_id, c.name);
     const k = counts.get(c.chat_id);
     return { id: c.chat_id, name: c.name, external: !!c.external, muted: !!c.muted, act, why, n7: k?.n ?? 0, last: k?.last ?? null };
@@ -231,7 +236,9 @@ async function setGroup(chatId: string, act: string) {
 function configFile(file: string) {
   if (!CONFIG_FILES.includes(file)) throw bad("unknown config file", 404);
   const f = join(P.config, file);
-  const text = existsSync(f) ? readFileSync(f, "utf8") : "";
+  // a file he hasn't made yet opens on its commented template (e.g. sources.yaml), so he starts from the examples
+  const seed = join(STATIC, "..", "seed", "config", file);
+  const text = existsSync(f) ? readFileSync(f, "utf8") : file !== "people.yaml" && file !== "models.yaml" && existsSync(seed) ? readFileSync(seed, "utf8") : "";
   let history: { sha: string; at: number; subject: string }[] = [];
   try {
     history = git(P.config, "log", "-n", "12", "--format=%h\x1f%at\x1f%s", "--", file).trim().split("\n").filter(Boolean)
@@ -304,6 +311,7 @@ function secretNames(): { name: string; set: boolean; usedBy: string[] }[] {
     }
   } catch { /* models.yaml broken */ }
   use("FEISHU_APP_SECRET", "飞书直连 API（卡片流式更新快，不用 lark-cli）");
+  try { for (const s of sourcesConf().sources) for (const n of s.env ?? []) use(n, `信息源 ${s.id} 的插件`); } catch { /* sources.yaml broken */ }
   const names = new Set([...set, ...used.keys(), ...KNOWN_SECRETS]);
   return [...names].sort().map((name) => ({ name, set: set.has(name), usedBy: used.get(name) ?? [] }));
 }
@@ -433,6 +441,7 @@ export function startConsole(d: ConsoleDeps): http.Server {
       if ((m = /^\/approval\/(\d+)\/edit$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, await V.edit(Number(m[1]), Number(b.v), String(b.text ?? ""))); }
       if ((m = /^\/task\/([\w.-]+)\/reply$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.taskReply(m[1], String(b.text ?? ""))); }
       if ((m = /^\/task\/([\w.-]+)\/cancel$/.exec(p)) && method === "POST") return json(200, V.taskCancel(m[1]));
+      if ((m = /^\/event\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.eventUpdate(Number(m[1]), b)); }
       // ── 会话 ──
       if (p === "/lanes") return json(200, V.lanes(Math.min(Number(url.searchParams.get("days")) || 14, 90)));
       if (p === "/lane") return json(200, V.laneRuns(String(url.searchParams.get("key") ?? ""), Number(url.searchParams.get("before")) || Date.now() + 1, Math.min(Number(url.searchParams.get("limit")) || 20, 100)));
@@ -444,6 +453,29 @@ export function startConsole(d: ConsoleDeps): http.Server {
       if (p === "/life/note" && method === "POST") { const b = await body(req); return json(200, V.lifeNote(String(b.text ?? ""), b.domain ? String(b.domain) : undefined)); }
       if (p === "/life/matters") return json(200, V.matters());
       if ((m = /^\/life\/matter\/(\d+)$/.exec(p))) return json(200, V.matter(Number(m[1])));
+      if (p === "/life/topics") return json(200, V.topics());
+      if (p === "/life/topic") return json(200, V.topicEvents(String(url.searchParams.get("t") ?? "")));
+      if (p === "/life/topic/link" && method === "POST") { const b = await body(req); return json(200, V.topicLink(String(b.topic ?? ""), Number(b.matter_id))); }
+      // §17.4 导入: preview never writes memory; apply / undo commit agent-home and tell the admin group
+      if (p === "/import/prompt") return json(200, { prompt: promptText(), example: exampleText() });
+      if (p === "/imports") return json(200, importsList());
+      if (p === "/import/preview" && method === "POST") {
+        const b = await body(req);
+        try { return json(200, await previewImport(String(b.text ?? ""), b.from ? String(b.from) : undefined)); } catch (e: any) { throw bad(String(e?.message ?? e)); }
+      }
+      if (p === "/import/apply" && method === "POST") {
+        const b = await body(req);
+        let r;
+        try { r = applyImport(String(b.sha ?? "")); } catch (e: any) { throw bad(String(e?.message ?? e)); }
+        void notifyAdmin(`📥 控制台导入 #${r.id}：人 ${r.people_new.length + r.people_updated.length}、事 ${r.matters_new.length + r.matters_merged.length}、事件 ${r.events}（等你的 ${r.open}）`);
+        return json(200, r);
+      }
+      if ((m = /^\/import\/(\d+)\/undo$/.exec(p)) && method === "POST") {
+        let r;
+        try { r = undoImport(Number(m[1])); } catch (e: any) { throw bad(String(e?.message ?? e)); }
+        void notifyAdmin(`↩️ 控制台撤销了导入 #${m[1]}`);
+        return json(200, r);
+      }
       if (p === "/life/outlooks") return json(200, V.outlooks());
       if (p === "/life/self") return json(200, V.selfItems());
       if ((m = /^\/life\/self\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.markSelf(Number(m[1]), String(b.status), b.note ? String(b.note) : undefined)); }
@@ -459,6 +491,10 @@ export function startConsole(d: ConsoleDeps): http.Server {
       if (p === "/approvals") return json(200, all(`SELECT id, kind, title, status, origin_lane, as_identity, ts, decided_at, expires_at, task_id, run_id FROM approvals ${url.searchParams.get("all") ? "" : "WHERE status='pending'"} ORDER BY id DESC LIMIT 200`));
       if (p === "/usage") return json(200, usage(Math.min(Math.max(Number(url.searchParams.get("days")) || 14, 1), 90)));
       if (p === "/groups") return json(200, groups());
+      if (p === "/sources") return json(200, sourcesView());
+      if ((m = /^\/sources\/([a-z][a-z0-9_-]*)\/run$/.exec(p)) && method === "POST") {
+        try { return json(200, await runSourceNow(m[1])); } catch (e: any) { throw bad(String(e?.message ?? e)); }
+      }
       if ((m = /^\/groups\/(oc_\w+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, await setGroup(m[1], b.activation)); }
       if (p === "/config") return json(200, CONFIG_FILES.map((f) => { const c = configFile(f); return { file: f, exists: c.exists, last: c.history[0] ?? null }; }));
       if ((m = /^\/config\/([\w.]+\.yaml)$/.exec(p))) {

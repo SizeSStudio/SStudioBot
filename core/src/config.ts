@@ -101,13 +101,26 @@ export const selfLensConf = (): { birth?: Record<string, any>; lenses: Record<st
 /** config/repos.yaml (§4.2): repos a worker may get a copy of, and where an approved push goes */
 export const reposConf = (): Record<string, { url: string; branch?: string }> => cached(join(P.config, "repos.yaml"), (t) => parse(t) ?? {}, {});
 
+/**
+ * config/sources.yaml (§17.3): Feishu DMs on / off (the observer reads them) and the other places events come from.
+ * Each source: { id, kind (a SOURCE_KINDS key), every ("15m" | "2h" | "1d"), domain, enabled, …kind-specific }.
+ */
+export interface SourceSpec { id: string; kind: string; every?: string; domain?: "work" | "personal"; enabled?: boolean; env?: string[]; [k: string]: unknown }
+export const sourcesConf = (): { feishu: { dm: boolean }; sources: SourceSpec[] } => {
+  const s = cached(join(P.config, "sources.yaml"), (t) => parse(t) ?? {}, {} as any);
+  return { feishu: { dm: s.feishu?.dm === true }, sources: Array.isArray(s.sources) ? s.sources.filter((x: any) => x?.id && x?.kind) : [] };
+};
+
 export function tierConf(tier: Tier) {
   const t = models().tiers[tier];
   if (!t) throw new Error(`tier ${tier} not configured in models.yaml`);
   return t;
 }
 
-/** KEY=VALUE lines; # comments; optional surrounding quotes. Only the proxy and backup read this. */
+/**
+ * KEY=VALUE lines; # comments; optional surrounding quotes. Read by the proxy, backup, and the source poller, which
+ * hands a command plugin only the names its sources.yaml entry lists under env: (§17.3). Never to a model or agent.
+ */
 export function secret(name: string): string | undefined {
   const all = cached(P.secrets, (text) => {
     const out: Record<string, string> = {};

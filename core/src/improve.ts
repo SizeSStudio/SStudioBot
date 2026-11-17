@@ -172,7 +172,9 @@ const RAISE = ["notify", "draft", "escalate"];
 async function classifyOne(system: string, input: string, runId: string): Promise<string | undefined> {
   try {
     const out = await complete({ tier: "light", system, user: input, maxTokens: 400, json: true, requester: "improve", runId });
-    const x = Array.isArray(out) ? out.find((o: any) => Number(o?.i) === 0) ?? out[0] : undefined;
+    // v0.13 Triage answers {items, events}; older / tuned prompts may still answer a bare array
+    const items: any[] = Array.isArray(out) ? out : Array.isArray(out?.items) ? out.items : [];
+    const x = items.find((o: any) => Number(o?.i) === 0) ?? items[0];
     return typeof x?.action === "string" ? x.action : undefined;
   } catch { return undefined; }
 }

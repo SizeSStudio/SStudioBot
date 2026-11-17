@@ -1,0 +1,52 @@
+{
+  "format": "sbot-import/1",
+  "from": "示例：旧助手",
+  "exported_at": "2026-11-17",
+  "people": [
+    {
+      "name": "王一",
+      "aka": ["Yi"],
+      "org": "示例公司 · 平台组",
+      "role": "技术负责人",
+      "relation": "同事",
+      "how_to_work": "喜欢先看结论再看细节；周五下午不开会",
+      "notes": ["2026-10 一起定了发布节奏：每两周一次"]
+    },
+    {
+      "name": "李二",
+      "relation": "客户",
+      "how_to_work": "重要的事走邮件，口头说的不算数"
+    }
+  ],
+  "matters": [
+    {
+      "key": "m1",
+      "title": "新版本发布评审",
+      "domain": "work",
+      "status": "active",
+      "why": "",
+      "direction": ["先灰度一周再全量"],
+      "facts": ["评审会定在 11 月第三周", "测试报告还缺性能部分"],
+      "people": ["王一"],
+      "places": ["发布评审群", "李二 私聊"],
+      "keys": ["v3 发布", "发版"],
+      "close_condition": "全量发布并且一周没有回滚",
+      "opened": "2026-11-03",
+      "next": ["2026-11-20 前拿到性能报告"]
+    },
+    {
+      "key": "m2",
+      "title": "搬家",
+      "domain": "personal",
+      "status": "done",
+      "facts": ["10 月底搬完"],
+      "opened": "2026-09-15",
+      "closed": "2026-10-30"
+    }
+  ],
+  "events": [
+    { "matter": "m1", "ts": "2026-11-10 15:20", "kind": "decision", "level": "fyi", "who": "王一", "where": "发布评审群", "text": "王一：定了先灰度一周", "state": "done" },
+    { "matter": "m1", "ts": "2026-11-16 10:05", "kind": "ask", "level": "decide", "who": "李二", "where": "李二 私聊", "text": "李二问能不能把发布推到下个月，要他拍板", "state": "open" },
+    { "matter": "m2", "ts": "2026-10-30", "kind": "progress", "level": "fyi", "text": "搬完了", "state": "done" }
+  ]
+}

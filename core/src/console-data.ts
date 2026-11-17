@@ -13,6 +13,7 @@ import { readingText, LENSES } from "./lens.ts";
 import { metricsWindow } from "./health.ts";
 import { lineDiff, replayText, improveStatus } from "./improve.ts";
 import { sendText } from "./cards.ts";
+import { eventsQuery, linkEvents, matterEventStats, openAsks, setEventLevel, setEventState } from "./events.ts";
 
 export const VIA = "经控制台";
 const DAY = 86400_000;
@@ -49,7 +50,34 @@ export function inbox() {
     outbox: all("SELECT id, approval_id, channel, status, error, payload, ts FROM outbox WHERE status IN ('failed','unknown') AND ts>? ORDER BY id DESC LIMIT 20", Date.now() - DAY)
       .map((o) => ({ ...o, payload: undefined, text: excerpt(outText(o.payload), 200) })),
     recent: all("SELECT id, kind, title, status, decided_at, decide_note, result FROM approvals WHERE status<>'pending' AND decided_at>? ORDER BY decided_at DESC LIMIT 12", Date.now() - 2 * DAY),
+    asks: openAsks(14, 40).map(eventView),   // §17.2 要你回 / 拍板, still open
   };
+}
+
+// ───────────── 事件 (§17.2) ─────────────
+
+const matterTitle = (id: unknown) => id ? one("SELECT title FROM matters WHERE id=?", id)?.title as string | undefined : undefined;
+const eventView = (e: Record<string, any>) => ({ ...e, msg_ids: undefined, matter_title: matterTitle(e.matter_id) });
+export function eventUpdate(id: number, b: { state?: unknown; level?: unknown }) {
+  try {
+    if (b.level) setEventLevel(id, String(b.level));
+    if (b.state) setEventState(id, String(b.state), "owner@console");
+  } catch (e: any) { throw bad(String(e?.message ?? e)); }
+  const e = one("SELECT * FROM events WHERE id=?", id);
+  if (!e) throw bad("no such event", 404);
+  return eventView(e);
+}
+/** recent topics without a matter (the 事 tab's 话头 list), and one topic's events */
+export function topics(days = 14) {
+  return all(`SELECT topic, COUNT(*) n, COUNT(DISTINCT COALESCE(place_id, place)) places, GROUP_CONCAT(DISTINCT place) where_, MAX(ts) last,
+      SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open FROM events
+    WHERE matter_id IS NULL AND topic IS NOT NULL AND ts>=? AND state<>'dropped' GROUP BY topic ORDER BY last DESC LIMIT 60`, Date.now() - days * DAY)
+    .map((t) => ({ ...t, where_: undefined, where: String(t.where_ ?? "").split(",").filter(Boolean).slice(0, 4) }));
+}
+export const topicEvents = (topic: string) => eventsQuery({ topic, limit: 200 }).map(eventView);
+export function topicLink(topic: string, matterId: number) {
+  if (!one("SELECT 1 FROM matters WHERE id=?", matterId)) throw bad("no such matter", 404);
+  return { moved: linkEvents({ matterId, topic }) };
 }
 
 export const approvalFull = (id: number) => { const a = getApproval(id); if (!a) throw bad("no such approval", 404); return approvalView(a); };
@@ -208,18 +236,20 @@ export function lifeNote(text: string, domain?: string) {
   return { id: addNote({ text, domain: domain || undefined, src: "owner@console" }) };
 }
 export function matters() {
-  return all("SELECT * FROM matters ORDER BY CASE WHEN status IN ('open','active','closing') THEN 0 ELSE 1 END, id DESC LIMIT 100").map((m) => ({
-    ...m, tasks: one("SELECT COUNT(*) n FROM tasks WHERE matter_id=?", m.id)!.n, followups: one("SELECT COUNT(*) n FROM timers WHERE matter_id=? AND status='pending'", m.id)!.n,
-    readings: one("SELECT COUNT(*) n FROM readings WHERE matter_id=?", m.id)!.n,
-  }));
+  return all("SELECT * FROM matters ORDER BY CASE WHEN status IN ('open','active','closing') THEN 0 ELSE 1 END, id DESC LIMIT 100").map((m) => {
+    const ev = matterEventStats(m.id);
+    return { ...m, keys: pj(m.keys) ?? [], tasks: one("SELECT COUNT(*) n FROM tasks WHERE matter_id=?", m.id)!.n, followups: one("SELECT COUNT(*) n FROM timers WHERE matter_id=? AND status='pending'", m.id)!.n,
+      readings: one("SELECT COUNT(*) n FROM readings WHERE matter_id=?", m.id)!.n, events: ev.n, asks: ev.open ?? 0, last_event: ev.last };
+  });
 }
 export function matter(id: number) {
   const m = one("SELECT * FROM matters WHERE id=?", id);
   if (!m) throw bad("no such matter", 404);
-  return { ...m, text: m.file_path ? readPage(m.file_path, "owner", 120_000) : "",
+  return { ...m, keys: pj(m.keys) ?? [], text: m.file_path ? readPage(m.file_path, "owner", 120_000) : "",
     tasks: all("SELECT id, status, goal, ts FROM tasks WHERE matter_id=? ORDER BY ts DESC", id),
     followups: all("SELECT id, due_at, note, status FROM timers WHERE matter_id=? ORDER BY due_at DESC LIMIT 20", id),
-    timeline: timeline({ from: m.opened_at ?? 0, to: Date.now(), matter: id, limit: 200 }).rows };
+    events: eventsQuery({ matter: id, limit: 300 }).map(eventView),
+    timeline: timeline({ from: m.opened_at ?? 0, to: Date.now(), matter: id, limit: 200 }).rows.filter((r) => r.kind !== "event") };
 }
 export function outlooks(limit = 80) {
   const rows = all("SELECT * FROM outlooks ORDER BY ts DESC LIMIT ?", limit);

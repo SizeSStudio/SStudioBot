@@ -5,10 +5,13 @@
 //   - activation per chat: groups.yaml override > sensitive name → disabled > external / muted → digest > default
 //   - loop filter: the owner's own messages void pending drafts for that chat; bot messages and our sends are skipped
 //   - first start: no reading until the owner confirms the group-list review card; new groups → a notice card
-//   - p2p chats are not observed (observe_p2p is deferred, §14)
+//   - p2p chats (DMs others send him) only when sources.yaml feishu.dm is on (§17.3); never the owner↔bot DM, which
+//     is the main lane. They go in as surface feishu:p2p, are cached in `chats` (chat_mode p2p), and Triage reads them.
+//   - his own message in any observed chat closes the asks waiting on him there (events.ts markReplied)
 
 import { all, one, run, kvGet, kvSet } from "./db.ts";
-import { feishuConf, gateConf, groupsConf, log, ownerFeishu, type Activation } from "./config.ts";
+import { feishuConf, gateConf, groupsConf, log, ownerFeishu, sourcesConf, type Activation } from "./config.ts";
+import { markReplied } from "./events.ts";
 import { lark } from "./feishu.ts";
 import { card, md, button, buttons, sendCard, patchCard, type Card } from "./cards.ts";
 import { editConfig } from "./memory.ts";
@@ -173,25 +176,31 @@ export class Observer {
     const rows: any[] = JSON.parse(out).data?.messages ?? [];
     const { admin_chat, workbench_chat } = feishuConf();
     const owner = ownerFeishu();
+    const dm = sourcesConf().feishu.dm, botDm = kvGet("feishu.owner_dm_chat");
     let added = 0, unknownChat = false;
     for (const m of rows) {
-      if (m.chat_type === "p2p" || m.chat_id === admin_chat || m.chat_id === workbench_chat || m.deleted) continue;
+      const p2p = m.chat_type === "p2p";
+      if ((p2p && (!dm || m.chat_id === botDm)) || m.chat_id === admin_chat || m.chat_id === workbench_chat || m.deleted) continue;
       if (one("SELECT 1 FROM messages WHERE id=?", m.message_id)) continue;
-      if (!one("SELECT 1 FROM chats WHERE chat_id=?", m.chat_id)) unknownChat = true;
-      const { act } = activationOf(m.chat_id, m.chat_name);
-      if (act === "disabled") continue;
       const s = m.sender ?? {};
       const isOwner = s.id === owner, isBot = s.sender_type && s.sender_type !== "user";
+      // the chat list has no DMs: cache the peer's name here (from their own messages) so the chat is never "unknown"
+      if (p2p) run(`INSERT INTO chats(chat_id, name, external, muted, chat_mode, seen_at) VALUES(?,?,0,0,'p2p',?) ON CONFLICT(chat_id) DO UPDATE SET
+          name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE chats.name END, seen_at=excluded.seen_at`, m.chat_id, isOwner || isBot ? "" : s.name ?? "", Date.now());
+      else if (!one("SELECT 1 FROM chats WHERE chat_id=?", m.chat_id)) unknownChat = true;
+      const chatName = p2p ? one("SELECT name FROM chats WHERE chat_id=?", m.chat_id)?.name || m.chat_name || "私聊" : m.chat_name;
+      const { act } = activationOf(m.chat_id, chatName);
+      if (act === "disabled") continue;
       const ours = !!one("SELECT 1 FROM outbox WHERE sent_msg_id=?", m.message_id);
       const status = isOwner ? "done" : isBot || ours ? "skipped" : act === "digest" ? "digest" : "pending";
       const ts = searchTime(m.create_time);
       run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, raw_json, triage_status)
-           VALUES(?,?,?,?,?,?,?,?,?,?)`, m.message_id, "feishu:group", m.chat_id, m.thread_id ?? null, s.id ?? null,
+           VALUES(?,?,?,?,?,?,?,?,?,?)`, m.message_id, p2p ? "feishu:p2p" : "feishu:group", m.chat_id, m.thread_id ?? null, s.id ?? null,
         isOwner ? "owner" : isBot ? "bot" : "other", ts, String(m.content ?? ""),
-        JSON.stringify({ chat_name: m.chat_name, sender_name: s.name, msg_type: m.msg_type, link: m.message_app_link, reply_to: m.reply_to,
+        JSON.stringify({ chat_name: chatName, sender_name: s.name, msg_type: m.msg_type, link: m.message_app_link, reply_to: m.reply_to,
           mentions: (m.mentions ?? []).map((x: any) => x.id), names: (m.mentions ?? []).map((x: any) => x.name) }), status);
       added++;
-      if (isOwner) invalidateForOwnerMessage(m.chat_id, ts, m.message_id);
+      if (isOwner) { invalidateForOwnerMessage(m.chat_id, ts, m.message_id); markReplied(m.chat_id, ts, m.reply_to); }
     }
     kvSet("observer.cursor", String(end));
     if (added) log("observer", "polled", { rows: rows.length, added });

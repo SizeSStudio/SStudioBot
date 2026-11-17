@@ -146,3 +146,41 @@ export function stepsHtml(steps, role) {
 
 export const inputLabel = (x) => `${INPUT[x.kind] ?? x.kind}${x.source && x.source !== x.kind && x.kind !== "user" ? ` · ${x.source}` : ""}`;
 export const runLabel = (r) => `${ROLE[r.role] ?? r.role}`;
+
+// ───────── one event (§17.2): what it asks of him, where, which matter; open asks can be closed in place ─────────
+export const EV_KIND = { ask: "找他", decision: "定了", commitment: "答应", progress: "进展", risk: "风险", deadline: "时间点", info: "信息" };
+export const EV_LEVEL = { fyi: "知道就行", watch: "要盯", reply: "要你回", decide: "要你拍板" };
+const EV_STATE = { open: ["warn", "等你"], seen: ["plain", "知道了"], done: ["good", "处理了"], dropped: ["plain", "不用了"] };
+export function eventCard(e, o = {}) {
+  const [c, l] = EV_STATE[e.state] ?? ["plain", e.state];
+  const waiting = e.state === "open";
+  const by = e.done_by === "replied" ? "你回过了" : e.done_by === "approved" ? "代发了" : e.done_by === "rejected" ? "驳回了" : "";
+  const levels = Object.entries(EV_LEVEL).map(([key, v]) => `<option value="${key}"${e.level === key ? " selected" : ""}>${esc(v)}</option>`).join("");
+  return `<article class="card event lv-${esc(e.level)}" id="ev-${e.id}">
+    <div class="inline wrap"><span class="pill ${c}">${esc(by || l)}</span><span class="tag">${esc(EV_LEVEL[e.level] ?? e.level)}</span><span class="tag">${esc(EV_KIND[e.kind] ?? e.kind)}</span>
+      <span class="sub">${mdhm(e.ts)}${e.place ? ` · ${esc(e.place)}` : ""}${e.actor ? ` · ${esc(e.actor)}` : ""}</span>
+      ${!o.inMatter && e.matter_id ? `<button type="button" class="tag link" data-act="matter" data-id="${e.matter_id}">事 #${e.matter_id}${e.matter_title ? ` ${esc(e.matter_title)}` : ""}</button>` : ""}${!e.matter_id && e.topic ? `<span class="tag">${esc(e.topic)}</span>` : ""}</div>
+    <div class="text">${esc(e.summary)}</div>
+    <div class="actions">${e.link ? `<a class="btn small" href="${esc(e.link)}" target="_blank" rel="noopener">打开原处</a>` : ""}
+      ${waiting ? `<button type="button" class="btn small primary" data-act="evstate" data-id="${e.id}" data-s="done">处理了</button><button type="button" class="btn small" data-act="evstate" data-id="${e.id}" data-s="dropped">不用了</button>` : ""}
+      ${e.state !== "done" && e.state !== "dropped" ? `<label class="sr" for="evlv-${e.id}">等级</label><select id="evlv-${e.id}" class="small" data-evlevel="${e.id}">${levels}</select>` : ""}</div>
+  </article>`;
+}
+ACTS.evstate = (el) => busy(el, "…", async () => {
+  const e = await api(`/event/${el.dataset.id}`, { method: "POST", body: { state: el.dataset.s } });
+  const card = document.getElementById(`ev-${e.id}`);
+  if (card) card.outerHTML = eventCard(e, { inMatter: !!card.closest("[data-matter]") });
+  changed();
+});
+// his correction of the level (知道就行 ↔ 要你回): the event's open / seen state follows it
+document.addEventListener("change", async (ev) => {
+  const sel = ev.target.closest?.("[data-evlevel]");
+  if (!sel) return;
+  try {
+    const e = await api(`/event/${sel.dataset.evlevel}`, { method: "POST", body: { level: sel.value } });
+    const card = document.getElementById(`ev-${e.id}`);
+    if (card) card.outerHTML = eventCard(e, { inMatter: !!card.closest("[data-matter]") });
+    toast(`改成「${EV_LEVEL[e.level]}」`);
+    changed();
+  } catch (err) { toast(err.message ?? String(err), 6000); }
+});

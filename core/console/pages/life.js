@@ -1,12 +1,13 @@
-// 生活 (owner-only, §15): the timeline with a quick note, matters, outlooks and how they turned out, habits and rhythms
-// (only he endorses or drops them), readings, reviews, and his birth info (self.yaml, edited here and nowhere else).
+// 生活 (owner-only, §15): the timeline with a quick note, matters with their events (§17.2) and the topics that may
+// become one, imports from another harness (§17.4), outlooks and how they turned out, habits and rhythms (only he
+// endorses or drops them), readings, reviews, and his birth info (self.yaml, edited here and nowhere else).
 
 import { $, $$, esc, api, toast, pill, row, rel, hm, mdhm, isoDay, dayLabel, empty, loading, tabs, chips, mdText, busy, busyTyping, ACTS, openDrawer } from "/lib/core.js";
 import { mountEditor } from "/lib/editor.js";
-import "/lib/items.js";   // ACTS.task / ACTS.approval for links inside drawers
+import { eventCard } from "/lib/items.js";   // also ACTS.task / ACTS.approval for links inside drawers
 
-const TABS = { timeline: "时间线", matters: "事", outlooks: "前瞻", self: "习气与节律", readings: "解读", reviews: "复盘", birth: "出生信息" };
-const KIND_ZH = { said: "他说", said_group: "群里说", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", outlook: "前瞻", revisit: "回看", review: "复盘" };
+const TABS = { timeline: "时间线", matters: "事", imports: "导入", outlooks: "前瞻", self: "习气与节律", readings: "解读", reviews: "复盘", birth: "出生信息" };
+const KIND_ZH = { said: "他说", said_group: "群里说", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", outlook: "前瞻", revisit: "回看", review: "复盘", event: "事件" };
 const HORIZON = { day: "当天", week: "本周", month: "本月", matter: "这件事" };
 const REVIEW_KIND = { day: "日复盘", week: "周复盘", month: "月复盘", matter: "事后复盘" };
 const st = { tab: "", meta: null, tl: { days: 7, kind: "", domain: "", q: "" }, editor: null };
@@ -91,26 +92,130 @@ async function drawTimeline() {
   list.innerHTML = (html || empty("这段时间没有记录。")) + (d.truncated ? `<div class="sub center">只显示最近 500 条，缩短时间或加筛选看更早的。</div>` : "");
 }
 
-// ───────── 事 ─────────
+// ───────── 事 + 话头 ─────────
 const OPEN_M = ["open", "active", "closing"];
+const EV_LEVEL = { fyi: "知道就行", watch: "要盯", reply: "要你回", decide: "要你拍板" };
+const EV_KIND = { ask: "找他", decision: "定了", commitment: "答应", progress: "进展", risk: "风险", deadline: "时间点", info: "信息" };
+const EV_DONE = { done: "处理了", dropped: "不用了" };
 PAGES.matters = async (body) => {
-  const ms = await api("/life/matters");
+  const [ms, tps] = await Promise.all([api("/life/matters"), api("/life/topics")]);
+  st.openMatters = ms.filter((m) => OPEN_M.includes(m.status));
   const card = (m) => row(`#${m.id} ${m.title ?? "（没标题）"}`, [st.meta.domains[m.domain] ?? m.domain, m.opened_at && `${mdhm(m.opened_at)} 开始`, m.closed_at && `${mdhm(m.closed_at)} 收`, m.close_condition && `收的条件：${m.close_condition}`,
+    m.asks && `${m.asks} 条等你`, m.events && `${m.events} 条事件`, m.last_event && `最近 ${rel(m.last_event)}`, m.keys?.length && `又叫 ${m.keys.slice(0, 3).join("、")}`,
     m.tasks && `${m.tasks} 个任务`, m.followups && `${m.followups} 个待跟进`, m.readings && `${m.readings} 次解读`].filter(Boolean).join(" · "), pill(m.status), `data-act="matter" data-id="${m.id}"`);
-  const open = ms.filter((m) => OPEN_M.includes(m.status)), closed = ms.filter((m) => !OPEN_M.includes(m.status));
+  const topic = (t) => row(t.topic, [`${t.n} 条`, t.where.length && `在 ${t.where.join("、")}`, t.open && `${t.open} 条等你`, `最近 ${rel(t.last)}`].filter(Boolean).join(" · "), "", `data-act="topic" data-t="${esc(t.topic)}"`);
+  const open = st.openMatters, closed = ms.filter((m) => !OPEN_M.includes(m.status));
   body.innerHTML = (open.length ? `<section><h2>在办 <span class="sub">${open.length}</span></h2><div class="list">${open.map(card).join("")}</div></section>` : "") +
-    (closed.length ? `<section><h2>收了的</h2><div class="list">${closed.map(card).join("")}</div></section>` : "") || empty("还没有「事」。对话里说「开一件事」，或它觉得一件事要跟一阵时会提议。");
+    (tps.length ? `<section><h2>话头 <span class="sub">近两周反复说到、还没挂到事上的</span></h2><div class="list">${tps.map(topic).join("")}</div></section>` : "") +
+    (closed.length ? `<section><h2>收了的</h2><div class="list">${closed.map(card).join("")}</div></section>` : "") || empty("还没有「事」。对话里说「开一件事」，或它觉得一件事要跟一阵时会提议；也可以从「导入」把以前的事搬进来。");
 };
+const evItem = (e) => `<li class="tl-item"><time class="sub tabular">${mdhm(e.ts)}</time><div class="main"><div class="inline wrap"><span class="tag">${esc(EV_LEVEL[e.level] ?? e.level)}</span><span class="tag">${esc(EV_KIND[e.kind] ?? e.kind)}</span>
+  <span class="sub">${esc([e.place, e.actor].filter(Boolean).join(" · "))}${EV_DONE[e.state] ? ` · ${EV_DONE[e.state]}` : ""}</span>${e.link ? `<a class="tag link" href="${esc(e.link)}" target="_blank" rel="noopener">原处</a>` : ""}</div><div class="text">${esc(e.summary)}</div></div></li>`;
 ACTS.matter = async (el) => {
   const box = openDrawer(`事 #${el.dataset.id}`);
   const m = await api(`/life/matter/${el.dataset.id}`);
+  const asks = m.events.filter((e) => e.state === "open"), rest = m.events.filter((e) => e.state !== "open");
   box.innerHTML = `
     <div class="card"><div class="inline wrap">${pill(m.status)}<b>${esc(m.title ?? "")}</b>${domainTag(m.domain)}</div>
-      <div class="sub">${m.opened_at ? `${mdhm(m.opened_at)} 开始` : ""}${m.closed_at ? ` · ${mdhm(m.closed_at)} 收` : ""}${m.close_condition ? ` · 收的条件：${esc(m.close_condition)}` : ""}</div></div>
+      <div class="sub">${m.opened_at ? `${mdhm(m.opened_at)} 开始` : ""}${m.closed_at ? ` · ${mdhm(m.closed_at)} 收` : ""}${m.close_condition ? ` · 收的条件：${esc(m.close_condition)}` : ""}</div>
+      ${m.keys.length ? `<div class="sub">又叫：${esc(m.keys.join("、"))}（群里、私聊、信息源说到这些词的，会挂到这件事上）</div>` : ""}</div>
+    ${asks.length ? `<section data-matter><h3>等你 <span class="sub">${asks.length}</span></h3>${asks.map((e) => eventCard(e, { inMatter: true })).join("")}</section>` : ""}
     ${m.text ? `<section><h3>这件事的页面</h3><div class="card">${mdText(m.text)}</div></section>` : ""}
     ${m.tasks.length ? `<section><h3>任务</h3><div class="list">${m.tasks.map((t) => row(`#${t.id} ${t.goal}`, mdhm(t.ts), pill(t.status), `data-act="task" data-id="${esc(t.id)}"`)).join("")}</div></section>` : ""}
     ${m.followups.length ? `<section><h3>跟进</h3><div class="list">${m.followups.map((t) => row(t.note ?? "（跟进）", mdhm(t.due_at), pill(t.status))).join("")}</div></section>` : ""}
+    <section><h3>事件 <span class="sub">${rest.length}</span></h3>${rest.length ? `<ol class="tl">${rest.slice().reverse().map(evItem).join("")}</ol>` : empty("（还没有。群里、私聊、信息源里说到这件事时会挂上来。）")}</section>
     <section><h3>时间线</h3>${m.timeline.length ? `<ol class="tl">${m.timeline.slice().reverse().map((r) => `<li class="tl-item"><time class="sub tabular">${mdhm(r.ts)}</time><div class="main"><span class="tag">${esc(KIND_ZH[r.kind] ?? r.kind)}</span><div class="text">${esc(r.text)}</div></div></li>`).join("")}</ol>` : empty("（还没有）")}</section>`;
+};
+ACTS.topic = async (el) => {
+  const t = el.dataset.t;
+  const box = openDrawer(`话头：${t}`);
+  const evs = await api(`/life/topic?t=${encodeURIComponent(t)}`);
+  const opts = (st.openMatters ?? []).map((m) => `<option value="${m.id}">#${m.id} ${esc(m.title ?? "")}</option>`).join("");
+  box.innerHTML = `<div class="card note"><div class="sub">它是一件在办的事的一部分，就挂上去：这些事件和以后说到「${esc(t)}」的都归到那件事。是一件新的事，在对话里说「为「${esc(t)}」起个局」，之前的事件会一起挂上。</div>
+      ${opts ? `<div class="inline wrap"><label class="sr" for="tplink">挂到</label><select id="tplink">${opts}</select><button type="button" class="btn small primary" data-act="topiclink" data-t="${esc(t)}">挂上</button></div>` : `<div class="sub">现在没有在办的事。</div>`}</div>
+    <section data-matter><h3>事件 <span class="sub">${evs.length}</span></h3>${evs.slice().reverse().map((e) => eventCard(e, { inMatter: true })).join("") || empty("（没有）")}</section>`;
+};
+ACTS.topiclink = (el) => busy(el, "在挂…", async () => {
+  const mid = $("#tplink").value;
+  const r = await api("/life/topic/link", { method: "POST", body: { topic: el.dataset.t, matter_id: Number(mid) } });
+  toast(`挂上了 ${r.moved} 条`);
+  if (st.tab === "matters") PAGES.matters($("#lifebody"));
+  await ACTS.matter({ dataset: { id: mid } });
+});
+
+// ───────── 导入 (§17.4) ─────────
+PAGES.imports = async (body) => {
+  const list = await api("/imports");
+  body.innerHTML = `
+    <div class="card note"><b>从别处搬过来</b><div class="sub">以前的 agent、笔记、聊天导出、周报都行。最好先让原来的工具按「导入格式」整理成 JSON（下面有提示词，复制过去就能用）；直接贴原始材料也可以，这里会先整理一遍。先预览，确认了才写；导入的每一条都带来源，可以整批撤销。人只进 agent 的人物页，不改 people.yaml。</div></div>
+    <form class="card" id="impform">
+      <div class="inline wrap"><label for="impfrom" class="lbl">从哪来</label><input type="text" id="impfrom" placeholder="比如：旧 agent 的记忆、2025 年的周报" maxlength="60"></div>
+      <label for="imptext" class="lbl">内容（导入格式的 JSON，或者原始材料）</label>
+      <textarea id="imptext" rows="10" placeholder="贴在这里，或者选一个文件"></textarea>
+      <div class="inline wrap"><label class="btn small" for="impfile">选文件…</label><input type="file" id="impfile" class="sr" accept=".json,.md,.txt,.csv,.yaml,.yml">
+        <span class="sub" id="impinfo"></span><span class="grow"></span><button type="submit" class="btn primary">预览</button></div>
+    </form>
+    <div id="impplan"></div>
+    <details class="card"><summary>导入格式和提示词（给别的工具用）</summary><div id="impprompt">${loading()}</div></details>
+    <section><h2>导入过的</h2>${list.length ? `<div class="list">${list.map(impRow).join("")}</div>` : empty("还没有。")}</section>`;
+  $("#impfile").addEventListener("change", async (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    if (f.size > 450_000) { toast("文件太大（上限约 450 KB），拆成几份分次导入"); e.target.value = ""; return; }
+    $("#imptext").value = await f.text();
+    if (!$("#impfrom").value) $("#impfrom").value = f.name.replace(/\.[^.]+$/, "").slice(0, 60);
+    $("#impinfo").textContent = `${f.name} · ${Math.round(f.size / 1024)} KB`;
+  });
+  $("#impform").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const text = $("#imptext").value, btn = e.submitter ?? $("#impform button[type=submit]");
+    if (!text.trim()) return $("#imptext").focus();
+    await busy(btn, /^\s*[{[]/.test(text) ? "在读…" : "在整理（要一两分钟）…", async () => {
+      const p = await api("/import/preview", { method: "POST", body: { text, from: $("#impfrom").value.trim() || undefined } });
+      $("#impplan").innerHTML = planHtml(p);
+    });
+  });
+  $("#impprompt").closest("details").addEventListener("toggle", async (e) => {
+    if (!e.target.open || $("#impprompt").dataset.loaded) return;
+    const d = await api("/import/prompt");
+    $("#impprompt").dataset.loaded = "1";
+    $("#impprompt").innerHTML = `<div class="actions"><button type="button" class="btn small" data-act="impcopy" data-k="prompt">复制提示词</button><button type="button" class="btn small" data-act="impcopy" data-k="example">复制示例</button></div>
+      <pre class="code" id="imp-prompt">${esc(d.prompt)}</pre><h3>示例</h3><pre class="code" id="imp-example">${esc(d.example)}</pre>`;
+  });
+};
+const impRow = (r) => {
+  const s = r.summary ?? {};
+  const what = s.error ? `失败：${s.error}` : [s.people_new || s.people_updated ? `人 ${(s.people_new?.length ?? 0) + (s.people_updated?.length ?? 0)}` : "", s.matters_new || s.matters_merged ? `事 ${(s.matters_new?.length ?? 0) + (s.matters_merged?.length ?? 0)}` : "", s.events != null ? `事件 ${s.events}（等你 ${s.open ?? 0}）` : ""].filter(Boolean).join(" · ");
+  const st_ = { applied: ["good", "已导入"], undone: ["plain", "已撤销"], failed: ["crit", "失败"], applying: ["warn", "导入中"] }[r.status] ?? ["plain", r.status];
+  return row(`#${r.id} ${r.origin ?? ""}`, `${mdhm(r.ts)}${what ? ` · ${what}` : ""}`,
+    `<span class="pill ${st_[0]}">${st_[1]}</span>${r.status === "applied" ? ` <button type="button" class="btn small" data-act="impundo" data-id="${r.id}">撤销</button>` : ""}`);
+};
+function planHtml(p) {
+  const { plan, doc } = p;
+  const people = plan.people.map((x) => `<li>${x.exists ? "补充" : "新建"} <b>${esc(x.name)}</b>${x.relation ? ` <span class="sub">${esc(x.relation)}</span>` : ""}</li>`).join("");
+  const matters = plan.matters.map((m) => `<li>${m.merge ? `并入 #${m.merge.id} ${esc(m.merge.title ?? "")}` : "新建"}：<b>${esc(m.title)}</b> <span class="sub">${esc(st.meta.domains[m.domain] ?? m.domain ?? "")} · ${esc(m.status)} · ${m.events} 条事件</span></li>`).join("");
+  const evs = doc.events.slice(0, 40).map((e) => `<li><span class="sub tabular">${esc(new Date(e.ts).toISOString().slice(0, 10))}</span> <span class="tag">${esc(EV_LEVEL[e.level] ?? e.level)}</span> ${esc(e.text)}${e.state === "open" ? " <span class=\"sub\">（还在等你）</span>" : ""}</li>`).join("");
+  return `<section class="card" id="impplancard"><h3>预览 <span class="sub">${p.kind === "json" ? "按导入格式读的" : "从原始材料整理出来的，看一眼对不对"} · 来自「${esc(p.from)}」</span></h3>
+    ${p.already ? `<div class="err">这份材料已经导入过（#${p.already}）。要重来先撤销那次。</div>` : ""}
+    <h4>人 <span class="sub">${plan.people.length}</span></h4>${people ? `<ul class="notes">${people}</ul>` : `<div class="sub">（无）</div>`}
+    <h4>事 <span class="sub">${plan.matters.length}</span></h4>${matters ? `<ul class="notes">${matters}</ul>` : `<div class="sub">（无）</div>`}
+    <h4>事件 <span class="sub">${plan.events.n} 条，还在等你的 ${plan.events.open} 条${plan.events.loose ? `，没挂到事上的 ${plan.events.loose} 条` : ""}</span></h4>${evs ? `<ul class="notes">${evs}</ul>${doc.events.length > 40 ? `<div class="sub">……只列前 40 条</div>` : ""}` : ""}
+    <div class="actions">${p.already ? "" : `<button type="button" class="btn primary" data-act="impapply" data-sha="${esc(p.sha)}">导入</button>`}<button type="button" class="btn" data-act="impcancel">算了</button></div></section>`;
+}
+ACTS.impapply = (el) => busy(el, "在导入…", async () => {
+  const r = await api("/import/apply", { method: "POST", body: { sha: el.dataset.sha } });
+  toast(`导入 #${r.id}：人 ${r.people_new.length + r.people_updated.length}、事 ${r.matters_new.length + r.matters_merged.length}、事件 ${r.events}`, 5000);
+  $("#imptext").value = ""; $("#impfrom").value = "";
+  await PAGES.imports($("#lifebody"));
+});
+ACTS.impcancel = () => { $("#impplan").innerHTML = ""; };
+ACTS.impundo = async (el) => {
+  if (!confirm(`撤销导入 #${el.dataset.id}？它带进来的人物记录、事、事件都会拿掉（之后又有别的记录挂上的事会留着，标成不办）。`)) return;
+  await busy(el, "在撤销…", async () => { await api(`/import/${el.dataset.id}/undo`, { method: "POST" }); toast("撤销了"); await PAGES.imports($("#lifebody")); });
+};
+ACTS.impcopy = async (el) => {
+  await navigator.clipboard.writeText($(`#imp-${el.dataset.k}`).textContent);
+  toast("复制了");
 };
 
 // ───────── 前瞻 ─────────

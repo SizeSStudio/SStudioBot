@@ -194,6 +194,9 @@ details > summary h2 { display: inline-flex; margin: 0; }
 .editdraft textarea { font-size: 14px; }
 .taskask > * + * { margin-top: 6px; }
 .taskask + .taskask { margin-top: 10px; }
+.card.event.lv-reply, .card.event.lv-decide { border-left: 3px solid var(--warn); }
+.card.event select { min-height: max(26px, var(--target)); padding: 2px 26px 2px 8px; font-size: 13px; }
+.card.event .actions { margin-top: 4px; }
 .reply { margin-top: 8px; }
 .reply .actions { margin-top: 6px; }
 #inbox section > .appr + .appr { margin-top: 12px; }

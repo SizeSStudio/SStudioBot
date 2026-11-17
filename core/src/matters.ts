@@ -66,6 +66,8 @@ export function listMatters(open = true) {
   if (!rows.length) return "（没有）";
   return rows.map((m) => {
     const tasks = one("SELECT COUNT(*) n FROM tasks WHERE matter_id=?", m.id)!.n, fu = one("SELECT COUNT(*) n FROM timers WHERE matter_id=? AND status='pending'", m.id)!.n;
-    return `#${m.id} ${m.title}（${m.status}，${localStamp(m.opened_at).slice(5, 10)} 起；${m.file_path}；任务 ${tasks}、待提醒 ${fu}${m.close_condition ? `；收：${m.close_condition}` : ""}）`;
+    const ev = one("SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open FROM events WHERE matter_id=?", m.id)!;
+    const keys = JSON.parse(m.keys ?? "[]") as string[];
+    return `#${m.id} ${m.title}（${m.status}，${localStamp(m.opened_at).slice(5, 10)} 起；${m.file_path}；任务 ${tasks}、待提醒 ${fu}、事件 ${ev.n}${ev.open ? `（等他 ${ev.open}）` : ""}${keys.length ? `；又叫：${keys.join("、")}` : ""}${m.close_condition ? `；收：${m.close_condition}` : ""}）`;
   }).join("\n");
 }

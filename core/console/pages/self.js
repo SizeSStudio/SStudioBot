@@ -1,6 +1,6 @@
 // 它自己: how it is running (connections, what's busy, jobs), whether it's getting better (§16 health trend), its own
 // improvement proposals (diff, replay, roll back), its memory (commits, pages, search), what it costs, its models and
-// keys, its config files and which groups it watches.
+// keys, its config files, which groups it watches, and the other places it reads (§17.3 信息源).
 
 import { $, $$, S, esc, api, toast, pill, tierDot, row, tile, rel, mdhm, isoDay, money, k, empty, loading, tabs, chips, diffHtml, mdText,
   busy, ACTS, openDrawer, closeDrawer, TIER, ROLE, jobWhen } from "/lib/core.js";
@@ -8,7 +8,7 @@ import { approvalCard } from "/lib/items.js";
 import { stackedBars, CAT } from "/lib/charts.js";
 import { mountEditor } from "/lib/editor.js";
 
-const TABS = { status: "状态", health: "健康", proposals: "提案", memory: "记忆", usage: "用量", models: "模型与密钥", config: "配置", groups: "群" };
+const TABS = { status: "状态", health: "健康", proposals: "提案", memory: "记忆", usage: "用量", models: "模型与密钥", config: "配置", groups: "群", sources: "信息源" };
 const st = { tab: "", arg: "", usageDays: 14, g: { filter: "all", q: "", limit: 80, list: [] }, editor: null };
 
 export async function render(main, args) {
@@ -41,7 +41,7 @@ PAGES.status = (body) => {
     ...Object.entries(s.feishu ?? {}).map(([key, x]) => row(`飞书事件 · ${key === "im.message.receive_v1" ? "消息" : key === "card.action.trigger" ? "卡片按钮" : key}`,
       `重启 ${x.restarts} 次 · 最近事件 ${rel(x.lastEvent)}`, x.ready ? pill("ok", "在线") : pill("failed", "断开"))),
     row("飞书个人身份（读群、以你的身份发）", "VPS 上 lark-cli 的用户授权", s.lark.user ? pill("ok", "已授权") : pill("failed", "未授权")),
-    row("群观察", `上次拉取 ${rel(obs.lastPoll)} · ${obs.chats} 个群 · 24 小时：分拣 ${(l24.pending ?? 0) + (l24.done ?? 0) + (l24.skipped ?? 0)} 条，摘要 ${l24.digest ?? 0}`,
+    row("群观察", `上次拉取 ${rel(obs.lastPoll)} · ${obs.chats} 个群 · 24 小时：分拣 ${(l24.pending ?? 0) + (l24.done ?? 0) + (l24.skipped ?? 0)} 条（含私聊、信息源），摘要 ${l24.digest ?? 0}`,
       obs.lastPoll && Date.now() - obs.lastPoll < 5 * 60_000 ? pill("ok", "在读") : pill("missed", "没在读")),
     row("巡检", s.sentinel.active.length ? `在报：${s.sentinel.active.join("、")}` : `上次 ${rel(s.sentinel.last)}，没有问题`,
       s.sentinel.active.length ? pill("serious", `${s.sentinel.active.length} 项`) : pill("ok", "正常"), s.sentinel.active.length ? `data-href="#/inbox"` : ""),
@@ -268,6 +268,7 @@ const FILE_NOTE = {
   "gate.yaml": "敏感词、审批有效期、专家次数、主动消息上限、巡检预算线", "jobs.yaml": "定时任务：早报、夜间整理……",
   "feishu.yaml": "管理群、工作台群", "repos.yaml": "worker 能拿到、批准后能推送的仓库", "console.yaml": "能登录控制台的 Tailscale 账号",
   "self.yaml": "出生信息、节律（私人：在「生活 › 出生信息」改）",
+  "sources.yaml": "信息源：飞书私聊开关、仓库、网页、插件（「信息源」页看状态）",
 };
 const SOURCE = { console: "控制台", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
 PAGES.config = async (body, file) => {
@@ -318,3 +319,23 @@ ACTS.setgroup = async (el) => {
   const r = await api(`/groups/${x.id}`, { method: "POST", body: { activation: el.dataset.a } });
   x.act = r.act; x.why = r.why; drawGroups(); toast(`${x.name}：${ACT_LONG[r.act]}`);
 };
+
+// ───────── 信息源 (§17.3) ─────────
+PAGES.sources = async (body) => {
+  const d = await api("/sources");
+  const last = (x) => !x.last ? "还没拉过" : `上次 ${rel(x.last.at)}${x.last.ok ? `，新 ${x.last.n} 条` : `，出错：${x.last.err ?? ""}`}`;
+  body.innerHTML = `
+    <div class="card note"><b>它从哪些地方看事</b><div class="sub">群消息之外的来源，都在 sources.yaml 里配：飞书私聊（默认关）、仓库提交、网页变化，以及放在服务器 ${esc(d.plugins)}/sources/ 下的插件（Jira、邮件……）。拉到的东西和群消息一样进分拣、记成事件，挂到事上。插件只拿到 env 里点名的密钥。</div>
+      <div class="actions"><a class="btn small" href="#/self/config/sources.yaml">编辑 sources.yaml</a></div></div>
+    <div class="list">
+      ${row("飞书私聊", d.dm ? "别人发给你的私聊进分拣（只记事件、不起草）；和它自己的私聊不算" : "关着。打开：sources.yaml 里 feishu.dm: true", d.dm ? pill("ok", "开") : pill("skipped", "关"))}
+      ${d.sources.map((x) => row(`${x.id} · ${x.zh}`, `${x.what ?? ""} · 每 ${x.every} · ${x.domain}${x.env.length ? ` · 密钥 ${x.env.join("、")}` : ""} · ${last(x)}`,
+        `${!x.enabled ? pill("skipped", "停用") : !x.last ? pill("pending", "等第一次") : x.last.ok ? pill("ok", "正常") : pill("failed", "出错")}${x.enabled ? ` <button type="button" class="btn small" data-act="srcrun" data-id="${esc(x.id)}">现在拉</button>` : ""}`)).join("")}
+    </div>
+    ${d.sources.length ? "" : `<div class="sub">还没有别的来源。sources.yaml 里有示例。</div>`}`;
+};
+ACTS.srcrun = (el) => busy(el, "在拉…", async () => {
+  const r = await api(`/sources/${el.dataset.id}/run`, { method: "POST" });
+  toast(r.ok ? `拉到 ${r.n} 条新的` : `出错：${r.err}`, 5000);
+  if (st.tab === "sources") PAGES.sources($("#selfbody"));
+});

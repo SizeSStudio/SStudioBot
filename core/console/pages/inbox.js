@@ -1,8 +1,9 @@
-// 待办: everything that is waiting on Size, workable in place. Approvals (approve / revise / edit / reject), tasks
-// waiting for an answer, Sentinel alerts, failed jobs and failed sends; what was decided lately at the bottom.
+// 待办: everything that is waiting on Size, workable in place. Approvals (approve / revise / edit / reject), events
+// that ask him to answer or decide, tasks waiting for an answer, Sentinel alerts, failed jobs and failed sends; what
+// was decided lately at the bottom.
 
 import { $, esc, api, toast, pill, row, rel, mdhm, loading, busyTyping, ACTS, busy, KIND } from "/lib/core.js";
-import { approvalCard, taskReplyBox } from "/lib/items.js";
+import { approvalCard, taskReplyBox, eventCard } from "/lib/items.js";
 
 export async function render(main) {
   main.innerHTML = `<div class="page narrow" id="inbox"><div class="page-head"><h1>待办</h1><span class="sub" id="ibcount"></span>
@@ -19,11 +20,13 @@ async function draw(force) {
   const d = await api("/inbox");
   if (!$("#ibbody")) return;
   $("#ibstale").hidden = true;
-  const n = d.approvals.length + d.tasks.length + d.alerts.length + d.jobs.length + d.outbox.length;
+  const n = d.approvals.length + d.asks.length + d.tasks.length + d.alerts.length + d.jobs.length + d.outbox.length;
   $("#ibcount").textContent = n ? `${n} 件等你` : "都清了";
   const sec = (title, html, note = "") => html ? `<section><h2>${esc(title)}${note ? ` <span class="sub">${esc(note)}</span>` : ""}</h2>${html}</section>` : "";
   body.innerHTML = [
     sec("等你批", d.approvals.map((a) => approvalCard(a)).join(""), d.approvals.length > 1 ? `${d.approvals.length} 条` : ""),
+    // §17.2: asks from groups, DMs and sources; your next word in that place closes them on its own
+    sec("要你回 / 拍板", d.asks.map((e) => eventCard(e)).join(""), "你在原处说过话就自动算处理了"),
     sec("任务在等你", d.tasks.map((t) => `<article class="card taskask">
       <div class="inline wrap">${pill(t.status)}<b class="clip" data-act="task" data-id="${esc(t.id)}" role="button" tabindex="0">任务 #${esc(t.id)}</b><span class="sub">${rel(t.ts)}</span></div>
       <div class="sub clip">${esc(t.goal)}</div>

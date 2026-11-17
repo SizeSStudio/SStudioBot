@@ -10,6 +10,7 @@ import { quietConf, log } from "./config.ts";
 import { localNow, localStamp } from "./memory.ts";
 import { dreamDiffText } from "./dream.ts";
 import { morningOutlookText } from "./reflect.ts";
+import { eventsMorningText } from "./events.ts";
 
 const day = () => localStamp().slice(0, 10);
 export const proactiveToday = () => Number(kvGet(`proactive.${day()}`) ?? 0);
@@ -64,6 +65,7 @@ ${list(done.map((t) => `#${t.id} ${t.status === "done" ? "完成" : "失败"}：
 ${list(fus.map((f) => `${localStamp(f.due_at).slice(11)} ${f.note}`))}
 ## 进行中的事
 ${list(matters.map((m) => `#${m.id} ${m.title}（${m.status}）`))}
+${eventsMorningText(now - 86400_000)}
 ## 昨晚记忆整理
 ${dream ? "有改动，明细已发管理群（可以在那里回滚）" : "没有改动"}
 ## 被「先安静」压下来的消息（${held.length}）
@@ -73,5 +75,5 @@ $${cost.toFixed(2)}
 
 ${morningOutlookText()}
 
-写法：简短，先说要紧的（要主人拍板的、今天到点的）；没有就一两句问候带过，不要硬凑。只用上面的事实，不编造。压下来的消息挑仍然要紧的说。今日留意放最后，最多 1 条，没有就不写。`;
+写法：简短，先说要紧的（要主人拍板的、等他回的、今天到点的）；按事说，不按群说；没有就一两句问候带过，不要硬凑。反复出现的话头只提一句「要不要起个局」，他说要再 matter_open(topic=…)。只用上面的事实，不编造。压下来的消息挑仍然要紧的说。今日留意放最后，最多 1 条，没有就不写。`;
 }

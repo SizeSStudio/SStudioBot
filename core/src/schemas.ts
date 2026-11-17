@@ -48,6 +48,24 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
     // per-lens chart settings (true solar time, school …); any change makes a new profile_version (§15.7)
     lenses: z.record(z.string(), z.object({ enabled: z.boolean().optional(), profile: z.record(z.string(), z.any()).optional() }).passthrough()).optional(),
   }).passthrough().nullable(),
+  // §17.3 信息源: Feishu DMs for the observer, and the other sources the poller reads (sources.ts)
+  "sources.yaml": z.object({
+    feishu: z.object({ dm: z.boolean().optional() }).passthrough().nullable().optional(),
+    sources: z.array(z.object({
+      id: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, "小写字母开头，字母数字 _ -，2～32 个字符"), kind: z.enum(["git", "fetch", "command"]),
+      every: z.string().regex(/^\d+[mhd]$/, "像 15m、2h、1d").optional(), domain: z.enum(["work", "personal"]).optional(), enabled: z.boolean().optional(),
+      repo: z.string().optional(), url: z.string().regex(/^https?:\/\//, "http(s) 地址").optional(),
+      run: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, "插件目录名：小写字母数字 _ -").optional(),
+      env: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).max(8).optional(), args: z.record(z.string(), z.any()).optional(),
+    }).passthrough().superRefine((s, ctx) => {
+      const need: Record<string, string> = { git: "repo", fetch: "url", command: "run" };
+      if (!(s as any)[need[s.kind]]) ctx.addIssue({ code: "custom", path: [need[s.kind]], message: `${s.kind} 要写 ${need[s.kind]}` });
+    })).nullable().optional(),
+  }).passthrough().nullable().superRefine((c, ctx) => {
+    const ids = (c?.sources ?? []).map((s: any) => s.id);
+    const dup = ids.find((id: string, i: number) => ids.indexOf(id) !== i);
+    if (dup) ctx.addIssue({ code: "custom", path: ["sources"], message: `id 重复：${dup}` });
+  }),
 };
 
 export const CONFIG_FILES = Object.keys(SCHEMAS);
@@ -86,6 +104,20 @@ export function widening(file: string, before: any, after: any): string[] {
   if (file === "repos.yaml") {
     for (const [k, r] of Object.entries(after ?? {}) as [string, any][])
       if (!before?.[k] || before[k].url !== r?.url) out.push(`可推送仓库 ${k} → ${r?.url}`);
+  }
+  if (file === "sources.yaml") {
+    // reading more of his life, sending more of it to the model, or handing a plugin a secret: all loud
+    if (after.feishu?.dm === true && before.feishu?.dm !== true) out.push("开始读飞书私聊（别人发给你的单聊会送去分拣）");
+    const old = new Map(((before.sources ?? []) as any[]).map((s) => [s.id, s]));
+    for (const s of (after.sources ?? []) as any[]) {
+      if (s?.enabled === false) continue;
+      const o: any = old.get(s.id);
+      const what = s.kind === "git" ? `仓库 ${s.repo}` : s.kind === "fetch" ? s.url : `插件 ${s.run}`;
+      if (!o || o.enabled === false) out.push(`新信息源 ${s.id}（${s.kind}：${what}）`);
+      else if (o.kind !== s.kind || o.url !== s.url || o.run !== s.run || o.repo !== s.repo) out.push(`信息源 ${s.id} 换了来源 → ${s.kind}：${what}`);
+      const added = (s.env ?? []).filter((n: string) => !(o?.env ?? []).includes(n));
+      if (added.length) out.push(`信息源 ${s.id} 能拿到密钥：${added.join("、")}`);
+    }
   }
   if (file === "console.yaml") {
     const added = (after.owners ?? []).filter((o: string) => !(before.owners ?? []).includes(o));

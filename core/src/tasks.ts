@@ -27,11 +27,11 @@ import { sendText } from "./cards.ts";
 import { openEgress } from "./egress.ts";
 import { localStamp } from "./memory.ts";
 import type { TurnContext } from "./tools.ts";
+import { gitIn as git, syncMirror } from "./mirror.ts";   // core-side git on the repo mirrors (shared with the git source)
 
 const CLI = process.env.SBOT_CLAUDE_CLI ?? "/opt/sbot/claude-code/current/claude";
 const WRAPPER = "/usr/local/lib/sbot/worker-exec";
 const MKDIR = "/usr/local/lib/sbot/task-mkdir";
-const MIRRORS = join(P.home, "repos", "mirror");
 const PENDING = join(P.home, "repos", "pending");
 const MAX_WORKERS = Number(process.env.SBOT_MAX_WORKERS ?? 1);
 const LANE_OPEN_MAX = 3, GLOBAL_OPEN_MAX = 5, MAX_AUTO_RUNS = 20, MAX_TURNS = 80;
@@ -128,32 +128,6 @@ function voidApproval(t: Record<string, any>, note: string) {
   if (!t.approval_id) return;
   if (run("UPDATE approvals SET status='invalidated', decide_note=?, decided_at=? WHERE id=? AND status='pending'", note, Date.now(), t.approval_id).changes)
     void refreshCard(t.approval_id);
-}
-
-// ---------------------------------------------------------------------------------------------- git (core side)
-
-function git(cwd: string, args: string[], timeoutMs = 120_000): Promise<string> {
-  return new Promise((ok, bad) => {
-    execFile("git", args, {
-      cwd, timeout: timeoutMs, maxBuffer: 64 * 1024 * 1024,
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: P.home, LANG: "C.UTF-8", GIT_TERMINAL_PROMPT: "0", GIT_CONFIG_NOSYSTEM: "1" },
-    }, (err, stdout, stderr) => err ? bad(new Error(`git ${args.find((a) => !a.startsWith("-") && !a.includes("=")) ?? ""}: ${String(stderr || err.message).trim().slice(0, 300)}`)) : ok(stdout));
-  });
-}
-
-/** bare mirror of a configured repo, fetched now; refs/heads/* mirror the remote, refs/sbot/* are ours (never pruned) */
-async function syncMirror(name: string): Promise<string> {
-  const r = reposConf()[name];
-  if (!r) throw new Error(`repos.yaml 里没有 ${name}`);
-  const dir = join(MIRRORS, `${name}.git`);
-  if (!existsSync(dir)) {
-    mkdirSync(MIRRORS, { recursive: true });
-    await git(MIRRORS, ["init", "--bare", "-q", dir]);
-    await git(dir, ["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]);
-  }
-  await git(dir, ["config", "remote.origin.url", r.url]);
-  await git(dir, ["fetch", "--prune", "--no-tags", "origin"]);
-  return dir;
 }
 
 // ---------------------------------------------------------------------------------------------- the engine

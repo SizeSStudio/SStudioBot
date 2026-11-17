@@ -87,7 +87,8 @@ CREATE TABLE IF NOT EXISTS timers(
   status TEXT NOT NULL DEFAULT 'pending', matter_id INTEGER, created_by TEXT, fired_at INTEGER, ts INTEGER);
 CREATE INDEX IF NOT EXISTS timers_due ON timers(status, due_at);
 
--- §15.3. status: open|active|closing|reviewed|dropped
+-- §15.3. status: open|active|closing|reviewed|dropped|done (done: finished before it came here, §17.4 import)
+-- keys (v0.13, JSON list): other names / topics for it; Triage links what it reads by these (§17.2)
 CREATE TABLE IF NOT EXISTS matters(
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, domain TEXT, lane TEXT, status TEXT NOT NULL DEFAULT 'open',
   close_condition TEXT, file_path TEXT, opened_at INTEGER, closed_at INTEGER, reviewed_at INTEGER);
@@ -141,12 +142,28 @@ CREATE TABLE IF NOT EXISTS reading_revisits(id INTEGER PRIMARY KEY AUTOINCREMENT
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, run_id TEXT, usage_id INTEGER, tier TEXT, model TEXT, bytes INTEGER, body BLOB);
 CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id);
+-- v0.13 §17.2 事件账本: meaningful moments from any source, hung on a matter (事) or a loose topic (话头).
+-- kind: ask|decision|commitment|progress|risk|deadline|info · level: fyi|watch|reply|decide
+-- state: open (reply / decide not handled yet) | done | dropped | seen (fyi / watch) · source: a sources.yaml id, 'import'
+-- place_id = the chat (or source place) it happened in: the owner speaking there later closes its open asks.
+CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, source TEXT NOT NULL, ref TEXT NOT NULL,
+  place TEXT, place_id TEXT, actor TEXT, kind TEXT NOT NULL, level TEXT NOT NULL, summary TEXT NOT NULL, link TEXT, domain TEXT,
+  matter_id INTEGER, topic TEXT, state TEXT NOT NULL, done_at INTEGER, done_by TEXT, msg_ids TEXT, created_at INTEGER,
+  UNIQUE(source, ref));
+CREATE INDEX IF NOT EXISTS events_matter ON events(matter_id, ts);
+CREATE INDEX IF NOT EXISTS events_topic ON events(topic, ts);
+CREATE INDEX IF NOT EXISTS events_open ON events(state, level, ts);
+CREATE INDEX IF NOT EXISTS events_place ON events(place_id, state);
+-- §17.4 imports from another harness. status: applied|undone. summary_json: counts + the matter ids it created.
+CREATE TABLE IF NOT EXISTS imports(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, origin TEXT, sha TEXT, raw_path TEXT, summary_json TEXT,
+  commit_sha TEXT, status TEXT NOT NULL DEFAULT 'applied');
 `);
 
 // additive migrations (ALTER TABLE ADD COLUMN fails if it already exists)
 for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["outbox", "card_id TEXT"],
   ["outbox", "as_identity TEXT NOT NULL DEFAULT 'bot'"], ["messages", "triage_action TEXT"], ["messages", "triage_note TEXT"],
-  ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"]]) {
+  ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"],
+  ["messages", "event_id INTEGER"], ["matters", "keys TEXT"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 

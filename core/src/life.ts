@@ -31,6 +31,12 @@ CREATE VIEW timeline AS
   UNION ALL SELECT ended, 'task', 'task:'||id, CASE status WHEN 'done' THEN '完成：' WHEN 'failed' THEN '失败：' ELSE status||'：' END || goal, NULL, matter_id FROM tasks WHERE ended IS NOT NULL
   UNION ALL SELECT opened_at, 'matter', 'matter:'||id, '起：'||title, CASE domain WHEN 'work' THEN 'work' ELSE NULL END, id FROM matters
   UNION ALL SELECT closed_at, 'matter', 'matter:'||id, status||'：'||title, CASE domain WHEN 'work' THEN 'work' ELSE NULL END, id FROM matters WHERE closed_at IS NOT NULL
+  -- §17.2: events that belong to a matter or needed him; the rest (fyi noise) stays in the ledger only
+  UNION ALL SELECT ts, 'event', 'event:'||id,
+    CASE level WHEN 'decide' THEN '〔要你拍板〕' WHEN 'reply' THEN '〔要你回〕' WHEN 'watch' THEN '〔要盯〕' ELSE '' END
+      || COALESCE('「'||place||'」','') || COALESCE(actor||'：','') || summary
+      || CASE state WHEN 'open' THEN '（等他）' WHEN 'dropped' THEN '（不用了）' ELSE '' END,
+    CASE domain WHEN 'work' THEN 'work' ELSE NULL END, matter_id FROM events WHERE matter_id IS NOT NULL OR level IN ('reply','decide')
   UNION ALL SELECT ts, 'outlook', 'outlook:'||id, horizon||' '||period||'：'||text, NULL, matter_id FROM outlooks
   UNION ALL SELECT ts, 'revisit', 'outlook:'||outlook_id, '回看：'||text, NULL, NULL FROM outlook_revisits
   UNION ALL SELECT ts, 'review', 'review:'||id, kind||' '||period||' 复盘'||CASE status WHEN 'unchatted' THEN '（未聊）' ELSE '' END, NULL, matter_id FROM reviews;
@@ -76,7 +82,7 @@ export function addNote(o: { text: string; domain?: string; matterId?: number; p
 
 // ───────────── timeline (§15.6) ─────────────
 
-const KIND_ZH: Record<string, string> = { said: "他说", said_group: "他在群里", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", outlook: "前瞻", revisit: "回看", review: "复盘" };
+const KIND_ZH: Record<string, string> = { said: "他说", said_group: "他在群里", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", event: "事件", outlook: "前瞻", revisit: "回看", review: "复盘" };
 
 export function timeline(o: { from?: string | number; to?: string | number; kinds?: string[]; matter?: number; domain?: string; q?: string; limit?: number }) {
   const from = typeof o.from === "number" ? o.from : parseWhen(o.from) ?? Date.now() - 7 * 86400_000;
@@ -97,7 +103,7 @@ export function timelineText(o: Parameters<typeof timeline>[0], width = 200): st
   if (!rows.length) return `${head}\n（这段时间没有记录）`;
   return `${head}\n${rows.map((r) => {
     const t = String(r.text ?? "").replace(/\s*\n\s*/g, " / ");
-    return `${localStamp(r.ts).slice(5, 16)} [${KIND_ZH[r.kind] ?? r.kind}] ${t.length > width ? t.slice(0, width) + "…" : t}${r.matter_id ? `（事 #${r.matter_id}）` : ""}${/^(note|approval|task|outlook|review):/.test(String(r.ref)) ? ` ‹${r.ref}›` : ""}`;
+    return `${localStamp(r.ts).slice(5, 16)} [${KIND_ZH[r.kind] ?? r.kind}] ${t.length > width ? t.slice(0, width) + "…" : t}${r.matter_id ? `（事 #${r.matter_id}）` : ""}${/^(note|approval|task|outlook|review|event):/.test(String(r.ref)) ? ` ‹${r.ref}›` : ""}`;
   }).join("\n")}`;
 }
 

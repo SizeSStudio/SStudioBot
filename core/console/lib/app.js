@@ -34,7 +34,8 @@ function badges(s) {
   const waiting = s.tasks.filter((t) => t.status === "needs_input" || t.status === "interrupted").length;
   const alerts = s.sentinel.active.filter((k) => !k.startsWith("appr.")).length;
   const set = (area, n, label) => { const b = $(`.areas a[data-area=${area}] .badge`); b.hidden = !n; b.textContent = n > 99 ? "99+" : String(n); b.setAttribute("aria-label", label); };
-  set("inbox", s.approvals.length + waiting + alerts, `${s.approvals.length} 个待批、${waiting} 个任务在等、${alerts} 条巡检`);
+  const asks = s.asks ?? 0;
+  set("inbox", s.approvals.length + asks + waiting + alerts, `${s.approvals.length} 个待批、${asks} 件要你回或拍板、${waiting} 个任务在等、${alerts} 条巡检`);
   set("sessions", s.runs.length, `${s.runs.length} 轮在跑`);
   set("self", 0, "");
 }

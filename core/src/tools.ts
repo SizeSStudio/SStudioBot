@@ -17,6 +17,7 @@ import { cancelTask, listTasks, replyTask, startTask } from "./tasks.ts";
 import { DOMAINS, addNote, markSelfItem, periodOk, revisitOutlook, selfItemsText, submitOutlook, submitReview, timelineText } from "./life.ts";
 import { queueMatterReview } from "./reflect.ts";
 import { LENSES, readingsQuery, requestReading, revisitReading } from "./lens.ts";
+import { LEVELS, STATES, addMatterKeys, eventLine, eventsQuery, linkEvents, matterKeys, setEventLevel, setEventState, topicCandidates } from "./events.ts";
 
 export interface TurnContext { channel: "feishu"; chat_id: string; message_id?: string; thread_id?: string; in_thread?: boolean; surface: string }
 export interface RunCtx {
@@ -186,10 +187,49 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "matter_open", level: "L1", for: ["owner"],
     description: "Open a matter (事): something the owner is going through over days or weeks that deserves its own page (a negotiation, a hire, a move, a hard conversation). Returns the matter id and the 起局 playbook to follow with him.",
-    schema: z.object({ title: z.string().min(1).max(60), domain: z.enum(["work", "personal"]), close_condition: z.string().max(200).optional() }),
+    schema: z.object({ title: z.string().min(1).max(60), domain: z.enum(["work", "personal"]), close_condition: z.string().max(200).optional(),
+      topic: z.string().max(24).optional().describe("a 话头 from events_query / the morning report: its events (from every chat and source) move onto this matter"),
+      keys: z.array(z.string().max(24)).max(10).optional().describe("other names people use for it; Triage links new messages by these") }),
     async exec(a, ctx) {
-      const { id, rel } = openMatter({ ...a, lane: ctx.lane });
-      return `事 #${id} 已开，页面 ${rel}（用 memory_read 看，matter_note 往里记）。\n\n${PLAYBOOK}`;
+      const { id, rel } = openMatter({ title: a.title, domain: a.domain, close_condition: a.close_condition, lane: ctx.lane });
+      if (a.keys?.length) addMatterKeys(id, a.keys);
+      const moved = a.topic ? linkEvents({ matterId: id, topic: a.topic }) : 0;
+      return `事 #${id} 已开，页面 ${rel}（用 memory_read 看，matter_note 往里记）。${moved ? `话头「${a.topic}」的 ${moved} 个事件已挂到这件事上（matter_events 看时间线）。` : ""}\n\n${PLAYBOOK}`;
+    },
+  }),
+  def({
+    name: "matter_link", level: "L1", for: ["owner"],
+    description: "Hang events on a matter: by event id, or every event of a 话头 (topic) that has no matter yet (the topic then becomes one of the matter's keys, so Triage links later messages too). Use when he says two threads are the same thing.",
+    schema: z.object({ matter_id: z.number(), event_ids: z.array(z.number()).max(100).optional(), topic: z.string().max(24).optional(), keys: z.array(z.string().max(24)).max(10).optional() }),
+    async exec(a) {
+      const n = linkEvents({ matterId: a.matter_id, ids: a.event_ids, topic: a.topic });
+      const keys = a.keys?.length ? addMatterKeys(a.matter_id, a.keys) : matterKeys(a.matter_id);
+      return `挂上了 ${n} 个事件到事 #${a.matter_id}；它的关键词：${keys.join("、") || "（无）"}`;
+    },
+  }),
+  def({
+    name: "matter_events", level: "L0", for: ["owner"],
+    description: "The event ledger (§17.2): what happened around him in groups, DMs and sources, each with a kind (ask / decision / commitment / progress / risk / deadline / info) and a level (fyi 知道就行 / watch 要盯 / reply 要你回 / decide 要你拍板). Filter by matter, topic, level, state (open = still waiting on him). Use for a matter's timeline, \"what's waiting on me\", and summaries.",
+    schema: z.object({
+      matter_id: z.number().optional(), topic: z.string().max(24).optional(), levels: z.array(z.enum(LEVELS)).optional(), states: z.array(z.enum(STATES)).optional(),
+      q: z.string().optional().describe("substring of summary, person or place"),
+      days: z.number().min(1).max(3650).default(30), limit: z.number().min(1).max(300).default(100),
+    }),
+    async exec(a) {
+      const rows = eventsQuery({ matter: a.matter_id, topic: a.topic, levels: a.levels, states: a.states, q: a.q, from: Date.now() - a.days * 86400_000, limit: a.limit });
+      const cands = !a.matter_id && !a.topic ? topicCandidates() : [];
+      return `${rows.length} 个事件${rows.length >= a.limit ? "（只给最近的）" : ""}\n${rows.map((e) => eventLine(e)).join("\n") || "（没有）"}${cands.length ? `\n\n反复出现、还没有事的话头：${cands.map((t) => `「${t.topic}」${t.n} 条/${t.places} 处`).join("；")}` : ""}`;
+    },
+  }),
+  def({
+    name: "event_update", level: "L1", for: ["owner"],
+    description: "Correct an event when he says so: it's handled (done), not needed (dropped), still waiting (open), or its level was wrong (e.g. it was only fyi, or it needs his decision).",
+    schema: z.object({ id: z.number(), state: z.enum(STATES).optional(), level: z.enum(LEVELS).optional() }),
+    async exec(a) {
+      if (a.level) setEventLevel(a.id, a.level);
+      const e = a.state ? setEventState(a.id, a.state, "owner") : one("SELECT * FROM events WHERE id=?", a.id);
+      if (!e) return `error: no event #${a.id}`;
+      return eventLine(e);
     },
   }),
   def({
@@ -227,7 +267,7 @@ export const TOOLS: ToolDef[] = [
     schema: z.object({
       from: z.string().optional().describe("YYYY-MM-DD, YYYY-MM or \"YYYY-MM-DD HH:MM\"; default 7 days ago"),
       to: z.string().optional().describe("same formats; default now"),
-      kinds: z.array(z.enum(["said", "said_group", "note", "sent", "approval", "task", "matter", "outlook", "revisit", "review"])).optional(),
+      kinds: z.array(z.enum(["said", "said_group", "note", "sent", "approval", "task", "matter", "event", "outlook", "revisit", "review"])).optional(),
       matter_id: z.number().optional(), domain: z.enum(DOMAINS).optional(), q: z.string().optional().describe("substring, e.g. a person's name"),
       limit: z.number().min(1).max(500).default(200),
     }),

@@ -5,6 +5,7 @@
 // M6: lenses in a sealed worker (紫微, 六爻) + 解读账本 (readings, revisits, lens-notes), month view on day 1.
 // M3c: 红尘里修: timeline, 随手记, 前瞻, 复盘 (day / week / month / 事收), 习气与节律, 谁先看见, style notes, 办事体检.
 // M7: self-improvement: eval cases from his answers, B-level proposals with replay, one card, two-week rollback card.
+// M8: 以事为轴: the event ledger (kind × level, on matters / topics), Feishu DMs and pluggable sources, imports.
 //
 //   SBOT_HOME=/srv/sbot node src/main.ts
 
@@ -38,6 +39,7 @@ import { postHealthCard } from "./health.ts";
 import { LensEngine, queueMonthReadings } from "./lens.ts";
 import { installImproveHooks, runImprove, runImproveReview } from "./improve.ts";
 import { revision, announceRelease } from "./release.ts";
+import { Sources } from "./sources.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const coreDir = join(here, "..");
@@ -64,6 +66,7 @@ installImproveHooks();                   // hooks.onTuning / onTuningRevise: pro
 const lenses = new LensEngine();
 const observer = new Observer();
 const triage = new Triage(runner);
+const sources = new Sources();
 const scheduler = new Scheduler(() => dispatcher.kick(),
   { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_month: async () => { queueMonthReadings(); },
     improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); } },
@@ -87,6 +90,7 @@ tasks.start();
 lenses.start();
 observer.start();
 triage.start();
+sources.start();
 scheduler.start();
 sentinel.start();
 const sweep = setInterval(() => { sweepApprovals().catch((e) => log("main", "approval sweep failed", { err: String(e?.message ?? e) })); }, 60_000);
@@ -102,7 +106,7 @@ async function shutdown(sig: string) {
   log("main", `${sig}: shutting down`, { busy: dispatcher.busyLanes });
   feishu.stop();
   consoleSrv.close();
-  observer.stop(); triage.stop(); scheduler.stop(); sentinel.stop(); lenses.stop(); clearInterval(sweep);
+  observer.stop(); triage.stop(); sources.stop(); scheduler.stop(); sentinel.stop(); lenses.stop(); clearInterval(sweep);
   // unfinished runs are recovered on the next start (§1.2); workers are aborted and resumed after the restart
   await Promise.all([dispatcher.drain(20_000), tasks.stop(10_000)]);
   outbox.stop();

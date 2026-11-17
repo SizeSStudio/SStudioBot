@@ -1,0 +1,5 @@
+#!/bin/sh
+# Worker-only bwrap shim (first in the worker's PATH): sandboxed commands get oom_score_adj 800 so a runaway
+# command is OOM-killed before the CLI (-900). exec keeps /usr/bin/bwrap's AppArmor profile attached.
+echo 800 > /proc/self/oom_score_adj
+exec /usr/bin/bwrap "$@"

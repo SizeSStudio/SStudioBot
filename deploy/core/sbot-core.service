@@ -1,0 +1,47 @@
+# SStudioBot core (DESIGN §1.3, §14 M0). Install: /etc/systemd/system/sbot-core.service
+[Unit]
+Description=SStudioBot core (inbox, dispatcher, LLM proxy, Feishu, outbox)
+After=network-online.target sbot-netfilter.service
+Wants=network-online.target
+
+[Service]
+User=sbot
+Group=sbot
+Slice=sbot.slice
+WorkingDirectory=/srv/sbot/app/core
+Environment=SBOT_HOME=/srv/sbot
+Environment=SBOT_LARK_CLI=/opt/sbot/bin/lark-cli
+Environment=PATH=/opt/node/bin:/opt/sbot/bin:/usr/bin:/bin
+Environment=LANG=C.UTF-8
+ExecStart=/opt/node/bin/node src/main.ts
+Restart=always
+RestartSec=3
+# drain waits up to 20s for running runs; the rest are recovered on the next start (§1.2)
+TimeoutStopSec=30
+KillMode=control-group
+KillSignal=SIGTERM
+# under memory pressure the kernel should kill workers before the core
+OOMScoreAdjust=-500
+MemoryHigh=1G
+MemoryMax=1500M
+
+# No NoNewPrivileges / RestrictSUIDSGID: workers start through `sudo -n worker-exec` (M2, §7.2); sudoers limits sbot to
+# the two root-owned wrappers. Workers inherit this mount namespace, so their task dirs and HOME must be writable here.
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/data/sbot /srv/data/sbot-w
+# No ProtectKernelTunables: its overmounts under /proc make the kernel refuse the fresh proc mount bwrap does in the
+# worker sandbox ("Can't mount proc on /newroot/proc: Operation not permitted").
+# Console socket (§10.1): /run/sbot is 0700 sbot, so only root reaches it. In practice that means tailscaled, through
+# `tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`. sbot-w and other local users can't connect
+# directly and fake the identity header.
+RuntimeDirectory=sbot
+RuntimeDirectoryMode=0700
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

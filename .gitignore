@@ -1,0 +1,8 @@
+node_modules/
+package-lock.json
+deploy/lens/out/
+.DS_Store
+*.env
+.secrets*
+*.local.md
+CLAUDE.local.md

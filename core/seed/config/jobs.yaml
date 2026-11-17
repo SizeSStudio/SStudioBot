@@ -1,0 +1,10 @@
+# Periodic jobs (DESIGN §9.1). Hot-reloaded; times are in the owner's timezone (Asia/Shanghai).
+#   every: day | week | month    at: "HH:MM"    weekday: 0-6 (0 = Sunday, week only)    day: 1-31 (month only)
+#   do: morning      → the morning report: code gathers the facts, the main agent writes it in the owner DM
+#       event        → puts `text` into `lane` (default the owner DM) as a timer event; quota: true counts it against 先安静
+#       dream        → nightly memory tidy (§8.3); dream_diff → posts last night's changes to the admin group
+# A job more than 15 minutes late (core was down) is recorded as missed, not run. /job in the DM lists them; /job <name> runs one now.
+
+dream:      { every: day, at: "03:00", do: dream }
+dream_diff: { every: day, at: "08:25", do: dream_diff }
+morning:    { every: day, at: "08:30", do: morning }

@@ -1,0 +1,22 @@
+# Nightly backup → rustfs sbot-backup (DESIGN §1.3). Triggered by sbot-backup.timer.
+[Unit]
+Description=SStudioBot nightly backup (SQLite snapshot + git bundles → rustfs)
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=sbot
+Group=sbot
+Slice=sbot.slice
+WorkingDirectory=/srv/sbot/app/core
+Environment=SBOT_HOME=/srv/sbot
+Environment=PATH=/opt/node/bin:/usr/bin:/bin
+ExecStart=/opt/node/bin/node src/backup.ts
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/srv/data/sbot
+UMask=0077

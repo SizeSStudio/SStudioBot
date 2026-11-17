@@ -1,0 +1,20 @@
+#!/bin/bash
+# Run the pinned Claude Code CLI as sbot-w in its own systemd scope (memory cap).
+# Called by the core (user sbot) only as:  sudo -n /usr/local/lib/sbot/worker-exec <cli args...>
+# HOME is a fixed dir outside the task dir: the sandbox masks shell rc files under writable paths, and HOME stays read-only to commands.
+# Root-owned; the only thing callers control is the CLI's argv, its cwd (must be a task dir) and ANTHROPIC_*/CLAUDE_* env (sudoers env_keep).
+set -euo pipefail
+CLI=/opt/sbot/claude-code/current/claude
+here=$(pwd -P)
+case "$here/" in
+  /srv/data/sbot-w/tasks/?*/) ;;
+  *) echo "worker-exec: cwd must be a task dir under /srv/data/sbot-w/tasks (got $here)" >&2; exit 64 ;;
+esac
+[ "$(stat -c %U "$here")" = sbot-w ] || { echo "worker-exec: task dir must be owned by sbot-w" >&2; exit 64; }
+exec systemd-run --scope --quiet --collect --slice=sbot-workers.slice \
+  -p MemoryMax=1G -p MemorySwapMax=256M -p TasksMax=256 -p OOMPolicy=continue \
+  -- /usr/bin/env HOME=/srv/data/sbot-w/home PATH=/usr/local/lib/sbot/bin:/usr/local/bin:/usr/bin:/bin \
+  choom -n -900 -- \
+  setpriv --reuid=sbot-w --regid=sbot-w --init-groups -- "$CLI" "$@"
+# OOM order inside the 1G scope: sandboxed commands (+800, set by lib/sbot/bin/bwrap) die first, the CLI (-900) last;
+# OOMPolicy=continue keeps the scope (and the CLI) alive after a command is OOM-killed.

@@ -1,0 +1,27 @@
+name: check
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: leak guard
+        run: bash scripts/leak-guard.sh
+      - name: syntax (TypeScript is run by type stripping, so only erasable syntax is allowed)
+        run: |
+          set -e
+          for f in $(git ls-files 'core/src/*.ts' 'core/test/*.ts' 'core/console/*.js' 'core/console/**/*.js'); do
+            node --check "$f" || { echo "::error file=$f::syntax"; exit 1; }
+          done
+      - name: shell scripts
+        run: |
+          set -e
+          for f in $(git ls-files '*.sh') deploy/worker/worker-exec deploy/worker/task-mkdir; do bash -n "$f"; done

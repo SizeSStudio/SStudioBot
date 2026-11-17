@@ -1,0 +1,6 @@
+# 认人只认 ID（DESIGN §2）。名字只用于显示。
+owner:
+  name: 你的名字
+  ids:
+    feishu: ou_xxxxxxxxxxxxxxxx   # your open_id in the Feishu app (lark-cli contact +search-user)
+    # wechat: wxid_...   # M4

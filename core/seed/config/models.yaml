@@ -1,0 +1,29 @@
+# 四档模型（DESIGN §5.1）。/model 会改这里并 git commit；改动下一个请求起生效，不用重启。
+# 只放不保密的东西。密钥和不想进仓库的端点地址写在 /srv/sbot/secrets.env，这里用名字引用。
+endpoints:
+  main:
+    base_url: secret:UPSTREAM_BASE_URL   # 也可以直接写 https://...
+    auth: bearer                          # bearer | x-api-key
+    key_ref: UPSTREAM_AUTH
+
+tiers:
+  chat:                 # 总控：主对话
+    endpoint: main
+    model: MODEL_CHAT
+    price: { in: 5, out: 25, cache_read: 0.5, cache_write: 6.25 }    # 美元 / 百万 token
+  work:                 # 执行：worker、起草、镜头、dream
+    endpoint: main
+    model: MODEL_WORK
+    price: { in: 3, out: 15, cache_read: 0.3, cache_write: 3.75 }
+  light:                # 读：分拣、摘要、检查、搜索
+    endpoint: main
+    model: MODEL_LIGHT
+    price: { in: 1, out: 5, cache_read: 0.1, cache_write: 1.25 }
+  expert:               # 第二意见：把关、提案、评审
+    endpoint: main
+    model: MODEL_EXPERT
+    price: { in: 5, out: 25, cache_read: 0.5, cache_write: 6.25 }
+
+budgets:
+  run_output_tokens: 60000   # 每轮输出 token 上限
+  daily_cost: 20             # 每天美元上限，到了就拒绝（403）

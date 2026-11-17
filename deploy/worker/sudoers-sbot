@@ -1,0 +1,3 @@
+# SStudioBot: the core (sbot) may start workers as sbot-w through fixed wrappers only.
+Defaults!/usr/local/lib/sbot/worker-exec env_keep += "ANTHROPIC_* CLAUDE_* LANG"
+sbot ALL=(root) NOPASSWD: /usr/local/lib/sbot/worker-exec, /usr/local/lib/sbot/task-mkdir

@@ -1,0 +1,8 @@
+#!/bin/bash
+# Create a worker task dir owned by sbot-w (group sbot-w, so the core can read it).
+# Called by the core only as:  sudo -n /usr/local/lib/sbot/task-mkdir <task-id>
+set -euo pipefail
+id="${1:-}"
+[[ "$id" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$ ]] || { echo "task-mkdir: bad id" >&2; exit 64; }
+install -d -o sbot-w -g sbot-w -m 2770 "/srv/data/sbot-w/tasks/$id"
+echo "/srv/data/sbot-w/tasks/$id"

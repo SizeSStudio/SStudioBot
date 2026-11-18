@@ -17,6 +17,7 @@ import { complete, issueToken, revokeToken } from "./proxy.ts";
 import { git, localStamp, safePath, readPage } from "./memory.ts";
 import { one } from "./db.ts";
 import { selfItemsText, upsertCandidate } from "./life.ts";
+import { classifyUpstream } from "./retry.ts";
 import { appendLog, commitMemory, rebuildIndex, searchWiki } from "./wiki.ts";
 import { sendText } from "./cards.ts";
 import type { Runner } from "./runner.ts";
@@ -216,6 +217,8 @@ export async function runDream(runner: Runner): Promise<DreamState | undefined> 
   commitMemory(`dream log ${runId}`);
   run("UPDATE runs SET status=?, stop_reason=?, error=?, ended=?, session_ref=? WHERE id=?",
     res.stop === "done" ? "done" : "failed", res.stop, res.error ?? null, Date.now(), res.sessionRef, runId);
+  // §9.4: nothing done and the upstream to blame: leave last_at, so the retry (or tomorrow) still sees these lines
+  if (res.stop === "error" && !st.commits.length && classifyUpstream(res.error)) throw new Error(res.error);
   kvSet("dream.last_at", String(startedAt));
   const prev = JSON.parse(kvGet("dream.report") ?? "null");
   const cands = st.candidates ?? [];

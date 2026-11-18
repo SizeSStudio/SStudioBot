@@ -301,7 +301,7 @@ export function reading(id: number) {
   return { id, lens: r.lens, status: r.status, text: readingText(r, true), chart_ref: r.chart_ref, profile_version: r.profile_version };
 }
 export function reviews(limit = 60) {
-  return all("SELECT id, kind, period, matter_id, status, ts, LENGTH(facts) facts_len FROM reviews ORDER BY id DESC LIMIT ?", limit);
+  return all("SELECT id, kind, period, matter_id, status, delivery, ts, LENGTH(facts) facts_len FROM reviews ORDER BY id DESC LIMIT ?", limit);
 }
 export function review(id: number) {
   const r = one("SELECT * FROM reviews WHERE id=?", id);

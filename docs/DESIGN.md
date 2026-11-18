@@ -1,7 +1,12 @@
-# SStudioBot 设计文档（v0.20 草案）
+# SStudioBot 设计文档（v0.21 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
+
+### v0.21 变更（定时任务抗上游故障、未聊由代码记，2026-11-19）
+- **定时任务遇到上游错误会重试（§9.4）**：429、5xx、网络错误按退避重试，默认到原定时间后 2 小时，不跨进下一轮同名任务；到点放弃，管理群说一声。用量上限按报错里的恢复时间排，不空打。
+- **档位可配备用模型（§5.3）**：默认不配。配了，主模型报用量上限时这次请求改走它，照常计量。
+- **未聊由代码记（§15.5）**：复盘到截止时间没落档，代码写一条，带当时发给我的内容；没发出去的也记，并标明。
 
 ### v0.20 变更（控制台客户端设计稿，2026-11-18，未实现）
 - **新增 §19**：VPS 只做 server（API + 事件流），客户端拆到 `clients/`，Web 先行，然后 Mac、安卓，可以用框架和构建。
@@ -666,6 +671,10 @@ capabilities:            # 由探针脚本填写，也可以手动覆盖
 ```
 
 - `secrets.env` 权限 600，属主 `sbot`，不进 git。
+- **备用模型（可选，默认不配）**：档位下加 `fallback: { endpoint?, model, price? }`。代理看到主模型报**用量上限**（HTTP 错误，或 200 流里的第一条 error 事件）时，把这次请求原样改发给它；普通 429、5xx 不切，那些等一等就好。切换只发生在这一次请求，会话和 `runs.model` 不变。
+  - 可能换计费端点，所以由我决定填不填。预算机制不变：令牌预算、日上限照旧，账本记实际用的端点、模型和价格（`price` 不写就用本档的），主模型那次失败也记一行（0 token）。
+  - 备用也失败时，调用方拿到的还是主模型的上限错误，走自己的重试规则。没配 `fallback` 时响应原样透传，一个字节都不多读。
+  - 限制：带 thinking 签名的历史换模型会被拒（§5.4），这种请求等于没切成。
 - **M0～M2 阶段**：直接改文件，加上飞书 `/model` 卡片（只能看配置、切换档位里的模型名、触发探针）。控制台里的「模型」页放到 M3。
 
 ### 5.4 按能力降级
@@ -957,6 +966,22 @@ agent-home/            # = llm-wiki 的 wiki 层（§8.5）
 - 复盘和前瞻类消息单独计数，不占上面的额度：日复盘最多 1 条/天，周、月的复盘加前瞻各 1 条；今日留意并进早报；我没回就不追问。"要不要给这件事起个局"的提议只出现在当前回复里，不单独发消息（§15.11）。
 - 事的整理（§15.14）一天最多一张卡，**占上面额度里的 1 条**。到了上限就不发卡，建议留在控制台，早报里带一句。
 
+### 9.4 定时任务遇到上游错误
+
+定时触发的活没人在等，可以等上游恢复。适用于定时事件（早报、复盘、到点提醒、事收复盘、镜头结果进会话）和调模型的代码任务（dream、每日整理的模型部分、月度镜头）。我自己发的消息出错时行为不变。
+
+| 错误 | 判定 | 下一次 |
+|---|---|---|
+| 暂时的 | 429、500/502/503/504/529、过载、网络错误 | 退避 2、5、10、20、30、30… 分钟 |
+| 用量上限 | 报错说 weekly / usage limit、额度用完之类 | 报了恢复时间就排在恢复后 2 分钟；没报每 30 分钟看一次 |
+| 不重试 | 预算用完（§5.2）、鉴权、请求本身有问题 | 按原来的失败处理 |
+
+- **截止时间**：原定时间后 2 小时（`jobs.yaml` 里 `retry_hours` 可改；月度镜头 12 小时，要赶在当晚月复盘前），并且不晚于下一轮同名任务前 10 分钟。截止时刻再试最后一次，这样我临时配了备用模型或加了额度还来得及；恢复时间在截止之后的，中间不再空打。
+- **放弃**：管理群一条消息，每次放弃只发一条，不补跑，也不去私聊打扰我。`job.<名字>.last` 记 `gave_up`。
+- **只重跑干净的失败**：这一次没出过字、没发过消息、只用过只读工具才重跑；否则重跑可能重复发话或重复写入，按原来的失败处理。所以定时 run 不发「思考中」卡片，有字了才起卡。
+- **失败的这一次不留痕**：会话文件退回到这次之前，否则每重试一次，事件全文就在上下文里多一份。滚动会话的摘要跟着事件带到下一次。
+- 重试状态在 `inbox.not_before` 和 `payload.retry`（代码任务在 `kv` 的 `job.<名字>.retry`），重启不丢。排着队的事件不挡我的消息。
+
 ---
 
 ## 10. 配置控制台（M3 起）
@@ -1051,9 +1076,10 @@ messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, medi
 sessions(key, harness, session_ref, generation, surface, tier, model, status, last_active, summary)
                                                            -- harness: sdk|pi；generation：滚动或换模型后 +1
 chat_cursors(chat_id, surface, last_msg_ts, last_msg_id, updated_at)
-inbox(id, lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status, run_id, ts,
+inbox(id, lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status, run_id, ts, not_before NULL,
       UNIQUE(source, source_msg_id))
       -- kind: user|timer|task_done|approval|system；status: received|processing|done|interrupted|failed|dropped
+      -- not_before：定时事件等上游恢复时，这个时间之前不取（§9.4）
 runs(id, lane, session_key, sdk_session_id, role, tier, run_token_hash, status, stop_reason,
      side_effects, started, ended)
 tasks(id, parent_lane, goal, status, tier, workdir, budget, sdk_session_id, last_output_at,
@@ -1087,8 +1113,11 @@ readings(id, ts, matter_id NULL, source, lens, method, profile_version, question
          revisited_at)
       -- source: lens|agent；feeling: resonant|neutral|not_yet（可以为空，以我的原话 owner_words 为准）
       -- claim / look_for / reading_ref 写入即冻结（frozen_hash 校验），之后只能追加回看
-reviews(id, kind, matter_id NULL, period, draft_ref, status, started_at, ended_at)
+reviews(id, kind, matter_id NULL, period, draft_ref, status, started_at, ended_at, delivery NULL)
       -- kind: matter|daily|weekly|monthly；status: drafted|in_dialogue|done|not_discussed
+      -- delivery：代码记的未聊这一轮怎么结束的，sent|replied|not_sent（§15.5）
+review_open(id, kind, period, facts, fired_at, deadline, inbox_key, run_id, UNIQUE(kind, period))
+      -- 发出去、还在等落档的复盘；到 deadline 由代码收尾（§15.5）
 
 -- v0.9：红尘里修（§15.2、§15.6）
 outlooks(id, horizon, period, lane, parent_id NULL, intention_words, items_json, reading_ids,
@@ -1535,8 +1564,19 @@ matter = 一件值得起、也值得收的事：一个项目、一个决定、�
 5. **落档**：
    - 我说的话原样存进 matter 文件或 `self/reviews/`，标 `src=owner`，分量最重。
    - 习气候选：我自己说出来的直接算候选，原话就是证据；agent 从记录里推断的，仍然需要至少 2 条证据。
-   - 我没回的，保留事实初稿，心的部分留空并标为"未聊"。**这部分不由 agent 代写。**
+   - 我没回的，保留事实初稿，心的部分留空并标为"未聊"。**这部分不由 agent 代写，也不靠 agent 记得去写：由代码写**（见下）。
    - **谁先看见**：这次复盘里每提到一条习气或节律，记一笔是我先说出来的，还是 agent 提的（§15.13）。
+
+**未聊由代码记**（日、周、月复盘；事收不设截止）。复盘发出时记一条等待（`review_open`），到截止时间还没有落档，代码自己写进 `reviews`，`status=unchatted`，`delivery` 说明这一轮怎么结束的：
+
+| `delivery` | 情况 | 事实部分 |
+|---|---|---|
+| `sent` | 发出了，我没回 | 当时实际发给我的内容 |
+| `replied` | 发出了，我回过话，但这场没有落档 | 同上；不从我的消息里猜哪句算复盘，原话留在时间线 |
+| `not_sent` | 没发出去：模型失败、重试放弃、核心不在线错过、这一轮没出内容等，原因写在记录里 | 代码整理的时间线 |
+
+- **截止时间**：日复盘是第二天早报之前（在早报取数之前写好），周、月是发出后 24 小时。安静日本来就不发，不记。
+- 已经 `review_submit` 过的不重复写。代码写完之后我才聊上的，`review_submit` 用真实记录替换这一条；空的提交不会多出一条。
 
 ### 15.6 时间线与回溯
 

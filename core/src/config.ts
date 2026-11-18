@@ -29,9 +29,11 @@ export type Tier = "chat" | "work" | "light" | "expert";
 export const TIERS: Tier[] = ["chat", "work", "light", "expert"];
 
 export interface Price { in: number; out: number; cache_read?: number; cache_write?: number }  // USD per 1M tokens
+/** §5.3: used only when the tier's own model reports a usage limit. Off unless the owner fills it in: it can bill elsewhere. */
+export interface TierFallback { endpoint?: string; model: string; price?: Price }
 export interface ModelsConfig {
   endpoints: Record<string, { base_url: string; auth: "bearer" | "x-api-key"; key_ref: string }>;
-  tiers: Partial<Record<Tier, { endpoint: string; model: string; price?: Price; context?: number; max_tokens?: number }>>;
+  tiers: Partial<Record<Tier, { endpoint: string; model: string; price?: Price; context?: number; max_tokens?: number; fallback?: TierFallback }>>;
   budgets?: { run_output_tokens?: number; daily_cost?: number };
 }
 export interface PeopleConfig {
@@ -75,7 +77,7 @@ const GATE_DEFAULTS: GateConfig = {
 export const gateConf = (): GateConfig => ({ ...GATE_DEFAULTS, ...cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {}) });
 
 /** config/jobs.yaml (§9.1): periodic jobs; only the owner edits it, hot-reloaded */
-export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean }
+export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean; retry_hours?: number }
 export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"), (t) => parse(t) ?? {}, {});
 
 /** the 每日整理 job (§15.14), whatever it is called in jobs.yaml; its knobs live on the job line */

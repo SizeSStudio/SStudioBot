@@ -35,7 +35,8 @@ import { runMatterReview } from "./matter-review.ts";
 import { Sentinel } from "./sentinel.ts";
 import { startConsole } from "./console.ts";
 import { renderSelf } from "./life.ts";
-import { reviewDayText, reviewWeekText, reviewMonthText } from "./reflect.ts";
+import { closeDueReviews, reviewDayText, reviewMonthText, reviewNotRun, reviewOpened, reviewWeekText } from "./reflect.ts";
+import { classifyUpstream } from "./retry.ts";
 import { postHealthCard } from "./health.ts";
 import { LensEngine, queueMonthReadings } from "./lens.ts";
 import { installImproveHooks, runImprove, runImproveReview } from "./improve.ts";
@@ -71,8 +72,10 @@ const sources = new Sources();
 const scheduler = new Scheduler(() => dispatcher.kick(),
   { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_month: async () => { queueMonthReadings(); },
     improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); },
-    matter_review: async () => { await runMatterReview(); } },
-  { morning: () => morningText(), review_day: () => reviewDayText(), review_week: () => reviewWeekText(), review_month: () => reviewMonthText() });
+    // the card still goes out on code's findings; a throw only asks for the model's part again later (§9.4)
+    matter_review: async () => { const r = await runMatterReview(); if (r.modelError && classifyUpstream(r.modelError)) throw new Error(r.modelError); } },
+  { morning: () => morningText(), review_day: () => reviewDayText(), review_week: () => reviewWeekText(), review_month: () => reviewMonthText() },
+  { opened: reviewOpened, notRun: (...a) => { reviewNotRun(...a); commitMemory("review not sent"); }, beforeTick: () => { if (closeDueReviews()) commitMemory("reviews closed"); } });
 const sentinel = new Sentinel();
 const onCommand = makeCommandHandler(dispatcher, () => outbox.kick(), scheduler);
 dispatcher.recover();

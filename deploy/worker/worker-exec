@@ -1,20 +1,63 @@
 #!/bin/bash
-# Run the pinned Claude Code CLI as sbot-w in its own systemd scope (memory cap).
-# Called by the core (user sbot) only as:  sudo -n /usr/local/lib/sbot/worker-exec <cli args...>
-# HOME is a fixed dir outside the task dir: the sandbox masks shell rc files under writable paths, and HOME stays read-only to commands.
-# Root-owned; the only thing callers control is the CLI's argv, its cwd (must be a task dir) and ANTHROPIC_*/CLAUDE_* env (sudoers env_keep).
+# Run the pinned Claude Code CLI for a worker (DESIGN §4.2, §7.6). Called by the core (user sbot) only as:
+#   sudo -n /usr/local/lib/sbot/worker-exec [--host] <cli args...>
+# Root-owned; the only thing callers control is the CLI's argv, its cwd (must be a task dir of that mode) and
+# ANTHROPIC_*/CLAUDE_*/LANG env (sudoers env_keep).
+#
+# sandbox (default): sbot-w in a systemd scope (memory cap). The scope inherits the core's mount namespace
+#   (ProtectSystem=strict), Bash runs in bwrap, iptables chain SBOT_W limits the network.
+# --host: sbot-h as a transient *service*, so pid 1 starts it in the host's namespaces (a scope would inherit the
+#   core's read-only filesystem and sudo couldn't install anything). No bwrap, no SBOT_W, sudo allowed. stdio goes
+#   through `systemd-run --pipe`. Killing systemd-run does not stop the unit, so we trap and stop it ourselves.
 set -euo pipefail
 CLI=/opt/sbot/claude-code/current/claude
+mode=sandbox
+if [ "${1:-}" = --host ]; then mode=host; shift; fi
 here=$(pwd -P)
+
+if [ "$mode" = sandbox ]; then
+  case "$here/" in
+    /srv/data/sbot-w/tasks/?*/) ;;
+    *) echo "worker-exec: cwd must be a task dir under /srv/data/sbot-w/tasks (got $here)" >&2; exit 64 ;;
+  esac
+  [ "$(stat -c %U "$here")" = sbot-w ] || { echo "worker-exec: task dir must be owned by sbot-w" >&2; exit 64; }
+  # HOME is a fixed dir outside the task dir: the sandbox masks shell rc files under writable paths.
+  exec systemd-run --scope --quiet --collect --slice=sbot-workers.slice \
+    -p MemoryMax=1G -p MemorySwapMax=256M -p TasksMax=256 -p OOMPolicy=continue \
+    -- /usr/bin/env HOME=/srv/data/sbot-w/home PATH=/usr/local/lib/sbot/bin:/usr/local/bin:/usr/bin:/bin \
+    choom -n -900 -- \
+    setpriv --reuid=sbot-w --regid=sbot-w --init-groups -- "$CLI" "$@"
+  # OOM order inside the 1G scope: sandboxed commands (+800, set by lib/sbot/bin/bwrap) die first, the CLI (-900) last;
+  # OOMPolicy=continue keeps the scope (and the CLI) alive after a command is OOM-killed.
+fi
+
 case "$here/" in
-  /srv/data/sbot-w/tasks/?*/) ;;
-  *) echo "worker-exec: cwd must be a task dir under /srv/data/sbot-w/tasks (got $here)" >&2; exit 64 ;;
+  /srv/data/sbot-h/tasks/?*/) ;;
+  *) echo "worker-exec: cwd must be a task dir under /srv/data/sbot-h/tasks (got $here)" >&2; exit 64 ;;
 esac
-[ "$(stat -c %U "$here")" = sbot-w ] || { echo "worker-exec: task dir must be owned by sbot-w" >&2; exit 64; }
-exec systemd-run --scope --quiet --collect --slice=sbot-workers.slice \
-  -p MemoryMax=1G -p MemorySwapMax=256M -p TasksMax=256 -p OOMPolicy=continue \
-  -- /usr/bin/env HOME=/srv/data/sbot-w/home PATH=/usr/local/lib/sbot/bin:/usr/local/bin:/usr/bin:/bin \
-  choom -n -900 -- \
-  setpriv --reuid=sbot-w --regid=sbot-w --init-groups -- "$CLI" "$@"
-# OOM order inside the 1G scope: sandboxed commands (+800, set by lib/sbot/bin/bwrap) die first, the CLI (-900) last;
-# OOMPolicy=continue keeps the scope (and the CLI) alive after a command is OOM-killed.
+[ "$(stat -c %U "$here")" = sbot-h ] || { echo "worker-exec: task dir must be owned by sbot-h" >&2; exit 64; }
+unit="sbot-h-$(basename "$here")-$$"
+# A transient service gets no environment from us; pass it in a root-only file (Environment= would be readable by
+# any local user over D-Bus, and ANTHROPIC_AUTH_TOKEN is in there).
+install -d -m 0700 /run/sbot-h
+envf=/run/sbot-h/$unit.env
+umask 077
+{
+  echo "HOME=/srv/data/sbot-h/home"
+  echo "USER=sbot-h"
+  echo "PATH=/srv/data/sbot-h/home/.local/bin:/srv/data/sbot-h/home/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  env | grep -E '^(ANTHROPIC_[A-Z0-9_]*|CLAUDE_[A-Z0-9_]*|LANG)=' || true
+} > "$envf"
+stop() { systemctl stop "$unit" 2>/dev/null || true; rm -f "$envf"; }
+trap 'stop; exit 143' TERM INT HUP
+exec 3<&0
+# RuntimeMaxSec backs up the core's own timeout (max 240 min) if the core dies without stopping us.
+systemd-run --pipe --wait --quiet --collect --service-type=exec --unit="$unit" --slice=sbot-workers.slice \
+  -p User=sbot-h -p Group=sbot-h -p WorkingDirectory="$here" -p EnvironmentFile="$envf" -p UMask=0027 \
+  -p MemoryMax=6G -p TasksMax=2048 -p OOMScoreAdjust=-500 -p RuntimeMaxSec=5h -p KillMode=control-group \
+  -- "$CLI" "$@" <&3 &
+pid=$!
+set +e; wait $pid; rc=$?; set -e
+# wait returns early (>128) when a trapped signal arrives; the trap has already stopped the unit then.
+rm -f "$envf"
+exit $rc

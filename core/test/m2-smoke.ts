@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from "node
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { P, ownerFeishu } from "../src/config.ts";
-import { all, one } from "../src/db.ts";
+import { all, one, kvSet } from "../src/db.ts";
 import { startProxy } from "../src/proxy.ts";
 import { ensureAgentHome } from "../src/memory.ts";
 import { hooks, onApprovalClick, getApproval } from "../src/approvals.ts";
@@ -45,6 +45,8 @@ mkdirSync(seed); g(seed, "init", "-q", "-b", "main"); writeFileSync(join(seed, "
 g(seed, "add", "."); g(seed, "commit", "-q", "-m", "init"); g(seed, "push", "-q", remote, "main");
 writeFileSync(join(P.config, "repos.yaml"), `demo:\n  url: ${remote}\n  branch: main\n`);
 
+// task dirs live outside the test home: start at a random high id so an old run's t1 (progress.md, repo) isn't reused
+kvSet("task.seq", String(900_000 + Math.floor(Math.random() * 99_000)));
 const proxy = await startProxy();
 let kicked = 0;
 hooks.kickDispatcher = () => { kicked++; };
@@ -54,7 +56,7 @@ engine.start();
 // 1. task → waiting_approval
 const id = startTask({
   goal: "在仓库 demo 的 README.md 末尾加一行：hello from sbot。提交后用 git_push 申请推送。推送结果出来后交报告。",
-  repo: "demo", originLane: "test:m2", tier: "light", timeoutMin: 15,
+  repo: "demo", originLane: "test:m2", tier: "light", timeoutMin: 15, mode: "sandbox",
 });
 console.log(`task #${id}`);
 await until("waiting_approval", () => ["waiting_approval", "done", "failed", "cancelled"].includes(getTask(id)?.status), 10 * 60_000);

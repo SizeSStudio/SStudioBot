@@ -102,6 +102,17 @@ export const selfLensConf = (): { birth?: Record<string, any>; lenses: Record<st
 export const reposConf = (): Record<string, { url: string; branch?: string }> => cached(join(P.config, "repos.yaml"), (t) => parse(t) ?? {}, {});
 
 /**
+ * config/worker.yaml (§4.2): how workers run. Owner-edited only, like every config file.
+ *   default_mode: host | sandbox            (default host)
+ *   path: [/opt/foo/bin]                    extra PATH dirs, prepended, both modes
+ *   skills: [name, …] | all                 skills to enable; default = every dir under config/skills/
+ *   ssh_hosts: [{ name, host, user?, port? }]   written to the host worker's ssh config (`ssh <name>`)
+ */
+export interface SshHost { name: string; host: string; user?: string; port?: number }
+export interface WorkerConf { default_mode?: "host" | "sandbox"; path?: string[]; skills?: string[] | "all"; ssh_hosts?: SshHost[] }
+export const workerConf = (): WorkerConf => cached(join(P.config, "worker.yaml"), (t) => parse(t) ?? {}, {});
+
+/**
  * config/sources.yaml (§17.3): Feishu DMs on / off (the observer reads them) and the other places events come from.
  * Each source: { id, kind (a SOURCE_KINDS key), every ("15m" | "2h" | "1d"), domain, enabled, …kind-specific }.
  */

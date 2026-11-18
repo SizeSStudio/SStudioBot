@@ -23,7 +23,7 @@ always-on 不等于一直在跑。agent 平时睡着，被事件叫醒后跑一�
 几条底线：
 
 - **key 不进 agent**：所有模型调用都走核心里的 LLM 代理，每个 run 只拿一个临时令牌；用量计量和预算上限也在代理里。
-- **worker 隔离**：后台任务在独立 Unix 用户 `sbot-w` 下跑，bubblewrap 沙箱 + iptables 限制出口；改代码只在沙箱 worktree 里提交，推送要主人在管理群批准后由核心来推。
+- **worker 两种模式**：默认 host：独立用户 `sbot-h` 直接在宿主机上跑，网络、tailnet、sudo、skill 都有，ssh 主机和 skill 在 `config/worker.yaml` 里配；sandbox：独立用户 `sbot-w`，bubblewrap 沙箱 + iptables 限制出口，用来处理不可信内容。两种模式都没有凭证，推送都要主人在管理群批准后由核心来推。
 - **审批非阻塞**：对外发言、推代码、在群里说话都会生成审批卡片，只认主人本人点击；批准后由发件箱按原稿发出。
 - **越用越会办事，但不会越来越大**：agent 能改自己的记忆和风格笔记；skill、prompt、模型档位要提案 + 回放评测 + 主人批；代码走 PR；权限、预算、auto 规则和这套机制本身永远不由 agent 提（[§16](docs/DESIGN.md#16-agent-自己的-rsi越用越会办事)）。
 
@@ -57,7 +57,7 @@ docs/DESIGN.md  完整设计文档
 
 还没有一键安装。大致顺序（细节见 [DESIGN §1.3、§7、§10](docs/DESIGN.md)）：
 
-1. 建用户 `sbot`、`sbot-w`，数据目录 `/srv/sbot`（→ `/srv/data/sbot`），装好 `/opt/node`。
+1. 建用户 `sbot`、`sbot-w`（`sbot-h` 由 `deploy/worker/install.sh` 建），数据目录 `/srv/sbot`（→ `/srv/data/sbot`），装好 `/opt/node`。
 2. 在 `/srv/sbot/config/` 建配置仓库，模板在 `core/seed/config/`：`people.yaml` 填主人的飞书 open_id，`models.yaml` 填各档上游。密钥写进 `secrets.env`（只写不读，不进备份）。
 3. `sudo bash deploy/core/install.sh`：装 systemd unit 和 `sbot-deploy`，从 GitHub 拉 `main` 部署、启动核心，并打开自动部署（每 3 分钟跟一次 `main`，起不来自动回滚）。再按需装 `deploy/worker/`（后台任务）、`deploy/lens/`（镜头）。
 4. `tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`，在 `config/console.yaml` 里列出能进控制台的 tailnet 账号。

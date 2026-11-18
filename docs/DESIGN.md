@@ -1,7 +1,12 @@
-# SStudioBot 设计文档（v0.13 草案）
+# SStudioBot 设计文档（v0.14 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
+
+### v0.14 变更（worker 默认上宿主机，2026-11-18 主人定）
+- **worker 分两种模式（§4.2、§7.6）**：默认 **host**：用户 `sbot-h`，以 transient service 的形式跑在宿主机上，不套 bwrap，也不受 iptables 限制，公网、DNS、tailnet 全通，**有完整 sudo**，HOME 持久保留（ssh key、各 CLI 的登录状态都在里面）。**sandbox** 就是原来的 `sbot-w` 隔离，任务要处理不可信内容时才用。主 agent 觉得有风险，先问我要不要用 sandbox。
+- **新配置 `config/worker.yaml`**：`default_mode`、额外的 PATH 目录、启用哪些 skill（skill 本身放在 `config/skills/<名字>/`）、`ssh_hosts`（worker 可以用 `ssh <名字>` 登录的机器，比如我的 Mac）。
+- **取舍**：给了 sudo，`secrets.env` 和核心的其他文件就不再靠文件权限挡住 host worker，靠的是 worker 规则加核心的 PreToolUse 守卫。这是防误操作、防注入的软边界，挡不住有意为之。sandbox 模式的边界没变。
 
 ### v0.13 变更（以事为轴：事件账本、信息源、导入）
 - **新增 §17**：事（matter）是组织一切的轴；核心只管"帮人把事办好、在事上长进"的骨架，每个人不同的部分（信息源、导入来源、镜头）走插件。
@@ -484,12 +489,19 @@ auto 规则**只存在 `config/auto.yaml`** 里，people 里不再有 `auto` 字
 
 ### 4.2 Worker（默认 light 档，可以升到 chat 档）
 
-- `task_start({ goal, context, tier?, budget, timeout })` → Task Engine 起一个独立的 `query()`，这个 task 就是一条 lane。
-- **隔离**（§7.6）：
+- `task_start({ goal, context, tier?, mode?, budget, timeout })` → Task Engine 起一个独立的 `query()`，这个 task 就是一条 lane。
+- **两种模式**（`tasks.mode`，默认值取 `config/worker.yaml` 的 `default_mode`，没配就是 host；v0.14 之前的老任务按 sandbox 处理）：
+  - **host（默认）**：`sudo -n worker-exec --host` 用 `systemd-run --pipe --wait` 起一个 transient **service**（`sbot-workers.slice`，`MemoryMax=6G`，`RuntimeMaxSec=5h`），以 `sbot-h` 身份运行，cwd 是 `/srv/data/sbot-h/tasks/<id>/`。用 service 而不用 scope，是因为 scope 会继承核心的挂载命名空间（`ProtectSystem=strict`），sudo 装不了东西；service 由 pid 1 起，在宿主机的命名空间里。stdio 经 `--pipe` 透传，SDK 照常工作；环境变量写进一个 root 才能读的 `EnvironmentFile`（`Environment=` 能被任何本地用户通过 D-Bus 读到，里面有 run token）。杀掉 systemd-run 不会停掉 unit，所以 worker-exec 捕获 TERM 信号，自己 `systemctl stop`。
+    - 没有 bwrap，不经过出网代理，也不受 `SBOT_W` 链限制，公网、DNS、tailnet 全通，有完整 sudo（`/etc/sudoers.d/sbot-h`）。HOME `/srv/data/sbot-h/home` 持久保留：`~/.local/bin`、CLI 登录状态、ssh key（`install.sh` 生成，公钥由我加到要登录的机器上）。
+    - `~/.ssh/config` include 共享目录里的 `ssh_config`，这个文件由核心在每次 run 之前按 `worker.yaml` 的 `ssh_hosts` 生成（`BatchMode`、`StrictHostKeyChecking accept-new`），worker 直接 `ssh mac` 就行。
+    - **核心守卫**：一个 PreToolUse hook 拦截 Bash 命令，以及 Read/Write/Edit/Glob/Grep 的路径参数中指向核心位置的调用（`/srv/sbot`、`secrets.env`、`/run/sbot`、`/proc/*/environ`、lark-cli）。只看工具要去哪里，不看写进去的内容，所以改本仓库里提到这些路径的文档照样能改。worker 规则里也写了"有 sudo 也不碰"。这是软边界（§7.6）。
+  - **sandbox**：就是下面原来那套，以 `sbot-w` 用户运行。任务要把不可信内容（陌生网站、别人的仓库、别人发来的文件）喂给 worker、而全权限又可能闯祸时，用这个模式；主 agent 拿不准时先问我。
+- **skill 和 CLI（两种模式都有）**：核心在每次 run 之前把 `config/skills/<名字>/` 复制到 `/srv/data/sbot-shared/worker-plugin/skills/`（全员可读、只有核心能写；先建一份新的再换上去），用 SDK 的 `plugins` + `skills` 选项加载。`skills` 始终显式传：默认是 `config/skills` 下的全部，也可以在 `worker.yaml` 里列名字或写 `all`（`all` 会连 CLI 自带的也打开）。`worker.yaml` 的 `path` 通过 `settings.env.PATH` 加在 PATH 前面。
+- **sandbox 模式的隔离**（§7.6）：
   - 以 `sbot-w` 用户运行（P0 已验证）：SDK 的 `spawnClaudeCodeProcess` 把 CLI 改成 `sudo -n /usr/local/lib/sbot/worker-exec <args>`。这个 root 所有的包装脚本校验 cwd 是 `sbot-w` 的任务目录，再用 `systemd-run --scope`（`sbot-workers.slice`，`MemoryMax=1G`）+ `setpriv` 切到 `sbot-w` 去跑锁定版本的 CLI（`/opt/sbot/claude-code/<ver>/claude`）。sudoers 只放行这个脚本和 `task-mkdir`，环境变量只保留 `ANTHROPIC_*`、`CLAUDE_*`、`LANG`。in-process MCP 和 hook 走 stdio，跨 sudo 照常工作。安装文件在 `deploy/worker/`。
   - bash 套 SDK `sandbox`（bubblewrap），`failIfUnavailable: true`、`allowUnsandboxedCommands: false`。
   - 工作目录 `/srv/sbot-w/tasks/<id>/`，`CLAUDE_CONFIG_DIR` 也放在里面。`HOME` 固定为 `/srv/sbot-w/home`，不放在任务目录里（sandbox 会屏蔽可写路径下的 shell rc 文件，放进去 bash 每次都报 `.bashrc: Permission denied`）。
-  - PATH 里**没有 lark-cli**，也没有任何凭证。
+  - PATH 里**没有 lark-cli**，也没有任何凭证（host 模式同样不给，对飞书的动作仍然走核心工具和审批）。
 - **任务进度文件**：worker 要维护 `progress.md`，写明做完了什么、还剩什么。中断后续跑、或者 needs_input 之后重开时，下一个 run 先读它。
 - **对外动作走核心工具**：比如 `feishu_doc_write`、`git_push`。这些都是 L2：PreToolUse 返回 `defer`，任务进入 `waiting_approval`，批准后 resume（§7.2）。
 - **改代码**：
@@ -730,9 +742,17 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 | 核心代码、SQLite、`secrets.env`、lark-cli 和 token、git push 凭证 | `sbot`，0700 / 0600 | 只有核心进程 |
 | `/srv/sbot/config`（配置仓库：models / people / groups / gate / auto / jobs / self） | `sbot`，0700 | 我（直接改 / 控制台 / 卡片）；**任何 agent 都不能写**，agent 想改只能提 proposal |
 | `/srv/sbot/agent-home`（记忆仓库） | `sbot` | 只能通过核心的记忆工具读写（代码校验路径），worker 读不到原文件 |
-| `/srv/sbot-w/tasks/*` | `sbot-w` | worker |
+| `/srv/sbot-w/tasks/*` | `sbot-w` | sandbox worker |
+| `/srv/data/sbot-h/{home,tasks}` | `sbot-h`（有完整 sudo） | host worker；核心在 `sbot-h` 组里，能读任务目录（推送时要 fetch） |
+| `/srv/data/sbot-shared`（skill 插件、`ssh_config`） | `sbot`，0755 | 核心写；两种 worker 都只读。不放密钥 |
 
-- **worker 的网络**分两层（P0 已验证，`deploy/worker/netfilter.sh` + `probes/worker-isolation.ts`）：
+- **host worker 的边界**（v0.14）：网络和文件系统都没有隔离，sudo 也是完整的。还剩下的约束：
+  - 没有任何凭证：不给 lark-cli 和推送凭证，环境变量里只有一个按 run 签发、有预算上限的 LLM token；
+  - 推送和对飞书的动作仍然只走核心工具和审批；
+  - 核心守卫 + worker 规则，让它不去碰核心的文件；
+  - 每个 run 一个 unit，有内存和时长上限。
+  - **残余风险**：有 sudo，核心守卫就只是软边界，挡不住有意为之。被注入的指令可以读 `secrets.env`、登录 `ssh_hosts` 里的机器、在 tailnet 里横向移动。所以碰到不可信内容就用 sandbox。
+- **sandbox worker 的网络**分两层（P0 已验证，`deploy/worker/netfilter.sh` + `probes/worker-isolation.ts`）：
   - **iptables，按 owner 匹配 `sbot-w`**（链 `SBOT_W`，只插 OUTPUT 第一条，不碰 ufw 和 docker 的链；`sbot-netfilter.service` 开机加载）：
     - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理）。
     - 其余一律拒绝：本机所有地址（`addrtype LOCAL`，包括公网 IP 和 `::1`）、tailnet、私网和 docker 网段、云元数据，**以及公网和 DNS**（2026-11-17 收紧，`SBOT_W_PUBLIC=allow` 可退回）。这一层管住的是 CLI 进程本身。

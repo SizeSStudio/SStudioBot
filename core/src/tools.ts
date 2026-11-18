@@ -143,17 +143,18 @@ export const TOOLS: ToolDef[] = [
   // ---- tasks (§4.2) ----
   def({
     name: "task_start", level: "L1", for: ["owner"],
-    description: "Start a background worker for a substantial job (coding, research, writing a document, anything taking more than a couple of minutes). It runs isolated, posts progress in a workbench topic, may ask questions (they come back to you), and reports back here when done. Give it everything it needs in goal/context: it cannot see this conversation or memory.",
+    description: "Start a background worker for a substantial job (coding, research, writing a document, anything taking more than a couple of minutes). By default it runs on the server itself (full network and tailnet, sudo, ssh to the owner's machines, skills), posts progress in a workbench topic, may ask questions (they come back to you), and reports back here when done. Give it everything it needs in goal/context: it cannot see this conversation or memory.",
     schema: z.object({
       goal: z.string().min(1).max(2000), context: z.string().max(20_000).optional(),
       tier: z.enum(["work", "chat"]).default("work").describe("work (the execution tier) for almost everything; chat only when it needs the strongest reasoning"),
       repo: z.string().optional().describe("name of a repo in config/repos.yaml, if it needs to change code"),
-      allow_domains: z.array(z.string()).max(20).default([]).describe("domains its commands may reach (e.g. registry.npmjs.org); empty = none"),
+      mode: z.enum(["host", "sandbox"]).optional().describe("host (the default, from config/worker.yaml): runs on the server with full access, for almost everything. sandbox: isolated, no network except allow_domains, no sudo or ssh. If the job will feed the worker untrusted content (unknown websites, a stranger's repo, files someone else sent) and could do harm with full access, ask the owner whether to use sandbox before starting it"),
+      allow_domains: z.array(z.string()).max(20).default([]).describe("sandbox mode only: domains its commands may reach (e.g. registry.npmjs.org); empty = none"),
       budget: z.number().min(10_000).max(1_000_000).optional().describe("output-token budget, default 150000"),
       timeout_min: z.number().min(5).max(240).optional(), matter_id: z.number().optional(),
     }),
     async exec(a, ctx) {
-      const id = startTask({ goal: a.goal, context: a.context, tier: a.tier, repo: a.repo, allow: a.allow_domains, budget: a.budget, timeoutMin: a.timeout_min,
+      const id = startTask({ goal: a.goal, context: a.context, tier: a.tier, repo: a.repo, allow: a.allow_domains, mode: a.mode, budget: a.budget, timeoutMin: a.timeout_min,
         matterId: a.matter_id, originLane: ctx.lane, originTurn: ctx.turn });
       return `已开工：任务 #${id}。${feishuConf().workbench_chat ? "工作台开了一个话题，进度和结果在那里；" : ""}做完、出错或者它有问题要问，都会回到这里。`;
     },

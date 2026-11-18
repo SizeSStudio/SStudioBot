@@ -163,7 +163,7 @@ CREATE TABLE IF NOT EXISTS imports(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTE
 for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["outbox", "card_id TEXT"],
   ["outbox", "as_identity TEXT NOT NULL DEFAULT 'bot'"], ["messages", "triage_action TEXT"], ["messages", "triage_note TEXT"],
   ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"],
-  ["messages", "event_id INTEGER"], ["matters", "keys TEXT"]]) {
+  ["messages", "event_id INTEGER"], ["matters", "keys TEXT"], ["tasks", "mode TEXT"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 

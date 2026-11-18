@@ -30,7 +30,8 @@ MemoryMax=1500M
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=yes
-ReadWritePaths=/srv/data/sbot /srv/data/sbot-w
+ReadWritePaths=/srv/data/sbot /srv/data/sbot-w -/srv/data/sbot-h -/srv/data/sbot-shared
+# Host-mode workers (sbot-h) don't inherit this namespace: worker-exec --host starts them as a transient service.
 # No ProtectKernelTunables: its overmounts under /proc make the kernel refuse the fresh proc mount bwrap does in the
 # worker sandbox ("Can't mount proc on /newroot/proc: Operation not permitted").
 # Console socket (§10.1): /run/sbot is 0700 sbot, so only root reaches it. In practice that means tailscaled, through

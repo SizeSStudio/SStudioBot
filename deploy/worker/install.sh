@@ -21,3 +21,27 @@ systemctl daemon-reload; systemctl enable --now sbot-netfilter.service
 systemctl is-active sbot-netfilter.service
 iptables -S SBOT_W; iptables -S OUTPUT | head -2; ip6tables -S SBOT_W | head -3
 sudo -u sbot-w /opt/sbot/claude-code/current/claude --version
+
+# ---- host-mode worker sbot-h (DESIGN §4.2, §7.6): runs on the host, full network/tailnet, full sudo, persistent HOME
+H=/srv/data/sbot-h
+getent group sbot-h >/dev/null || groupadd --system sbot-h
+id sbot-h >/dev/null 2>&1 || useradd --system --gid sbot-h --home-dir $H/home --shell /bin/bash sbot-h
+usermod -aG sbot-h sbot                  # the core reads host task dirs (repo fetch), like group sbot-w
+install -d -o root -g root -m 0755 $H
+install -d -o sbot-h -g sbot-h -m 0750 $H/home $H/tasks
+install -d -o sbot-h -g sbot-h -m 0700 $H/home/.ssh
+install -d -o sbot-h -g sbot-h -m 0755 $H/home/.local $H/home/.local/bin
+[ -f $H/home/.ssh/id_ed25519 ] || sudo -u sbot-h ssh-keygen -q -t ed25519 -N "" -C "sbot-h@$(hostname -s)" -f $H/home/.ssh/id_ed25519
+# ssh hosts come from config/worker.yaml; the core writes them to the shared dir, the user's own config includes it
+grep -qs "^Include /srv/data/sbot-shared/ssh_config" $H/home/.ssh/config || {
+  { echo "Include /srv/data/sbot-shared/ssh_config"; cat $H/home/.ssh/config 2>/dev/null || true; } > $H/home/.ssh/config.new
+  install -m 0600 -o sbot-h -g sbot-h $H/home/.ssh/config.new $H/home/.ssh/config; rm -f $H/home/.ssh/config.new
+}
+# shared, world-readable, written by the core: skills plugin + ssh_config (no secrets in here)
+install -d -o sbot -g sbot -m 0755 /srv/data/sbot-shared
+install -m 0440 -o root -g root sudoers-sbot-h /etc/sudoers.d/sbot-h
+visudo -cf /etc/sudoers.d/sbot-h
+sudo -u sbot-h sudo -n true && echo "sbot-h sudo ok"
+echo "sbot-h public key (add it to ~/.ssh/authorized_keys on the machines listed in config/worker.yaml ssh_hosts):"
+cat $H/home/.ssh/id_ed25519.pub
+echo "core unit: install deploy/core/sbot-core.service again (ReadWritePaths gained sbot-h and sbot-shared) and restart sbot-core"

@@ -64,7 +64,7 @@ export async function api(path, o = {}) {
   // public entrance: the session cookie ran out → back to its login page (the tailnet entrance never answers 401)
   if (r.status === 401) { location.assign("/_login"); throw new Error("登录过期了"); }
   const j = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
-  if (!r.ok) { const e = new Error(j.error ?? r.status); e.status = r.status; throw e; }
+  if (!r.ok) { const e = new Error(j.error ?? r.status); e.status = r.status; e.body = j; throw e; }
   return j;
 }
 

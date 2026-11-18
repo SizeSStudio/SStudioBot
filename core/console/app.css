@@ -172,7 +172,7 @@ button.tag { cursor: pointer; }
 .seg button { min-height: max(28px, var(--target)); border: 0; background: var(--surface); padding: 0 9px; font-size: 13px; cursor: pointer; color: var(--ink-2); border-left: 1px solid var(--line); }
 .seg button:first-child { border-left: 0; }
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--page); }
-input[type=search], input[type=text], input[type=password], textarea, select {
+input[type=search], input[type=text], input[type=password], input[type=number], input[type=time], textarea, select {
   width: 100%; min-height: max(36px, var(--target)); background: var(--raised); border: 1px solid var(--ring); border-radius: 8px; padding: 7px 10px; font-size: 15px; }
 select { width: auto; padding-right: 28px; }
 textarea { resize: vertical; line-height: 1.5; }
@@ -349,6 +349,67 @@ ol.tl { list-style: none; margin: 0; padding: 0; background: var(--surface); bor
 /* ───────── editor ───────── */
 .editor > * + * { margin-top: 10px; }
 .edhead { position: sticky; top: 0; z-index: 2; background: var(--page); padding: 6px 0; }
+
+/* ───────── config forms (lib/form.js) ───────── */
+.cform > * + * { margin-top: 12px; }
+.cform section > h2 { margin-bottom: 6px; }
+.cform section > .sub { margin-bottom: 6px; }
+.fsec > * + * { margin-top: 14px; }
+.ff > * + * { margin-top: 4px; }
+.ffh { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ffl { font-weight: 550; font-size: 14px; }
+.ffb .ffh .fsw { margin-left: auto; }
+.ffe { font-size: 13px; }
+.ffe[hidden] { display: none; }
+.fwarn { color: var(--serious); border-color: color-mix(in srgb, var(--serious) 45%, transparent); background: none; }
+.fro { font-size: 13px; color: var(--ink-2); padding: 4px 0; overflow-wrap: anywhere; }
+.fnum { max-width: 300px; }
+.fnum input { flex: 1 1 110px; }
+.fnum select { flex: 0 0 auto; }
+.funit { flex: none; }
+.fsw { position: relative; display: inline-flex; flex: none; width: 42px; height: 24px; cursor: pointer; }
+.fsw input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.fsw i { width: 100%; height: 100%; border-radius: 12px; background: var(--axis); transition: background .12s; }
+.fsw i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .12s; }
+.fsw input:checked + i { background: var(--accent); }
+.fsw input:checked + i::after { transform: translateX(18px); }
+.fsw input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (forced-colors: active) { .fsw i { border: 1px solid CanvasText; } .fsw input:checked + i { background: Highlight; } }
+@media (prefers-reduced-motion: reduce) { .fsw i, .fsw i::after { transition: none; } }
+.ftags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.ftags input { flex: 1 1 140px; width: auto; }
+.ftag { display: inline-flex; align-items: center; gap: 2px; background: var(--wash); border: 1px solid var(--ring); border-radius: 8px; padding-left: 8px; font-size: 13px; max-width: 100%; overflow-wrap: anywhere; }
+.ftag button { border: 0; background: none; color: var(--muted); cursor: pointer; min-width: max(24px, var(--target)); min-height: max(24px, var(--target)); }
+.fchecks { display: flex; flex-direction: column; gap: 2px; }
+.fchecks label { display: flex; gap: 6px; align-items: center; min-height: var(--target); }
+.fpick { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.fpick select, .ff > select { max-width: 100%; }
+.fkv { margin-bottom: 6px; }
+.fkv > button { flex: none; }
+.fg { border: 1px solid var(--line); border-radius: 8px; padding: 8px 12px 12px; margin: 0; min-width: 0; }
+.fg > legend { font-size: 14px; font-weight: 550; padding: 0 4px; }
+.fg > * + * { margin-top: 10px; }
+.fmore > * + * { margin-top: 12px; }
+.frows > * + * { margin-top: 8px; }
+.fsec .frows > .list { border: 0; border-radius: 0; background: none; overflow: visible; }
+.frow { padding: 10px 0; border-top: 1px solid var(--line); }
+.frow:first-child { border-top: 0; padding-top: 0; }
+.frow > details { margin-top: 2px; }
+.frh { display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap; }
+.frh .main { flex: 1 1 180px; min-width: 0; }
+.fri { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; max-width: 100%; }
+.fin { min-width: 0; max-width: 100%; }
+.fin .seg { max-width: 100%; overflow-x: auto; }
+.fin .seg button { white-space: nowrap; }
+.fin input[type=time] { width: auto; }
+.frb { padding: 6px 0 4px; }
+.frb > * + * { margin-top: 12px; }
+.fwiz { border-left: 3px solid var(--accent); }
+.fwiz > * + * { margin-top: 10px; }
+.fbar { position: sticky; bottom: calc(var(--nav-h) + 6px); z-index: 5; display: flex; gap: 8px; align-items: flex-start; flex-wrap: wrap; background: var(--raised); border: 1px solid var(--ring); border-radius: var(--radius); padding: 8px 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); }
+.fbar .grow { flex: 1 1 160px; max-height: 40dvh; overflow: auto; }
+.fwide { color: var(--ink); font-size: 13px; margin-top: 4px; }
+.fwide[hidden], .fbar details[hidden] { display: none; }
 
 /* ───────── drawer: native modal <dialog>, a side sheet ───────── */
 #drawer { margin: 0 0 0 auto; inset: 0 0 0 auto; padding: 0; border: 0; width: min(780px, 100vw); max-width: 100vw; height: 100dvh; max-height: 100dvh;

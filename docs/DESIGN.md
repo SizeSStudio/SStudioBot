@@ -1,7 +1,11 @@
-# SStudioBot 设计文档（v0.19 草案）
+# SStudioBot 设计文档（v0.20 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
+
+### v0.20 变更（派发提案，2026-11-18，未启用）
+- **新增 §19**：sbot 把 worker 派到别的机器的方案，比较了 ssh + 现有 SDK worker、T3 Code、Herdr，建议第一步用 ssh，只派一台机器、只读。
+- **只是提案**：没有代码、配置或机器改动。它会放宽 §1.3 和 §7.6，所有开关默认关，等我在 §19.5 拍板；在那之前"不做远程 worker"仍然有效。
 
 ### v0.19 变更（主线与每日整理，2026-11-18）
 - **事分两层（§15.3）**：我跟的是**主线**，主线下面可以挂**子事**，只有一层。控制台、早报、提醒默认只看主线，子事折叠，事件和数字沿子事汇总上来。真重复的事才**合并**。挂、拆、合并都记账，都能撤销。
@@ -228,7 +232,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 
 **一台机器**：核心和 worker 都放在同一台 VPS（实例是 4 核 / 6.7G 内存，已装好 tailscale）。
 
-不做远程 worker。核心和 worker 分放两台机器，就得做一套远程机制：闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。这些换来的只是更好的国内网络，不值得。`Runner` 里只留一个"worker 跑在哪台机器"的配置项。
+不做远程 worker。核心和 worker 分放两台机器，就得做一套远程机制：闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。这些换来的只是更好的国内网络，不值得。`Runner` 里只留一个"worker 跑在哪台机器"的配置项。（§19 是重新评估这一条的提案，未启用；我确认之前这里不变。）
 
 **怎么轻**
 - **对话角色不起子进程**：用 pi 时在核心进程里跑。实测一个 Claude Code CLI 子进程常驻 230～320 MB，每条消息都起一个会很重。
@@ -1166,7 +1170,7 @@ v0.6 的 `events` 表合并进了 `inbox`（推送群消息进 `messages`），`
 | 玄学的位置 | 佛学是 agent 的立场；八字、紫微、六爻是镜头，当作一种看法，结合生活来感受，不做对错打分 |
 | 复盘的方式 | 事的层面给事实初稿；心的层面先问再给，引导我补充信息和看法。我自己说出来的分量最重 |
 | 镜头来源 | 紫微用现有 skill；六爻以 zhouyi-qigua.pages.dev 为准，单独开 thread 做 skill；八字后续再定 |
-| 部署 | 单机，不做远程 worker；数据全在 4T 数据盘；worker 进程同时 ≤ 2，各限 1G；重构建外包给 Mac 或 CI（§1.3） |
+| 部署 | 单机，不做远程 worker（§19 是未启用的提案）；数据全在 4T 数据盘；worker 进程同时 ≤ 2，各限 1G；重构建外包给 Mac 或 CI（§1.3） |
 | 知识库 | llm-wiki 三层：raw 放 rustfs，wiki 就是 agent-home，schema 在 AGENTS.md；检索用 FTS5，不上向量库（§8.5） |
 | 预算超限的状态码 | 403，不用 429（429 会让 CLI 重试约 3 分钟，§5.2） |
 
@@ -1914,6 +1918,210 @@ sources:
 
 ---
 
+## 19. 派发：把 worker 派到别的机器（v0.20，提案，未启用）
+
+> **状态**：只是设计。仓库里没有对应代码，也没有改任何机器。这一章会放宽 §1.3（单机）和 §7.6（worker 的能力范围），属于权限改动，不由 agent 决定。下面每个开关默认都是关的，等我在 §19.5 拍板。
+
+sbot 是调度方：它决定派什么、派到哪，收结果，走审批，记预算。目标机器只负责把 worker 跑起来。
+
+### 19.1 结论
+
+**第一阶段用 ssh + 现有的 Agent SDK worker，只派一台登记过的机器，只读。** T3 Code 留作以后的可选适配器，现在不接。Herdr 不做派发底座。
+
+理由很简单：SDK 的 hook 和进程内 MCP 都走 stdio，stdio 过 ssh 不变。所以闸门、`progress` / `ask_owner` / `submit_report`、取消、resume、按 run 签发的预算令牌都留在核心，任务状态机几乎不用动，也不增加新的外部依赖。T3 Code 和 Herdr 各有长处，但都把这些东西搬到了 sbot 够不着的地方。
+
+| | 基线：ssh + SDK | T3 Code（v0.1.10） | Herdr（v0.9.5） |
+|---|---|---|---|
+| 结果回到 sbot | `submit_report` 结构化，实测 | `t3 thread start --wait --json` 给状态和一段自由文本，实测 | 只能读屏幕；批准后 `wait` 返回 done 时，屏幕上还没有最终文本（实测一次） |
+| 提问回到 sbot | `ask_owner` → `needs_input` → 新连接 resume，实测 | 退出码 2 表示等回答，实测；能答问题，但不能代批权限请求（读文档） | 屏幕识别出 blocked；批准靠发按键，实测 |
+| sbot 的闸门 | PreToolUse 在核心执行，实测 | 无法按 run 注入 hook 和 `mcp__sbot__*`（读适配器代码的推断）；默认 `full-access`，实测无审批写了文件 | 交互式 Claude 带全套工具，没有 sbot 的 hook，实测 |
+| 无人值守 | ssh 密钥，无需交互 | `/mcp` 只支持 OAuth 授权码 + PKCE，要人批准登录；`t3 auth session issue` 的 bearer 访问 `/mcp` 得到 401，实测 | 本地 socket；跨机靠 SSH profile，配置时可能要交互安装（读文档） |
+| 按 run 计量 | 每 run 令牌经隧道进 LLM 代理，实测 | Claude 的 base URL 配在 provider 实例上，不是按 run；MCP 合约里没有 usage 字段（读文档和代码） | `agent get` 没有 usage 字段，实测 |
+| 跨机 | ssh | 每台目标机都要跑 T3 server；linked environments 是 beta，两端都要打开，link 30 天过期（读文档） | ssh profile + `--machine`（读文档） |
+| 稳定性 | 依赖 OpenSSH 和已经在用的 SDK | 发版很快，每天多个 nightly，open issue 很多 | Claude 状态靠屏幕规则识别，规则来自远程更新；Claude 改 UI 就可能失效。有几次状态不准（各约一次）：很快结束的回合报 `agent_prompt_stalled`，活其实做完了 |
+| 一个人维护 | 要写并维护一个目标机包装脚本 | 维护一层适配，并跟上它的接口变化 | 维护屏幕解析的兜底逻辑 |
+
+T3 Code 的 MCP 入口可以选 `runtimeMode`，但它的合约说明窄模式是"停下等人批准"，不是只读。没有人值守时这等于卡住，所以也解决不了闸门问题。
+
+### 19.2 怎么跑
+
+```
+核心（闸门 hook、mcp__sbot__*、任务状态机、LLM 代理 127.0.0.1:7811）
+  │  query() 的 spawnClaudeCodeProcess 换成 ssh
+  │  stdio：SDK 协议；-R：目标机回环端口 → 核心的 LLM 代理
+  ▼
+目标机：专用低权限账号 → authorized_keys 的 forced command → 包装脚本 → 锁定版本的 Claude CLI
+```
+
+- **接入点**：`tasks.ts` 的 `options()` 里，`spawnClaudeCodeProcess` 现在是 `sudo -n worker-exec`。抽一个 `WorkerTarget` 接口，`local` 是现状，`ssh` 是新增，以后的适配器也从这里进。没有 `target` 的任务走的代码路径不变。
+- **ssh 参数**：`-T -F none`，指定私钥和固定的 known_hosts，`BatchMode=yes`、`IdentitiesOnly=yes`、`StrictHostKeyChecking=yes`、`ExitOnForwardFailure=yes`、`ServerAliveInterval=5`、`ServerAliveCountMax=3`，`-R 127.0.0.1:<端口>:127.0.0.1:7811`。
+- **启动信息走 stdin**：核心在 SDK 写入之前先写一个头（令牌、任务 id、隧道端口、base64 的 CLI 参数）。令牌不进任何进程的 argv。
+- **包装脚本**只接受这个头，忽略 `SSH_ORIGINAL_COMMAND`。任务 id、令牌、端口都校验格式；CLI 参数**默认拒绝**，只放行列出来的 flag，工具只能是 `Read`、`Glob`、`Grep` 和三个 `mcp__sbot__*`，权限模式只能是 `dontAsk`，`--mcp-config` 里不能有 `command` 或 `url`，`--settings` 必须等于固定值。CLI 用 `env -i` 启动，只给必要的环境变量。
+
+§1.3 当时反对远程 worker 的四条，这个方案的回答：
+
+| §1.3 的顾虑 | 回答 |
+|---|---|
+| 闸门回调要跨机器 | 不用另做，hook 走 SDK 的 stdio，实测仍在核心执行 |
+| 要打隧道访问 LLM 代理 | 一条 `ssh -R`，只开目标机回环端口，受 `permitlisten` 限制 |
+| 掉线要续跑 | 不做在线续连。断了就结束这个 run，下一个 run 用新连接 resume 同一个 session |
+| 代码副本要同步 | 第一阶段不同步，只读目标机上已有的目录；写任务放到 P2 再设计 |
+
+### 19.3 实验
+
+**做到了什么程度**：实验都在一台 Mac 上。ssh 连的是本机回环上临时起的同用户 sshd，模型是假的 Messages 端点。**没有**真实的第二台机器、真实网络、Linux 目标，没有花真实额度；专用低权限账号、sshd 的 `ClientAlive*`、经 ssh 的 `git_push` / `defer` 都没测。实验代码留在本地临时目录，不进仓库。这些要在 P0 补上。
+
+| 场景 | 结果 |
+|---|---|
+| 完整 run | 允许目录内的 `Read` / `Grep` 成功；`/etc/hosts` 被核心的 PreToolUse 拒绝；模型请求 `Bash` 不生效；模型看到的工具只有 3 个内置 + 3 个 `mcp__sbot__*` |
+| 结果和计量 | `progress`、`submit_report` 回到核心，usage 经隧道记账 |
+| 提问 | `ask_owner` → run 结束 → 新 ssh 连接 resume 同一 session，拿到回答后交报告 |
+| 令牌 | 不出现在 ssh、包装脚本、CLI 的 argv 里 |
+| 取消 | 3.9 秒后远端 CLI 消失 |
+| ssh 被 `kill -9` | 5.9 秒后远端 CLI 消失 |
+| 网络分区（SIGSTOP ssh） | 旧会话占着端口，同端口重派失败；换端口范围内的下一个可以重派，旧 CLI 被替换。没有重派时，远端时限兜底（设 6 秒，5.9 秒结束） |
+| 预算用完 | 代理的 403 经隧道立刻失败（235ms） |
+| 只持派发密钥越权 | 普通命令被拒；`--dangerously-skip-permissions`、`--tools=Bash`、`--permission-mode=bypassPermissions`、带命令的 `--mcp-config`、带 hooks 的 `--settings`、`--add-dir` 全被拒；坏端口、坏任务 id 被拒；未登记端口的 `-R` 和 `-L` 被挡 |
+
+实现时要记住的几个坑，都是实验里踩到的：
+
+- **ssh 断了，正在等模型的 CLI 不会自己退出。** 包装脚本要有一个 stdin 泵，发现 EOF 后先等几秒，再 TERM，再 KILL。
+- **包装脚本的后台子进程必须脱离 stdio。** 看门狗的 `sleep` 只要还拿着 stdout，会话就不结束，ssh 留成孤儿并占住转发端口。
+- **给 CLI 的 stdin 用管道（进程替换），不用 FIFO。** FIFO 下 EOF 后 CLI 不退出；管道下 12ms 正常退出。
+- **同一任务只留一个 CLI。** 新 run 启动时先结束 `cli.pid` 指向的旧进程，隧道端口从一个小范围里挑。
+- **预算耗尽时 SDK 的 result subtype 仍是 `success`**（`terminal_reason` 是 `api_error`）。判断要看代理账本 `tokenStatus(runId)`，不看 SDK。
+
+### 19.4 安全模型
+
+**真正的边界在目标机上。** host worker 有完整 sudo（§7.6），核心机器上的派发私钥挡不住它，核心的 hook 也只在正常路径上生效。所以按"派发私钥已经泄露"来设计。
+
+- **密钥泄露的最坏情况**：攻击者把隧道指向自己的假模型，让 CLI 读**目标账号能读的一切**，再把内容带走。它拿不到 shell，也用不了 `Bash` 或写工具（包装脚本实测挡住了），但只读这一条足够严重。所以目标账号能读什么，要靠操作系统权限来限定，不能靠 PreToolUse。核心的路径检查是第二层，它也解析不了目标机上的符号链接。
+- **令牌**：按 run 签发，有预算和时限。LLM 代理只听核心的回环地址，隧道断了，令牌在目标机上就用不了。同账号的其他进程可能看得到 CLI 的环境变量（推论，未测），所以这个账号不跑别的东西。
+- **内容的去向**：读到的内容会进模型，报告会进飞书工作台。`self/`、命盘、出生信息只给我看，绝不能在可读范围内。
+- **文件内容也可能是注入**：只读任务没有网络工具和写工具，出口只剩报告和发给模型的内容。报告仍按不可信内容看待，不让它触发新的派发。
+
+**登记**（`config/machines.yaml`，文件不存在或为空 = 派发关闭）。和其他配置一样 agent 不能写，属于 §16 的 D 级，agent 不提改动。核心发现登记表有变化，管理群醒目通知。host worker 靠 sudo 改了这个文件也进不了没装公钥的机器，这是目标机做边界的另一个好处。
+
+```yaml
+machines:
+  - id: devbox            # 给人和 agent 看的代号，不写真实主机名
+    enabled: false
+    address: <地址>
+    user: <专用账号>
+    host_key: "SHA256:<指纹>"   # 固定指纹，不用 accept-new
+    key: devbox           # 私钥的文件名，不是内容
+    profile: read-only    # 第一阶段只有这一档
+    roots: [<绝对路径>]    # 我逐个列，不接受整个 home
+    tunnel_ports: [<端口>, <端口>, <端口>]
+    max_concurrent: 1
+    max_seconds: 1800
+```
+
+目标机上有一份 root 所有的本地策略（工具档、端口、时限），和 `machines.yaml` 不一致时以目标机为准。
+
+**凭据**：每台机器一把独立的 ed25519 派发密钥，放在 `/srv/sbot/dispatch-keys/`（`sbot`，0600，不进配置仓库）。由安装脚本在服务器上生成，只输出公钥。核心只把路径传给 ssh，从不读内容、不打日志、不进 agent 的上下文或环境变量。目标机的 `authorized_keys`：
+
+```
+restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1:9",command="<包装脚本>" <公钥>
+```
+
+`permitopen` 指向一个不用的端口，是为了挡住 `-L`。
+
+**和 `ssh_hosts` 的关系**：`worker.yaml` 的 `ssh_hosts` 让 host worker 能完整登录机器（§4.2），比本方案宽得多。**同一台机器如果还留在 `ssh_hosts` 里，这里的限制就没有意义。** 派发密钥也不能给 `ssh_hosts` 共用。
+
+**吊销**，从快到慢：
+
+1. 目标机上删掉 `authorized_keys` 那一行。这一步立刻生效，不依赖核心，也是密钥泄露时唯一可靠的动作。
+2. 结束目标机上该账号的进程，停用账号。
+3. `machines.yaml` 里 `enabled: false` 或删除，核心把这台机器上进行中的任务转为 `interrupted`。
+4. 删除核心上的私钥；要恢复就生成新的一把，不复用旧的。
+5. 看一遍这台机器的任务和 usage。run 令牌不用单独处理，它们按 run 过期，隧道断了也用不了。
+
+### 19.5 等我拍板的选项
+
+下面都不预设打开。"默认"是我不回答时系统的行为，"建议"只是建议。
+
+| # | 问题 | 选项 | 默认 | 建议 |
+|---|---|---|---|---|
+| 1 | 是否修改 §1.3，允许做 P0 / P1 | 不做 / 只做 P0 探针 / 做到 P1 | 不做 | 先只做 P0，看结果再定 P1 |
+| 2 | 第一台机器 | 不放私人资料的开发机或服务器 / 我的 Mac | 没有 | 开发机。Mac 上私人内容最多，放到最后 |
+| 3 | 派发前审批 | 每次都审批 / 按"机器 + 目录"批一次 / 不审批 | 每次都审批 | 每次都审批，卡片上不放"以后这类自动" |
+| 4 | 读取范围 | 我逐个列目录，始终排除 `.ssh`、钥匙串、`~/.config/sbot`、`self/`、命盘 / 放宽 | 空（什么都读不了） | 逐个列，用专用账号的文件权限落实 |
+| 5 | 目标机内容能否进模型和飞书 | 报告进工作台 / 工作台只发摘要，全文只在控制台 / 不允许 | 不允许 | 按机器内容定；有任何私人内容就只发摘要 |
+| 6 | 操作系统层加固 | 只靠专用账号 / 再套只读沙箱（macOS `sandbox-exec`、Linux bubblewrap） | 专用账号 | P0 测完账号的实际可读范围再定 |
+| 7 | 目标机上的任务目录（含会话记录）保留多久 | 7 天 / 任务结束即删（之后不能再 resume）/ 更长 | 7 天 | 7 天 |
+| 8 | 这台机器是否从 `ssh_hosts` 移除 | 移除 / 保留并接受风险 | 不派发 | 移除 |
+| 9 | 控制台能否改 `machines.yaml` | 不能，只在服务器上改 / 能 | 不能 | 不能 |
+
+只有 owner 会话能发起：`task_start` 现在就是 `for: ["owner"]`。信息源不会升级给主 agent（§4.3）的规则不变。
+
+### 19.6 预算和计费
+
+不改预算机制，只把远端接进现有计量：
+
+- 每个远端 run 照常 `issueToken({ runId, tier, requester, budgetOutput, ttlMs })`，请求经隧道进 LLM 代理，记进 `usage` 表，超限返回 403。模型名照用 `sbot-<tier>` 别名。
+- 按机器看花费不用改 `usage`：`usage` → run → task → `tasks.target` 连表即可。
+- 目标机的 CLI 不配任何模型凭据。隧道不通就调不了模型，不会悄悄花到别的账户上。
+- **任何不经过 LLM 代理的花费，sbot 都看不到**，所以这是以后接适配器的硬条件。T3 Code 配一个专用 provider 实例指向代理，最多得到实例级的总量，做不到按任务预算。Herdr 里的交互式 Claude 用的是目标机自己的登录，完全在账外。
+
+### 19.7 和任务模型对上
+
+不加新状态。
+
+| 现有机制 | 远端怎么走 |
+|---|---|
+| `task_start` | 加可选的 `target`；登记表为空时这个参数不出现。校验机器存在、已启用。任务创建后 `target` 不再改变，因为 session 在那台机器上 |
+| 派发审批 | 任务先进 `waiting_approval`，走 §7.2 的提交式卡片（机器代号、目录、目标、档位、预算、时限），不占进程。批准后 `queued`，拒绝或过期则 `cancelled` |
+| 工作台话题 | 照旧，开头多写一行机器代号。`progress` 和报告走现有路径 |
+| `ask_owner` / `task_reply` | `needs_input`，我在话题里回复后 `replyTask` → `queued` → 新连接 resume（实测） |
+| 取消 | `cancelTask` → `engine.abort` → ssh 结束 → 目标机清理（实测 3.9 秒） |
+| 超时、看门狗 | 核心的 `timeout` 和 `WATCHDOG_MS` 不变；目标机的 `max_seconds` 兜住核心失联的情况 |
+| 连不上 | 还没启动就失败：`interrupted`，话题里说明。运行中断开：新的结束原因 `transport_lost`，重排队有限次，之后 `interrupted` |
+| 核心重启 | `recover()` 照旧重排队；ssh 随核心退出，目标机 CLI 由 stdin EOF 清理，新 run 接着 resume |
+| 并发 | P1 共用 `MAX_WORKERS`，再加每台机器的 `max_concurrent`。`LANE_OPEN_MAX`、`GLOBAL_OPEN_MAX` 不变 |
+| 预算耗尽 | `tokenStatus` 判定，和本地一样 |
+
+只读任务有几处和本地不同：没有写工具，所以不维护 `progress.md`，续跑只靠 session；不同步 `config/skills`；`workerRules` 要有只读版本，并写明可读目录。`tasks` 增加 `target`（NULL = 本机），`workdir`、`session_ref` 对远端任务指目标机上的路径。
+
+### 19.8 给客户端留的接口
+
+新客户端的「任务」视图不需要知道 ssh。任务接口多返回这些字段，本地任务也有，只是 `target` 为空：
+
+```jsonc
+{
+  "id": "…", "status": "running",
+  "target": { "id": "devbox", "label": "开发机", "reachable": true },   // 不给地址、账号、指纹
+  "transport": "ssh",                                                  // local | ssh | 以后的适配器
+  "question": null, "report": null,
+  "usage": { "input": 0, "output": 0, "budget": 150000 },
+  "stop_reason": null                                                  // 比如 transport_lost
+}
+```
+
+### 19.9 分阶段
+
+每一步都单独由我确认，上一步没过不进下一步。
+
+- **P0 真实两机探针**（不接核心）：一台真实目标机、小额真实模型。补 §19.3 没测的：真实网络下的断线和恢复、Linux 和 macOS、专用账号实际能读到什么（含符号链接和 macOS 的隐私保护）、同账号能否看到环境变量、`ClientAlive*`。脚本放 `probes/`，可重复执行。
+- **P1 一台机器、只读**：`machines.yaml`、`WorkerTarget`、`tasks.target`、派发审批卡片、结果回工作台。包装脚本和安装脚本放 `deploy/`，合并后手动安装。通过标准：跑完 §19.3 的全部场景，吊销演练成功，任务和 usage 账目对得上。
+- **P2 写任务**：目标机 worktree、代码怎么回到核心、`git_push` 经 ssh 的 `defer`。这是又一次放宽，要重新设计和确认。
+- **P3 多台机器和并发**：按机器排队，机器状态进控制台。
+- **P4 可选的 T3 适配器**：用在非 Claude 模型，或者我想在 T3 里旁观的时候。前提是有无人值守的认证、按 run 的计量、能注入闸门或有等价的只读模式。Herdr 最多用来人工旁观。
+
+### 19.10 需要我动手的清单
+
+agent 不做这些，P0 / P1 开始前由我来：
+
+1. 回答 §19.5，选定第一台机器。
+2. 在目标机建专用低权限账号，不给 sudo，只给要读的目录授权。
+3. 安装锁定版本的 Claude CLI 和包装脚本（root 所有，账号不可写），写好目标机的本地策略。
+4. 在服务器上生成这台机器专用的派发密钥，把公钥按 §19.4 的格式加进 `authorized_keys`。
+5. 目标机 sshd 设置 `ClientAliveInterval` / `ClientAliveCountMax`；确认 `AllowTcpForwarding` 允许远程转发。
+6. 记下目标机的 host key 指纹，写进 `machines.yaml`，最后再把 `enabled` 改成 `true`。
+7. 如果这台机器在 `ssh_hosts` 里，按选项 8 处理。
+
+---
+
 ## 附：参考
 - 六爻：zhouyi-qigua.pages.dev（之后单独做 skill 时以它为准）
 - **《Building always-on agents》**（claude.com，William Hu）：五件套（收件箱、定时器、记忆、权限、发件箱）；run 周期；定时器只往收件箱里投事件；"只存查不回来的东西"；凭证代理；defer 加卡片审批；先安静、再争取注意力。§1、§5.2、§7.2、§8、§9 都按这篇文章调整过。
@@ -1921,7 +2129,8 @@ sources:
 - **pi**（badlogic/pi-mono → earendil-works/pi）：极简 agent harness，内置只有 read / write / edit / bash，没有 MCP 和权限系统；`createAgentSession` 可以嵌进 Node 进程；扩展事件 `tool_call`（可拦截）、`context`、`before_agent_start`、`session_before_compact`；会话是带分支的 JSONL；支持 Agent Skills；多厂商。§4.0 的对话角色候选。
 - **LayerFS**（Ephemeral-AI-Lab/layerfs）：候选思路是 worker 每次写操作一个 checkpoint（影子分支），以及 dream 在分支上整理再合并；还没写进正文，也不引入依赖。
 - OpenClaw / NanoClaw / nanobot / Hermes Agent：见 v0.6 附录。
-- T3 Code：thread / delegate / task notification / queue 的交互模型。
+- T3 Code：thread / delegate / task notification / queue 的交互模型。§19 评估过用它派发 worker（v0.1.10）。
+- **Herdr**（herdrdev/herdr，v0.9.5）：终端里的 agent 多路复用，§19 评估过，不做派发底座。
 - **graphify**：把代码和资料建成知识图谱。借了这几条：边分 EXTRACTED / INFERRED，路径取最弱一跳；只用代码构建；邻居、最短路径、解释三种查询；社区自动分、不靠模型命名；名字有歧义就拒绝并列候选。§18 按它设计，没有引入依赖。
 - **HappyClaw**（riba2534/happyclaw）：技术栈和场景跟我们最接近，不 fork，只借设计：
   - `src/group-queue.ts`：会话串行和合批

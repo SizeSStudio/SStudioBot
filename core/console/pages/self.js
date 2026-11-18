@@ -264,8 +264,8 @@ async function setSecret(form, btn) {
 
 // ───────── 配置 ─────────
 // every other file describes itself in its form (GET /config); self.yaml has its own page
-const SELF_FILE = { title: "出生信息与节律", summary: "私人内容，在「生活 › 出生信息」改" };
-const SOURCE = { console: "控制台", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
+const SELF_FILE = { title: "出生信息与节律", summary: "私人内容：在「生活 › 出生信息」改，或在私聊里说" };
+const SOURCE = { console: "控制台", chat: "主对话", upgrade: "升级", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
 PAGES.config = async (body, file) => {
   if (file === "self.yaml") { location.hash = "#/life/birth"; return; }
   if (file) {

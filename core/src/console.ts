@@ -12,22 +12,23 @@
 // says whether a name is set.
 
 import http from "node:http";
-import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, writeFileSync, renameSync, unlinkSync, statSync, mkdirSync, chmodSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, mkdirSync, chmodSync } from "node:fs";
 import { join, dirname, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { all, one, run, kvGet } from "./db.ts";
 import { P, feishuConf, jobsConf, models, quietConf, ownerName, log, TZ, writeSecret, reposConf, type JobSpec } from "./config.ts";
 import { webConf, validSession, handleAuthPaths, WEB_LOGIN, WEB_SECRETS } from "./console-web.ts";
-import { git, gitRead, commitIfDirty, readPage, localStamp, editConfig } from "./memory.ts";
+import { git, gitRead, readPage, localStamp, editConfig } from "./memory.ts";
 import { sendJson, serveAsset, warmAssets } from "./console-http.ts";
 import { searchWiki } from "./wiki.ts";
 import { rollback } from "./dream.ts";
-import { sendText } from "./cards.ts";
 import { activationOf, userIdentityReady } from "./observer.ts";
 import { proactiveToday } from "./digest.ts";
-import { SCHEMAS, CONFIG_FILES, widening } from "./schemas.ts";
+import { CONFIG_FILES, widening } from "./schemas.ts";
+import { ConfigError, configFile as readConfigFile, notifyAdmin, saveConfigText } from "./config-write.ts";
+import { profileView, rollbackProfile, saveProfile } from "./self-profile.ts";
+import { sendText } from "./cards.ts";
 import { PLUGINS, runSourceNow, sourcesView } from "./sources.ts";
 import { evaluateForm, formSpec, formWidening, unknownFields, type FormResult } from "./config-form.ts";
 import { nextDue } from "./timers.ts";
@@ -49,7 +50,6 @@ export interface ConsoleDeps { feishu?: FeishuAdapter; dispatcher?: Dispatcher; 
 import { HttpError, bad } from "./console-data.ts";
 import * as V from "./console-data.ts";
 import * as G from "./graph.ts";
-const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 const excerpt = (s: unknown, n = 160) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
 const pj = (s: unknown) => { try { return JSON.parse(String(s ?? "null")); } catch { return null; } };
 
@@ -61,12 +61,6 @@ function owners(): string[] {
   const f = join(P.config, "console.yaml");
   if (!existsSync(f)) return [];
   try { return (parseYaml(readFileSync(f, "utf8"))?.owners ?? []).map((s: string) => String(s).toLowerCase()); } catch { return []; }
-}
-
-async function notifyAdmin(text: string) {
-  const admin = feishuConf().admin_chat;
-  if (!admin) return;
-  try { await sendText(admin, text); } catch (e: any) { log("console", "admin notice failed", { err: String(e?.message ?? e).slice(0, 200) }); }
 }
 
 // ───────────── status ─────────────
@@ -245,45 +239,19 @@ async function setGroup(chatId: string, act: string) {
 // ───────────── config files ─────────────
 
 function configFile(file: string) {
-  if (!CONFIG_FILES.includes(file)) throw bad("unknown config file", 404);
-  const f = join(P.config, file);
-  // a file he hasn't made yet opens on its commented template (e.g. sources.yaml), so he starts from the examples
-  const seed = join(STATIC, "..", "seed", "config", file);
-  const text = existsSync(f) ? readFileSync(f, "utf8") : file !== "people.yaml" && file !== "models.yaml" && existsSync(seed) ? readFileSync(seed, "utf8") : "";
-  let history: { sha: string; at: number; subject: string }[] = [];
-  try {
-    history = gitRead(P.config, "log", "-n", "12", "--format=%h\x1f%at\x1f%s", "--", file).trim().split("\n").filter(Boolean)
-      .map((l) => { const [s, at, subject] = l.split("\x1f"); return { sha: s, at: Number(at) * 1000, subject }; });
-  } catch { /* new file */ }
-  return { file, text, hash: sha(text), exists: existsSync(f), history };
+  try { return readConfigFile(file); } catch (e) { throw httpErr(e); }
 }
 
 async function saveConfig(file: string, text: string, hash: string) {
-  const cur = configFile(file);
-  if (cur.hash !== hash) throw bad("这个文件在你打开之后被改过了（卡片、命令或别处）。刷新后再改。", 409);
-  if (text === cur.text) return { ...cur, changed: false };
-  if (text.length > 200_000) throw bad("too large");
-  let parsed: unknown;
-  try { parsed = parseYaml(text); } catch (e: any) { throw bad(`YAML 写错了：${String(e?.message ?? e).split("\n")[0]}`); }
-  const schema = SCHEMAS[file];
-  const res = schema.safeParse(parsed ?? (file === "jobs.yaml" || file === "repos.yaml" ? null : {}));
-  if (!res.success) throw bad("不符合格式：\n" + res.error.issues.slice(0, 8).map((i: any) => `- ${i.path.join(".") || "(根)"}：${i.message}`).join("\n"));
-  if (file === "console.yaml" && !(parsed as any).owners.map((s: string) => s.toLowerCase()).some((o: string) => owners().includes(o)))
-    throw bad("不能把自己移出 owners（那样就再也进不来了）");
-  const wide = widening(file, cur.text ? parseYaml(cur.text) : {}, parsed);
-  writeFileSync(join(P.config, file), text);
-  commitIfDirty(P.config, `${file}: edit (via console)`);
-  let diff = "";
-  try { diff = git(P.config, "show", "--format=", "--unified=0", "--no-color", "HEAD", "--", file).split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).join("\n"); } catch { /* */ }
-  run("INSERT INTO config_changes(ts, file, diff, source) VALUES(?,?,?,?)", Date.now(), file, diff.slice(0, 4000), "console");
-  log("console", "config saved", { file, lines: diff.split("\n").length });
-  const lines = diff.split("\n").slice(0, 24).map((l) => l.slice(0, 140));
-  // §15.9: self.yaml holds birth data; the admin group (Feishu) only hears that it changed
-  void notifyAdmin(file === "self.yaml" ? `⚙️ **控制台改了 self.yaml**（${diff.split("\n").length} 行；私人内容，不在飞书里显示，去控制台看历史）`
-    : `⚙️ **控制台改了 ${file}**\n\`\`\`\n${lines.join("\n")}${diff.split("\n").length > 24 ? "\n…" : ""}\n\`\`\``)
-    .then(() => wide.length ? notifyAdmin(`⚠️ **放宽了限制**（控制台，${file}）\n${wide.map((w) => `- ${w}`).join("\n")}`) : undefined);
-  return { ...configFile(file), changed: true, widened: wide };
+  try {
+    return saveConfigText(file, text, hash, { source: "console", check: (parsed) => {
+      if (file === "console.yaml" && !parsed.owners.map((s: string) => s.toLowerCase()).some((o: string) => owners().includes(o)))
+        throw new ConfigError("不能把自己移出 owners（那样就再也进不来了）");
+    } });
+  } catch (e) { throw httpErr(e); }
 }
+/** config-write and self-profile know nothing about HTTP; their refusals become the same 4xx the console always gave */
+const httpErr = (e: unknown) => e instanceof ConfigError ? bad(e.message, e.status) : e;
 
 // ───────── config forms (§10.6) ─────────
 // A form submission becomes new file text (config-form.ts) and goes through saveConfig above like any other edit.
@@ -653,6 +621,17 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
       if (p === "/life/outlooks") return json(200, V.outlooks());
       if (p === "/life/self") return json(200, V.selfItems());
       if ((m = /^\/life\/self\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.markSelf(Number(m[1]), String(b.status), b.note ? String(b.note) : undefined)); }
+      // §15.9 the birth form: structured fields, written through the same path as the YAML editor
+      if (p === "/life/birth") {
+        try {
+          if (method === "GET") return json(200, profileView());
+          if (method === "PUT") { const b = await body(req); return json(200, saveProfile(b.patch ?? {}, { hash: String(b.hash ?? ""), source: "console" })); }
+        } catch (e) { throw httpErr(e); }
+      }
+      if (p === "/life/birth/rollback" && method === "POST") {
+        const b = await body(req);
+        try { return json(200, rollbackProfile(String(b.sha ?? ""), { hash: String(b.hash ?? ""), source: "console" })); } catch (e) { throw httpErr(e); }
+      }
       if (p === "/life/readings") return json(200, V.readings());
       if ((m = /^\/life\/reading\/(\d+)$/.exec(p))) return json(200, V.reading(Number(m[1])));
       if (p === "/life/reviews") return json(200, V.reviews());

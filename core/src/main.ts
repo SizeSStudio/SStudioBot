@@ -38,7 +38,8 @@ import { renderSelf } from "./life.ts";
 import { closeDueReviews, reviewDayText, reviewMonthText, reviewNotRun, reviewOpened, reviewWeekText } from "./reflect.ts";
 import { classifyUpstream } from "./retry.ts";
 import { postHealthCard } from "./health.ts";
-import { LensEngine, queueMonthReadings } from "./lens.ts";
+import { LensEngine, queueHorizonReadings } from "./lens.ts";
+import { addDefaultLensJobs } from "./lens-jobs.ts";
 import { installImproveHooks, runImprove, runImproveReview } from "./improve.ts";
 import { revision, announceRelease } from "./release.ts";
 import { Sources } from "./sources.ts";
@@ -53,6 +54,7 @@ ensureAgentHome(join(here, "..", "seed", "agent-home"));
 renderSelf();
 syncPages();
 if (rebuildIndex()) commitMemory("index");
+addDefaultLensJobs();
 
 const proxy = await startProxy();
 const runner = new PiRunner();
@@ -70,7 +72,7 @@ const observer = new Observer();
 const triage = new Triage(runner);
 const sources = new Sources();
 const scheduler = new Scheduler(() => dispatcher.kick(),
-  { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_month: async () => { queueMonthReadings(); },
+  { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_day: async () => { queueHorizonReadings("day"); }, lens_week: async () => { queueHorizonReadings("week"); }, lens_month: async () => { queueHorizonReadings("month"); },
     improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); },
     // the card still goes out on code's findings; a throw only asks for the model's part again later (§9.4)
     matter_review: async () => { const r = await runMatterReview(); if (r.modelError && classifyUpstream(r.modelError)) throw new Error(r.modelError); } },

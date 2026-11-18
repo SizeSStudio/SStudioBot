@@ -115,13 +115,13 @@ export function waitMinutes(chat: string, surface: string, action: string): numb
   return action === "escalate" ? Math.min(escalate, base) : base;
 }
 
-/** config/self.yaml (§15.9, §15.13): owner-only; month rhythm and the 送一程 thresholds */
+/** config/self.yaml (§15.9, §15.13): month rhythm and the 送一程 thresholds */
 export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
   return { month: s.month === "solar_term" ? "solar_term" : "gregorian", see_off_after: Number(s.see_off_after ?? 3), restore_after: Number(s.restore_after ?? 2) };
 };
 
-/** the lens part of self.yaml (M6). Only lens.ts reads this; it goes nowhere but a network-less lens run's task dir. */
+/** the lens part of self.yaml. Goes to a network-less lens run, the console's form, and self_profile in his own DM. */
 export const selfLensConf = (): { birth?: Record<string, any>; lenses: Record<string, { enabled?: boolean; profile?: Record<string, any> }> } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
   return { birth: s.birth, lenses: s.lenses ?? {} };

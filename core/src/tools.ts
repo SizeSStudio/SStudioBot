@@ -4,7 +4,7 @@
 // the owner's click is a new event. Worker L2 tools (git_push) are gated in tasks.ts with PreToolUse defer (§7.2B).
 
 import { z } from "zod";
-import { appendJournal, localStamp, readPage, type Principal } from "./memory.ts";
+import { appendJournal, cleanRel, localStamp, readPage, type Principal } from "./memory.ts";
 import { searchWiki } from "./wiki.ts";
 import { all, one, run, tx, kvGet, kvSet } from "./db.ts";
 import { PROXY_BASE, feishuConf, gateConf, log, ownerName } from "./config.ts";
@@ -19,7 +19,8 @@ import { queueMatterReview } from "./reflect.ts";
 import { attachMatters, createMainline, detachMatter, listOps, mergeMatters, undoOp } from "./matter-ops.ts";
 import { actOnReview, reviewQueue, undoReview } from "./matter-review.ts";
 import { personCard, resolveForTool, pathBetween, addRelation, REL_PRESETS } from "./graph.ts";
-import { LENSES, readingsQuery, requestReading, revisitReading } from "./lens.ts";
+import { CAST_METHODS, LENSES, readingsQuery, requestReading, revisitReading } from "./lens.ts";
+import { listSelf, profileView, readSelf, restoreSelf, rollbackProfile, saveProfile, selfHistory, writeSelf } from "./self-profile.ts";
 import { LEVELS, STATES, addMatterKeys, eventLine, eventsQuery, linkEvents, matterKeys, setEventLevel, setEventState, topicCandidates } from "./events.ts";
 
 export interface TurnContext { channel: "feishu"; chat_id: string; message_id?: string; thread_id?: string; in_thread?: boolean; surface: string }
@@ -28,6 +29,7 @@ export interface RunCtx {
   src: string;          // journal source tag, set by code (§8.3)
   token: string;        // this run's LLM proxy token (for tools that call a model, e.g. web_search)
   replies: number;      // reply() calls so far; the dispatcher only auto-sends the final text when this is 0
+  ownerTyped?: boolean; // every event in this run is a message he typed; timers, task notices and forwarded events are not
 }
 export type Level = "L0" | "L1" | "L2";
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {
@@ -48,6 +50,23 @@ export function queueReply(ctx: Pick<RunCtx, "runId" | "lane" | "turn">, text: s
     run("UPDATE runs SET side_effects = side_effects + 1 WHERE id=?", ctx.runId);
     return id;
   });
+}
+
+/** his own conversation, not a group: what is his can be shown here in full (§15.9) */
+export const isPrivateTurn = (ctx: Pick<RunCtx, "principal" | "turn">) => ctx.principal === "owner" && (ctx.turn.surface === "feishu:dm" || ctx.turn.surface === "console");
+/** private, and he asked in this very run. Other runs can carry outside text, which must not reach his birth data or pages. */
+const ownerDirect = (ctx: RunCtx) => isPrivateTurn(ctx) && ctx.ownerTyped === true;
+const NOT_DIRECT = "error: 这个工具只在他私聊里亲手发消息的这一轮能用（工作台、定时任务、审批、任务和系统转来的事件都不行，那些可能带着外部内容）。等他在私聊里说。";
+
+function profileText(lead = ""): string {
+  const v = profileView();
+  return lead + JSON.stringify({
+    ready: v.ready, issues: v.issues, birth: v.birth, chart_input: v.chart_input,
+    lenses: Object.fromEntries(Object.entries(v.lenses).map(([k, l]) => [k, { zh: l.zh, enabled: l.enabled, cast: l.cast, notes: l.notes,
+      methods: l.methods.map((m) => `${m.method}${m.runnable ? "" : "（缺生辰）"} ${m.version}`) }])),
+    routine_jobs: v.jobs, cast_methods: v.cast_methods,
+    history: v.history.slice(0, 8).map((h) => `${h.sha} ${localStamp(h.at).slice(0, 16)} ${h.subject}`),
+  }, null, 1);
 }
 
 export const TOOLS: ToolDef[] = [
@@ -74,8 +93,8 @@ export const TOOLS: ToolDef[] = [
     description: "Read one memory page by its path relative to the memory root, e.g. journal/2026-11-17.md or people/wife.md.",
     schema: z.object({ path: z.string().min(1) }),
     async exec({ path }, ctx) {
-      // §15.9: the full habit / rhythm files and charts never go into Feishu (a company system); single items via self_list
-      if (ctx.turn.channel === "feishu" && /^\/*self\/(habits\.md|rhythms\.md|charts\/)/.test(path)) return "这个文件不在飞书里整份读；用 self_list 看具体条目，只引用相关的一两条。";
+      // §15.9: whole files are his to read in his own DM; groups, and runs he didn't start, get single items via self_list
+      if (ctx.turn.channel === "feishu" && !ownerDirect(ctx) && /^self\/(habits\.md|rhythms\.md|charts\/)/.test(cleanRel(path))) return "这个文件只在他私聊里、他亲手问的那一轮整份读；这里用 self_list 看具体条目，只引用相关的一两条。";
       return readPage(path, ctx.principal);
     },
   }),
@@ -366,7 +385,7 @@ export const TOOLS: ToolDef[] = [
   }),
   def({
     name: "lens_reading", level: "L1", for: ["owner"],
-    description: `Ask a lens (镜头) for a view: runs in the background in a sealed sandbox (a few minutes); the result comes back into this conversation and is written into the 解读账本 before the fact. Lenses: ${Object.entries(LENSES).map(([k, d]) => `${k}=${d.zh}（${Object.entries(d.methods).map(([m, v]) => `${m}: ${v.zh}`).join("；")}）`).join(" · ")}. Use when he asks, or at 起局 when he wants a 卦 for the matter. One concrete question; one view per matter (渎则不告) unless the matter itself changed (changed_because). Never ask for birth data in Feishu: it lives in config/self.yaml, which only he edits in the console.`,
+    description: `Ask a lens (镜头) for a view: runs in the background in a sealed sandbox (a few minutes); the result comes back into this conversation and is written into the 解读账本 before the fact. Lenses: ${Object.entries(LENSES).map(([k, d]) => `${k}=${d.zh}（${Object.entries(d.methods).map(([m, v]) => `${m}: ${v.zh}`).join("；")}）`).join(" · ")}. Use when he asks, or at 起局 when he wants a 卦 for the matter. cast / zhanbu: one concrete question, one view per matter (渎则不告) unless the matter itself changed (changed_because). day / week / month need period (2026-12-03 / 2026-W49 / 2026-12) and need no birth data; jobs already write one per period, so check readings_query first. Methods that need birth data use what self_profile holds; in his DM ask him for what is missing.`,
     schema: z.object({
       lens: z.string(), method: z.string(), question: z.string().min(4).max(1000).describe("the concrete matter, in his words where possible"),
       matter_id: z.number().optional(), horizon: z.enum(["month", "week", "day"]).optional(), period: z.string().optional(),
@@ -380,9 +399,9 @@ export const TOOLS: ToolDef[] = [
   }),
   def({
     name: "readings_query", level: "L0", for: ["owner"],
-    description: "Look up the 解读账本: earlier lens views (as written at the time) with what he said when looking back. Filter by lens, period (2026-12 / 2026-W49 / 2026-12-03) or matter.",
-    schema: z.object({ lens: z.string().optional(), period: z.string().optional(), matter_id: z.number().optional(), limit: z.number().int().min(1).max(30).default(10) }),
-    async exec(a) { return readingsQuery({ lens: a.lens, period: a.period, matterId: a.matter_id, limit: a.limit }); },
+    description: "Look up the 解读账本: earlier lens views (as written at the time) with what he said when looking back. Filter by lens, period (2026-12 / 2026-W49 / 2026-12-03) or matter. full=true gives every view in full (his DM only; more than 3 results are otherwise shortened).",
+    schema: z.object({ lens: z.string().optional(), period: z.string().optional(), matter_id: z.number().optional(), limit: z.number().int().min(1).max(30).default(10), full: z.boolean().default(false) }),
+    async exec(a, ctx) { return readingsQuery({ lens: a.lens, period: a.period, matterId: a.matter_id, limit: a.limit, full: a.full && isPrivateTurn(ctx) }); },
   }),
   def({
     name: "reading_revisit", level: "L1", for: ["owner"],
@@ -428,6 +447,50 @@ export const TOOLS: ToolDef[] = [
     async exec(a, ctx) {
       if (!ctx.src.startsWith("owner@")) return "error: only in a conversation with the owner";
       return markSelfItem(a.id, a.status, a.note ? `${a.note}；他说：${a.owner_quote}` : `他说：${a.owner_quote}`);
+    },
+  }),
+  def({
+    name: "self_profile", level: "L1", for: ["owner"],
+    description: `Read or change his birth data and lens settings (config/self.yaml), in his DM, when he asks. get shows them. set changes only what you pass; a chart needs date, time, gender and longitude (a known city in place fills longitude and timezone in), and a refusal lists what is wrong or missing, so ask him for that. Changing them starts a new profile_version: earlier readings stay as written. rollback puts an earlier version back (sha from history). Every change is a git commit and is logged. lenses.<lens>.cast: ${Object.entries(CAST_METHODS).map(([k, v]) => `${k}=${v}`).join("，")}; "" clears it.`,
+    schema: z.object({
+      action: z.enum(["get", "set", "rollback"]),
+      birth: z.object({
+        date: z.string().optional().describe("1990-05-09, in the calendar named by `calendar`"), time: z.string().optional().describe("24h, 09:40"),
+        calendar: z.enum(["solar", "lunar"]).optional(), leap_month: z.boolean().optional(), gender: z.enum(["male", "female"]).optional(),
+        place: z.string().optional(), longitude: z.number().optional(), timezone: z.number().int().optional(),
+      }).optional(),
+      clear: z.array(z.enum(["place", "timezone", "leap_month", "calendar"])).default([]).describe("birth fields to remove"),
+      clear_birth: z.boolean().default(false).describe("remove the birth data altogether; only when he says so"),
+      lenses: z.record(z.string(), z.object({ enabled: z.boolean().optional(), cast: z.enum(["", ...Object.keys(CAST_METHODS)]).optional(), notes: z.string().max(500).optional() })).optional(),
+      sha: z.string().optional().describe("for rollback"),
+    }),
+    async exec(a, ctx) {
+      if (!ownerDirect(ctx)) return NOT_DIRECT;
+      if (a.action === "get") return profileText();
+      const note = (r: { changed: boolean; moved: string[] }) => r.changed ? `改好了，可以回滚。${r.moved.length ? `这些方法从现在起是新版本：${r.moved.join("、")}。以前的看法不动。` : ""}\n` : "没有变化。\n";
+      if (a.action === "rollback") {
+        if (!a.sha) return "error: rollback 要带 sha（get 里的 history）";
+        return profileText(note(rollbackProfile(a.sha, { source: "chat" })));
+      }
+      const birth: Record<string, unknown> | null | undefined = a.clear_birth ? null : a.birth || a.clear.length ? { ...a.birth, ...Object.fromEntries(a.clear.map((k) => [k, null])) } : undefined;
+      if (birth === undefined && !a.lenses) return "error: set 要带 birth、clear、clear_birth 或 lenses";
+      return profileText(note(saveProfile({ birth, lenses: a.lenses }, { source: "chat" })));
+    },
+  }),
+  def({
+    name: "self_page", level: "L1", for: ["owner"],
+    description: "His own pages under self/ (practice, notes, lens notes, charts, reviews…), in his DM, when he asks. list a directory; read a whole file in any text format (long ones in chunks, follow the offset hint) and show it to him as it is; write a .md page (replace or append); history; rollback to a sha from history. Every write is its own git commit and is logged. Refused because they would break something: habits.md / rhythms.md (generated, use self_mark), charts/ and outlooks/ (frozen), reviews/ (review_submit files them).",
+    schema: z.object({
+      action: z.enum(["list", "read", "write", "history", "rollback"]), path: z.string().default("self").describe("under self/, e.g. self/practice.md"),
+      text: z.string().max(100_000).optional(), mode: z.enum(["replace", "append"]).default("replace"), offset: z.number().int().min(0).default(0), sha: z.string().optional(),
+    }),
+    async exec(a, ctx) {
+      if (!ownerDirect(ctx)) return NOT_DIRECT;
+      if (a.action === "list") return listSelf(a.path);
+      if (a.action === "read") return readSelf(a.path, a.offset);
+      if (a.action === "history") return selfHistory(a.path);
+      if (a.action === "rollback") return a.sha ? restoreSelf(a.path, a.sha, "chat") : "error: rollback 要带 sha（history 里的）";
+      return a.text === undefined ? "error: write 要带 text" : writeSelf(a.path, a.text, a.mode, "chat");
     },
   }),
 

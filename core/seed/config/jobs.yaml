@@ -6,6 +6,9 @@
 #       dream        → nightly memory tidy (§8.3); dream_diff → posts last night's changes to the admin group
 #       matter_review → the daily look over matters (§15.14): one card of suggestions in the owner DM, nothing changes until he clicks.
 #                      limit (5 a day) · first_limit (12, the first card) · stale_days (30) · ask_days (7, imported asks) · tier (light; work on the first run)
+#       lens_day / lens_week / lens_month → routine lens views written into the 解读账本 (§15.7), silently; the morning report,
+#                      the Sunday review and the month review bring them out. 六爻 needs no birth data; 紫微流月 joins in once it is filled.
+#                      lens_week on Sunday looks at the coming week. Turn one off with enabled: false on its line.
 # A run that fails on the upstream (429, 5xx, network) is retried for 2 hours, never into the job's next firing; retry_hours: N changes that (§9.4).
 # A job more than 15 minutes late (core was down) is recorded as missed, not run. /job in the DM lists them; /job <name> runs one now.
 
@@ -13,3 +16,6 @@ dream:      { every: day, at: "03:00", do: dream }
 matter_review: { every: day, at: "08:15", do: matter_review, limit: 5, first_limit: 12, stale_days: 30, ask_days: 7 }
 dream_diff: { every: day, at: "08:25", do: dream_diff }
 morning:    { every: day, at: "08:30", do: morning }
+lens_day:   { every: day, at: "07:50", do: lens_day }
+lens_week:  { every: week, weekday: 0, at: "19:30", do: lens_week }
+lens_month: { every: month, day: 1, at: "06:00", do: lens_month }

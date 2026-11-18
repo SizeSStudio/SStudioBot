@@ -176,6 +176,17 @@ input[type=search], input[type=text], input[type=password], input[type=number], 
   width: 100%; min-height: max(36px, var(--target)); background: var(--raised); border: 1px solid var(--ring); border-radius: 8px; padding: 7px 10px; font-size: 15px; }
 select { width: auto; padding-right: 28px; }
 textarea { resize: vertical; line-height: 1.5; }
+.formgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-top: 10px; }
+.fld { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.fld[hidden], .check[hidden] { display: none; }
+.fld label { font-size: 13px; color: var(--ink-2); }
+.fld select { width: 100%; }
+.fld-err { color: var(--crit); font-size: 13px; }
+input[aria-invalid="true"], select[aria-invalid="true"] { border-color: var(--crit); }
+.check { display: inline-flex; align-items: center; gap: 8px; min-height: var(--target); margin-top: 8px; }
+.lensbox { margin-bottom: 10px; }
+.bf-state { margin-bottom: 2px; }
+.rawyaml { margin-top: 16px; }
 textarea.code { font-family: var(--mono); font-size: 13px; min-height: 50dvh; white-space: pre; tab-size: 2; overflow-wrap: normal; }
 details > summary { cursor: pointer; color: var(--muted); font-size: 13px; min-height: var(--target); display: list-item; }
 details > summary h2 { display: inline-flex; margin: 0; }

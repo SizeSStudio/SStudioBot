@@ -32,7 +32,9 @@ const JOB_KINDS: FieldOption[] = [
   { value: "health_card", label: "健康周报", help: "把运行指标发到管理群。" },
   { value: "improve", label: "自我改进", help: "攒够信号后提改进提案，要你批准才生效。" },
   { value: "improve_review", label: "改进回看", help: "回看已生效的提案有没有变好。" },
-  { value: "lens_month", label: "流月解读", help: "排上当月的解读任务。" },
+  { value: "lens_day", label: "今日一卦", help: "六爻看今天，记进解读账本，并进早报。不需要生辰。" },
+  { value: "lens_week", label: "下周一卦", help: "六爻看下一周，记进解读账本，并进周日的复盘和前瞻。不需要生辰。" },
+  { value: "lens_month", label: "月度看法", help: "六爻看这个月；填了生辰再加紫微流月。记进解读账本，并进月复盘。" },
 ];
 
 const jobs: FormField = {

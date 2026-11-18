@@ -115,7 +115,7 @@ export const workerConf = (): WorkerConf => cached(join(P.config, "worker.yaml")
 
 /**
  * config/sources.yaml (§17.3): Feishu DMs on / off (the observer reads them) and the other places events come from.
- * Each source: { id, kind (a SOURCE_KINDS key), every ("15m" | "2h" | "1d"), domain, enabled, …kind-specific }.
+ * Each source: { id, kind (a SOURCE_KINDS key: git, fetch, command, feishu-mail), every ("15m" | "2h" | "1d"), domain, enabled, …kind-specific }.
  */
 export interface SourceSpec { id: string; kind: string; every?: string; domain?: "work" | "personal"; enabled?: boolean; env?: string[]; [k: string]: unknown }
 export const sourcesConf = (): { feishu: { dm: boolean }; sources: SourceSpec[] } => {

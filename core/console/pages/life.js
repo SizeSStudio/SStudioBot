@@ -1,12 +1,13 @@
 // 生活 (owner-only, §15): the timeline with a quick note, matters with their events (§17.2) and the topics that may
-// become one, imports from another harness (§17.4), outlooks and how they turned out, habits and rhythms (only he
+// become one, the people around him and how they connect (§18), imports from another harness (§17.4), outlooks and how they turned out, habits and rhythms (only he
 // endorses or drops them), readings, reviews, and his birth info (self.yaml, edited here and nowhere else).
 
 import { $, $$, esc, api, toast, pill, row, rel, hm, mdhm, isoDay, dayLabel, empty, loading, tabs, chips, mdText, busy, busyTyping, ACTS, openDrawer } from "/lib/core.js";
 import { mountEditor } from "/lib/editor.js";
 import { eventCard } from "/lib/items.js";   // also ACTS.task / ACTS.approval for links inside drawers
+import { peopleTab, yinyuanTab } from "/lib/people.js";   // also ACTS.person for links inside drawers
 
-const TABS = { timeline: "时间线", matters: "事", imports: "导入", outlooks: "前瞻", self: "习气与节律", readings: "解读", reviews: "复盘", birth: "出生信息" };
+const TABS = { timeline: "时间线", matters: "事", people: "人", yinyuan: "因缘", imports: "导入", outlooks: "前瞻", self: "习气与节律", readings: "解读", reviews: "复盘", birth: "出生信息" };
 const KIND_ZH = { said: "他说", said_group: "群里说", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", outlook: "前瞻", revisit: "回看", review: "复盘", event: "事件" };
 const HORIZON = { day: "当天", week: "本周", month: "本月", matter: "这件事" };
 const REVIEW_KIND = { day: "日复盘", week: "周复盘", month: "月复盘", matter: "事后复盘" };
@@ -142,6 +143,10 @@ ACTS.topiclink = (el) => busy(el, "在挂…", async () => {
   if (st.tab === "matters") PAGES.matters($("#lifebody"));
   await ACTS.matter({ dataset: { id: mid } });
 });
+
+// ───────── 人 / 因缘 (§18): lib/people.js ─────────
+PAGES.people = peopleTab;
+PAGES.yinyuan = yinyuanTab;
 
 // ───────── 导入 (§17.4) ─────────
 PAGES.imports = async (body) => {

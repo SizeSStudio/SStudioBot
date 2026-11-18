@@ -16,6 +16,7 @@ import { PLAYBOOK, SECTIONS, listMatters, noteMatter, openMatter, setMatterStatu
 import { cancelTask, listTasks, replyTask, startTask } from "./tasks.ts";
 import { DOMAINS, addNote, markSelfItem, periodOk, revisitOutlook, selfItemsText, submitOutlook, submitReview, timelineText } from "./life.ts";
 import { queueMatterReview } from "./reflect.ts";
+import { personCard, resolveForTool, pathBetween, addRelation, REL_PRESETS } from "./graph.ts";
 import { LENSES, readingsQuery, requestReading, revisitReading } from "./lens.ts";
 import { LEVELS, STATES, addMatterKeys, eventLine, eventsQuery, linkEvents, matterKeys, setEventLevel, setEventState, topicCandidates } from "./events.ts";
 
@@ -251,6 +252,40 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
+  // ---- 因缘 (§18): the people around him; owner only ----
+  def({
+    name: "person_lookup", level: "L0", for: ["owner"],
+    description: "Who someone is in his life: circle, relation in people.yaml, how and when they first showed up, relations, the people around them, matters together, where they usually talk, their page. Use before drafting to or about someone, or when he asks about a person. A name shared by two people returns candidates: ask again with #id.",
+    schema: z.object({ who: z.string().min(1).max(40).describe("a name, or #id") }),
+    async exec({ who }) { const id = personId(who); return typeof id === "number" ? personCard(id) : id; },
+  }),
+  def({
+    name: "person_path", level: "L0", for: ["owner"],
+    description: "How two people are connected (never through him): the shortest chain of ties, each with why it exists. A hop marked 推测 came from a name match or someone's claim.",
+    schema: z.object({ a: z.string().min(1).max(40), b: z.string().min(1).max(40) }),
+    async exec({ a, b }) {
+      const x = personId(a), y = personId(b);
+      if (typeof x !== "number") return x;
+      if (typeof y !== "number") return y;
+      const r = pathBetween(`p:${x}`, `p:${y}`);
+      if (!r) return "四步以内没连上。";
+      const name = (n: string) => one("SELECT label FROM graph_nodes WHERE id=?", n)?.label ?? n;
+      return `${r.hops.map((h) => `${name(h.from)} —${h.edge.label}${h.edge.evidence.length ? `（${h.edge.evidence.slice(0, 2).join("、")}）` : ""}${h.edge.conf === "INFERRED" ? "[推测]" : ""}→ ${name(h.to)}`).join("\n")}\n整体：${r.conf === "INFERRED" ? "有推测的环节" : "都有记录"}`;
+    },
+  }),
+  def({
+    name: "person_relate", level: "L1", for: ["owner"],
+    description: `Record how two people relate (e.g. ${REL_PRESETS.join(" / ")}), only when he said it or someone stated it plainly; put where it came from in evidence ("他说的" / "小王在项目群说"). It stays marked 推测 until he confirms it in the console. Never infer a relation from people merely talking a lot.`,
+    schema: z.object({ a: z.string().min(1).max(40), b: z.string().min(1).max(40), rel: z.string().min(1).max(12).describe("b is a's …, e.g. a=小李 b=老王 rel=上级"), evidence: z.string().min(2).max(300) }),
+    async exec({ a, b, rel, evidence }, ctx) {
+      const x = personId(a), y = personId(b);
+      if (typeof x !== "number") return x;
+      if (typeof y !== "number") return y;
+      addRelation(x, y, rel, { conf: "INFERRED", src: ctx.src, evidence });
+      return `记下了（推测）：${b} 是 ${a} 的${rel}。他可以在控制台「生活 › 人」里确认或去掉。`;
+    },
+  }),
+
   // ---- 红尘里修 (§15): owner only ----
   def({
     name: "note_add", level: "L0", for: ["owner"],
@@ -414,4 +449,11 @@ async function webSearch(query: string, token: string): Promise<string> {
     for (const c of b.citations ?? []) if (c.url) urls.add(c.url);
   }
   return `${text || "(no digest)"}\n\nSources:\n${[...urls].slice(0, 8).join("\n") || "(none)"}`;
+}
+
+/** "#12" or a name → person id, or the sentence to return (unknown / ambiguous with candidates) */
+function personId(who: string): number | string {
+  const m = /^#?(\d+)$/.exec(who.trim());
+  if (m) return one("SELECT id FROM persons WHERE id=? AND status<>'merged'", Number(m[1])) ? Number(m[1]) : `没有 #${m[1]} 这个人。`;
+  return resolveForTool(who);
 }

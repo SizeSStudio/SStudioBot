@@ -332,6 +332,7 @@ th.w30 { width: 30%; }
 .filters { display: flex; flex-direction: column; gap: 8px; margin-bottom: 8px; }
 .filters .chips { margin: 0; }
 .filters input[type=search] { flex: 1 1 180px; }
+.filters.inline { flex-direction: row; flex-wrap: wrap; align-items: center; }
 h2.day { margin-top: 18px; }
 ol.tl { list-style: none; margin: 0; padding: 0; background: var(--surface); border: 1px solid var(--ring); border-radius: var(--radius); }
 .tl-item { display: grid; grid-template-columns: 3.6em minmax(0, 1fr); gap: 10px; padding: 9px 14px; border-top: 1px solid var(--line); }
@@ -367,3 +368,22 @@ dialog::backdrop { background: rgba(0,0,0,.35); overflow: hidden; overscroll-beh
 #toasts { inset: auto; margin: 0; border: 0; padding: 0; background: none; overflow: visible; color: inherit;
   position: fixed; left: 50%; bottom: calc(var(--nav-h) + 20px); transform: translateX(-50%); z-index: 50; display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; width: max-content; max-width: 92vw; }
 .toast { background: var(--ink); color: var(--page); padding: 8px 16px; border-radius: 18px; font-size: 14px; white-space: pre-wrap; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
+
+/* §18 因缘图 */
+.graph { position: relative; overflow: hidden; }  /* edge labels must not widen the page on phones */
+.graph svg { display: block; width: 100%; overflow: visible; touch-action: manipulation; }
+.graph .ge { stroke: var(--axis); stroke-opacity: 0.75; }
+.graph .ge.inf { stroke-dasharray: 3 3; }
+.graph .ge.rel { stroke: var(--ink-2); }
+.graph .gn { cursor: pointer; }
+.graph .gn > circle:not(.hit), .graph .gn > rect, .graph .gn > path { stroke: var(--surface); stroke-width: 1.5; }
+.graph .gn.focus > circle:not(.hit) { stroke: var(--ink); stroke-width: 2; }
+.graph .gn .hit { fill: transparent; stroke: none; }
+.graph .gn text { fill: var(--ink-2); font-size: 11px; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; pointer-events: none; }
+.graph .gn:focus-visible { outline: none; }
+.graph .gn:focus-visible > circle:not(.hit), .graph .gn:focus-visible > rect, .graph .gn:focus-visible > path { stroke: var(--accent); stroke-width: 2.5; }
+.graph svg.dim .gn:not(.lit) { opacity: 0.25; }
+.graph svg.dim .ge:not(.lit) { opacity: 0.12; }
+.graph svg.dim .gn.lit text { fill: var(--ink); }
+.linkish { background: none; border: 0; padding: 0 0 0 4px; color: var(--accent); font: inherit; cursor: pointer; }
+@media (forced-colors: active) { .graph .gn { fill: CanvasText; } .graph .ge { stroke: CanvasText; } }

@@ -1,5 +1,8 @@
-// Config console (DESIGN §10). HTTP on a unix socket (/run/sbot/console.sock, dir 0700, owner sbot) that only
-// `tailscale serve --https=8444` reaches; every request must carry a Tailscale-User-Login listed in config/console.yaml.
+// Config console (DESIGN §10). Two entrances, each its own unix socket, each trusting only its own proof of identity:
+//   tailnet  /run/sbot/console.sock (dir 0700 sbot): only `tailscale serve --https=8444` (root) reaches it; every request
+//            must carry a Tailscale-User-Login listed in config/console.yaml owners. tailscaled replaces a forged one.
+//   web      /run/sbot-web/console.sock (dir 2750 sbot:sbot-web): nginx on public 443 reaches it; identity is only the
+//            password session cookie (console-web.ts). Tailscale-User-Login is ignored here: nobody replaces it.
 //
 //   /api/*  status (+ SSE), flow, usage, groups, config files, secrets (write-only), jobs, memory
 //   /*      the static front end in core/console/
@@ -15,7 +18,8 @@ import { join, dirname, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { all, one, run, kvGet } from "./db.ts";
-import { P, feishuConf, jobsConf, models, quietConf, ownerName, log, TZ } from "./config.ts";
+import { P, feishuConf, jobsConf, models, quietConf, ownerName, log, TZ, writeSecret } from "./config.ts";
+import { webConf, validSession, handleAuthPaths, WEB_LOGIN, WEB_SECRETS } from "./console-web.ts";
 import { git, commitIfDirty, readPage, localStamp, editConfig } from "./memory.ts";
 import { searchWiki } from "./wiki.ts";
 import { rollback } from "./dream.ts";
@@ -31,6 +35,8 @@ import type { Dispatcher } from "./dispatcher.ts";
 import type { Scheduler } from "./timers.ts";
 
 export const SOCK = process.env.SBOT_CONSOLE_SOCK ?? "/run/sbot/console.sock";
+export const WEB_SOCK = process.env.SBOT_CONSOLE_WEB_SOCK ?? "/run/sbot-web/console.sock";
+type Entry = "tailnet" | "web";
 const STATIC = join(dirname(fileURLToPath(import.meta.url)), "..", "console");
 const KNOWN_SECRETS = ["FEISHU_APP_SECRET"];
 
@@ -94,7 +100,7 @@ async function status(d: ConsoleDeps) {
     inbox: one("SELECT SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) waiting, SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END) processing FROM inbox")!,
     outbox: one("SELECT SUM(CASE WHEN status IN ('queued','sending') THEN 1 ELSE 0 END) pending, SUM(CASE WHEN status IN ('failed','unknown') AND ts>? THEN 1 ELSE 0 END) failed24h FROM outbox", now - 86400_000)!,
     usage: { calls: today.n, cost: today.c, output: today.o, errors: today.bad ?? 0, budget: models().budgets?.daily_cost ?? null, alertAt: budget },
-    quiet: { today: proactiveToday(), cap, held: (pj(kvGet("quiet.held")) ?? []).length },
+    quiet: { today: proactiveToday(), cap, held: (pj(kvGet("quiet.held")) ?? []).length + Number(one("SELECT COUNT(*) n FROM messages WHERE attn='held'")?.n ?? 0) },
     jobs,
     sentinel: { last: Number(kvGet("sentinel.last") ?? 0) || null, active: Object.keys(sentinel) },
     dream: { lastAt: Number(kvGet("dream.last_at") ?? 0) || null, report: pj(kvGet("dream.report")) },
@@ -133,12 +139,12 @@ function flow(before: number, limit: number) {
   // things that happen outside conversational runs
   for (const i of all("SELECT id, lane, kind, source, status, payload_json, ts FROM inbox WHERE run_id IS NULL AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 50", since, before))
     items.push({ type: "event", ts: i.ts, id: i.id, lane: i.lane, kind: i.kind, source: i.source, status: i.status, text: excerpt(pj(i.payload_json)?.text, 240) });
-  const triage = all(`SELECT id, chat_id, sender_kind, ts, text, raw_json, triage_status, triage_action, triage_note FROM messages
+  const triage = all(`SELECT id, chat_id, sender_kind, ts, text, raw_json, triage_status, triage_action, triage_note, attn FROM messages
     WHERE surface='feishu:group' AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 120`, since, before);
   for (const m of triage) {
     const raw = pj(m.raw_json) ?? {};
     items.push({ type: "message", ts: m.ts, id: m.id, chat: raw.chat_name || m.chat_id, sender: raw.sender_name ?? m.sender_kind, senderKind: m.sender_kind,
-      status: m.triage_status, action: m.triage_action, note: m.triage_note, text: excerpt(m.text, 200), link: raw.link });
+      status: m.triage_status, action: m.triage_action, attn: m.attn, note: m.triage_note, text: excerpt(m.text, 200), link: raw.link });
   }
   for (const t of all("SELECT id, status, goal, tier, repo, started, ended, error, ts FROM tasks WHERE ts>=? AND ts<?", since, before))
     items.push({ type: "task", ...t, goal: excerpt(t.goal, 200) });
@@ -320,15 +326,8 @@ function secretNames(): { name: string; set: boolean; usedBy: string[] }[] {
 async function setSecret(name: string, value: string) {
   if (!/^[A-Z][A-Z0-9_]{1,63}$/.test(name)) throw bad("名字只能是大写字母、数字、下划线");
   if (typeof value !== "string" || !value.trim() || value.length > 8192 || /[\r\n\0]/.test(value)) throw bad("值必须是一行、非空");
-  const v = value.trim();
-  const text = existsSync(P.secrets) ? readFileSync(P.secrets, "utf8") : "";
-  const lines = text.split("\n");
-  const i = lines.findIndex((l) => new RegExp(`^\\s*${name}\\s*=`).test(l));
-  const had = i >= 0;
-  if (had) lines[i] = `${name}=${v}`; else { if (lines.length && lines[lines.length - 1] === "") lines.pop(); lines.push(`${name}=${v}`, ""); }
-  const tmp = `${P.secrets}.tmp-${process.pid}`;
-  writeFileSync(tmp, lines.join("\n"), { mode: 0o600 });
-  renameSync(tmp, P.secrets);
+  if (WEB_SECRETS.includes(name)) throw bad("这个密钥由服务器上的 console-passwd 设置（存的是哈希），不在这里填");
+  const had = writeSecret(name, value.trim());
   run("INSERT INTO config_changes(ts, file, diff, source) VALUES(?,?,?,?)", Date.now(), "secrets.env", `${had ? "updated" : "added"} ${name}`, "console");
   log("console", "secret written", { name, had });
   void notifyAdmin(`🔑 控制台${had ? "更新" : "新增"}了密钥 **${name}**（值不显示，也不进 git）`);
@@ -369,31 +368,54 @@ const SEC_HEADERS = {
   "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
   "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
 };
+// public entrance: with no-referrer a browser sends `Origin: null` on same-origin writes, and there the Origin check is
+// part of the gate; same-origin still never sends a Referer to another site
+const WEB_SEC_HEADERS = { ...SEC_HEADERS, "Referrer-Policy": "same-origin" };
 
-function serveStatic(path: string, res: http.ServerResponse) {
+function serveStatic(path: string, res: http.ServerResponse, H: Record<string, string> = SEC_HEADERS) {
   const rel = normalize(path === "/" ? "/index.html" : path).replace(/^(\.\.[/\\])+/, "");
   let f = join(STATIC, rel);
   if (!f.startsWith(STATIC) || !existsSync(f) || statSync(f).isDirectory()) {
     // a missing asset is a 404 (a stale module import must fail loudly, not get HTML); only route-like paths fall back to the shell
-    if (extname(rel) && rel !== "/index.html") { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...SEC_HEADERS }); res.end("not found"); return; }
+    if (extname(rel) && rel !== "/index.html") { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...H }); res.end("not found"); return; }
     f = join(STATIC, "index.html");
   }
-  res.writeHead(200, { "Content-Type": TYPES[extname(f)] ?? "application/octet-stream", "Cache-Control": "no-cache", ...SEC_HEADERS });
+  res.writeHead(200, { "Content-Type": TYPES[extname(f)] ?? "application/octet-stream", "Cache-Control": "no-cache", ...H });
   res.end(readFileSync(f));
 }
 
-export function startConsole(d: ConsoleDeps): http.Server {
-  const server = http.createServer(async (req, res) => {
+export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.Server | null; close(): void } {
+  const handler = (entry: Entry) => async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://console");
-    const login = String(req.headers["tailscale-user-login"] ?? "").toLowerCase();
-    const json = (status: number, data: unknown) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...SEC_HEADERS }); res.end(JSON.stringify(data)); };
+    const H = entry === "web" ? WEB_SEC_HEADERS : SEC_HEADERS;
+    const json = (status: number, data: unknown) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...H }); res.end(JSON.stringify(data)); };
     try {
-      if (!login || !owners().includes(login)) {
-        log("console", "forbidden", { login: login ? login.replace(/(.).*@/, "$1…@") : "(none)", path: url.pathname });
-        res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", ...SEC_HEADERS });
-        return res.end(login ? "403：这个 Tailscale 账号不在 config/console.yaml 的 owners 里。" : "403：只能经 tailscale serve 访问。");
+      let login: string;
+      if (entry === "tailnet") {
+        login = String(req.headers["tailscale-user-login"] ?? "").toLowerCase();
+        if (!login || !owners().includes(login)) {
+          log("console", "forbidden", { login: login ? login.replace(/(.).*@/, "$1…@") : "(none)", path: url.pathname });
+          res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", ...SEC_HEADERS });
+          return res.end(login ? "403：这个 Tailscale 账号不在 config/console.yaml 的 owners 里。" : "403：只能经 tailscale serve 访问。");
+        }
+      } else {
+        // only the session cookie counts; Tailscale-User-Login and every other header from nginx is ignored
+        const w = webConf();
+        if (!w) { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...H }); return res.end("not found"); }
+        if (url.pathname === "/_login" || url.pathname === "/_auth" || url.pathname === "/_logout") return await handleAuthPaths(req, res, url.pathname, w, notifyAdmin);
+        if (!validSession(req.headers.cookie, w.key)) {
+          if (url.pathname.startsWith("/api/")) return json(401, { error: "登录过期了，重新登录。" });
+          res.writeHead(303, { Location: "/_login", "Cache-Control": "no-store", ...H });
+          return res.end();
+        }
+        // on top of SameSite=Strict and the x-sbot-console header below: a write must come from our own page
+        if ((req.method ?? "GET") !== "GET" && req.headers.origin !== w.origin) {
+          log("console", "forbidden", { entry, why: "origin", path: url.pathname });
+          return json(403, { error: "403：Origin 不对。" });
+        }
+        login = WEB_LOGIN;
       }
-      if (!url.pathname.startsWith("/api/")) return serveStatic(url.pathname, res);
+      if (!url.pathname.startsWith("/api/")) return serveStatic(url.pathname, res, H);
       const method = req.method ?? "GET";
       // access log for API calls (method, path, status, ms; never bodies). SSE and the 3 s status poll are skipped.
       if (url.pathname !== "/api/events") { const t0 = Date.now(); res.on("close", () => log("console", "api", { method, path: url.pathname, status: res.statusCode, ms: Date.now() - t0, done: res.writableFinished })); }
@@ -401,7 +423,7 @@ export function startConsole(d: ConsoleDeps): http.Server {
       const p = url.pathname.slice(4);
       let m: RegExpExecArray | null;
 
-      if (p === "/me") return json(200, { login, owner: ownerName() });
+      if (p === "/me") return json(200, { login, entry, owner: ownerName() });
       if (p === "/status") return json(200, await status(d));
       if (p === "/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
@@ -548,14 +570,29 @@ export function startConsole(d: ConsoleDeps): http.Server {
       if (!res.headersSent) json(status, { error: String(e?.message ?? e) });
       else res.end();
     }
-  });
+  };
+
+  const listenSock = (server: http.Server, sock: string, mode: number, extra: Record<string, unknown>) => {
+    if (existsSync(sock)) unlinkSync(sock);
+    // created 0600 (UMask=0077), then opened up to `mode`; the directory's permissions are what keep others out
+    server.listen(sock, () => { try { chmodSync(sock, mode); } catch { /* */ } log("console", "listening", { sock, ...extra }); });
+  };
+  const tailnet = http.createServer(handler("tailnet"));
+  tailnet.on("error", (e) => log("console", "server error", { entry: "tailnet", err: String(e?.message ?? e) }));
   const port = Number(process.env.SBOT_CONSOLE_PORT ?? 0);
-  if (port) server.listen(port, "127.0.0.1", () => log("console", "listening (dev, tcp)", { port }));
+  if (port) tailnet.listen(port, "127.0.0.1", () => log("console", "listening (dev, tcp)", { port }));
   else {
     try { mkdirSync(dirname(SOCK), { recursive: true }); } catch { /* RuntimeDirectory= made it */ }
-    if (existsSync(SOCK)) unlinkSync(SOCK);
-    server.listen(SOCK, () => { try { chmodSync(SOCK, 0o600); } catch { /* */ } log("console", "listening", { sock: SOCK, owners: owners().length }); });
+    listenSock(tailnet, SOCK, 0o600, { owners: owners().length });
   }
-  server.on("error", (e) => log("console", "server error", { err: String(e?.message ?? e) }));
-  return server;
+
+  // the public entrance exists only where deploy/console-web/install.sh made its directory (setgid sbot-web, so the
+  // socket's group lets nginx in); its requests 404 until console.yaml web.origin and the password are set
+  let web: http.Server | null = null;
+  if (existsSync(dirname(WEB_SOCK))) {
+    web = http.createServer(handler("web"));
+    web.on("error", (e) => log("console", "server error", { entry: "web", err: String(e?.message ?? e) }));
+    listenSock(web, WEB_SOCK, 0o660, { entry: "web", on: !!webConf() });
+  }
+  return { tailnet, web, close: () => { tailnet.close(); web?.close(); } };
 }

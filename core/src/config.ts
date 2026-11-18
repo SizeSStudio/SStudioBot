@@ -3,7 +3,7 @@
 // The config repo (/srv/sbot/config, git) is the source of truth; files are re-read when their mtime changes, so an
 // edit takes effect on the next request without a restart. secrets.env is never handed to any agent.
 
-import { readFileSync, statSync, existsSync } from "node:fs";
+import { readFileSync, statSync, existsSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
@@ -86,6 +86,24 @@ export const quietConf = () => {
   return { cap: Number(g.proactive_daily_cap ?? 6), budget: Number(g.daily_budget_usd ?? daily ?? 10) };
 };
 
+/**
+ * gate.yaml attention (§4.3): how long a raised message waits for him to respond by himself before it reaches him.
+ *   wait_minutes (30) · escalate_wait_minutes (0) · places: { <chat_id | source id | source:where place | feishu_dm>: minutes }
+ */
+const minutes = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+export const attentionConf = () => {
+  const a = cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {} as any).attention ?? {};
+  return { wait: minutes(a.wait_minutes) ? a.wait_minutes : 30, escalate: minutes(a.escalate_wait_minutes) ? a.escalate_wait_minutes : 0, places: (a.places ?? {}) as Record<string, unknown> };
+};
+/** the most specific setting wins; a place can only shorten an escalation's wait, never lengthen it */
+export function waitMinutes(chat: string, surface: string, action: string): number {
+  const { wait, escalate, places } = attentionConf();
+  const source = surface.startsWith("source:") ? surface.slice(7) : undefined;
+  const place = [places[chat], source ? places[source] : undefined, surface === "feishu:p2p" ? places.feishu_dm : undefined].find(minutes);
+  const base = place ?? wait;
+  return action === "escalate" ? Math.min(escalate, base) : base;
+}
+
 /** config/self.yaml (§15.9, §15.13): owner-only; month rhythm and the 送一程 thresholds */
 export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
@@ -143,6 +161,20 @@ export function secret(name: string): string | undefined {
     return out;
   }, {} as Record<string, string>);
   return all[name];
+}
+
+/** Set one KEY=value line in secrets.env (atomic, 0600). Returns whether the name was already there. Callers log the
+ *  name only, never the value. */
+export function writeSecret(name: string, value: string): boolean {
+  const text = existsSync(P.secrets) ? readFileSync(P.secrets, "utf8") : "";
+  const lines = text.split("\n");
+  const i = lines.findIndex((l) => new RegExp(`^\\s*${name}\\s*=`).test(l));
+  const had = i >= 0;
+  if (had) lines[i] = `${name}=${value}`; else { if (lines.length && lines[lines.length - 1] === "") lines.pop(); lines.push(`${name}=${value}`, ""); }
+  const tmp = `${P.secrets}.tmp-${process.pid}`;
+  writeFileSync(tmp, lines.join("\n"), { mode: 0o600 });
+  renameSync(tmp, P.secrets);
+  return had;
 }
 
 export const log = (scope: string, msg: string, extra?: Record<string, unknown>) =>

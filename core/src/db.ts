@@ -178,9 +178,12 @@ CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, 
 for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["outbox", "card_id TEXT"],
   ["outbox", "as_identity TEXT NOT NULL DEFAULT 'bot'"], ["messages", "triage_action TEXT"], ["messages", "triage_note TEXT"],
   ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"],
-  ["messages", "event_id INTEGER"], ["matters", "keys TEXT"], ["tasks", "mode TEXT"]]) {
+  ["messages", "event_id INTEGER"], ["matters", "keys TEXT"], ["tasks", "mode TEXT"],
+  ["messages", "attn TEXT"], ["messages", "wait_until INTEGER"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
+// §4.3 attention window. attn: waiting (in its window) | answered (he responded, nothing sent) | read (not an ask, he has read it) | held (over the cap, for the morning report)
+db.exec("CREATE INDEX IF NOT EXISTS messages_attn ON messages(attn, wait_until)");
 
 export type Row = Record<string, any>;
 export const one = (sql: string, ...a: any[]): Row | undefined => db.prepare(sql).get(...a) as Row | undefined;

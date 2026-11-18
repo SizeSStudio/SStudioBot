@@ -157,7 +157,7 @@ export function ingestItems(s: SourceSpec, items: SourceItem[]): number {
       fromMe ? "done" : "pending");
     if (!r.changes) continue;
     n++;
-    if (fromMe) markReplied(place, ts, it.reply_to ? `src:${s.id}:${String(it.reply_to).slice(0, 200)}` : undefined);
+    if (fromMe) markReplied(place, ts, it.reply_to ? `src:${s.id}:${String(it.reply_to).slice(0, 200)}` : undefined, { id: `src:${s.id}:${String(it.ref).slice(0, 200)}`, thread: it.thread ? String(it.thread).slice(0, 200) : null });
   }
   return n;
 }

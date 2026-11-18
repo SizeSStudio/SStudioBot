@@ -1,13 +1,22 @@
-# SStudioBot 设计文档（v0.16 草案）
+# SStudioBot 设计文档（v0.18 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
 
-### v0.16 变更（飞书邮箱信息源，2026-11-18）
+### v0.18 变更（飞书邮箱信息源，2026-11-18）
 - **新的内置信息源 `kind: feishu-mail`（§17.3）**：我的飞书邮箱，只读。新邮件和群消息一样进分拣、记成事件、挂到事上。默认不开，我在 sources.yaml 加一行才开，加的时候管理群醒目提醒。
 - **这是放宽**：邮件正文第一次进入分拣和模型。它用核心已有的飞书用户登录，不加 scope、不加密钥；登录留在核心里，不交给插件，也不给 agent 新工具（§17.1、§17.3）。
 - **分拣的围栏加固**：外面来的文字不能再写出 `<untrusted>` 或 `</untrusted>` 来跳出围栏；群消息升级给主 agent 时也包在 `<untrusted>` 里。
 - **信息源不再升级给主 agent（§4.3）**：所有信息源（不只邮箱）被判成 `escalate` 时一律改成提醒我。邮件和网页谁都能写，主 agent 又能派有 sudo 的 host worker。
+
+### v0.17 变更（控制台公网入口，2026-11-18 主人定）
+- **控制台加第二个入口（§10.1）**：tailscale serve 在主人的网络下经常卡，加一个公网 443 入口，防护照主人另一个管理面的做法：nginx + Let's Encrypt，Cloudflare 只做 DNS（灰云），一个密码（PBKDF2 哈希存在 `secrets.env`），登录后发 12 小时的 HMAC 签名会话 cookie（`__Host-`、Secure、HttpOnly、SameSite=Strict），登录要本站 Origin，按 IP 和总量限速，登录和限流都通知管理群。地址写在 `config/console.yaml` 的 `web.origin`，不写就是关的。tailscale 入口保留，行为不变。
+- **两个入口互不相信对方的身份证明**：各听各的 unix socket。tailnet 的只认 `Tailscale-User-Login`，nginx 连不上它；公网的只认会话 cookie，`Tailscale-User-Login` 在这里一律不看。
+- **公网入口上写操作多一道 Origin 校验**；密码和会话密钥不能从控制台改，只能在服务器上跑 `console-passwd`。
+### v0.16 变更（注意力窗口，2026-11-18）
+- **分拣判定要提醒的，先等一个窗口**（默认 30 分钟，`gate.yaml attention`，可按地方调，0 = 不等）。窗口内我自己回应了，这条安静结束；到点还没回应才提醒（§4.3）。
+- **「我回应了」收成一条规则**（§17.2）：直接回复、同一话题里说话算；群里一句没指向的话只算紧跟在问题后面的那一件；拿不准就不关，宁可多提醒。
+- 不用回的提醒：我在飞书读过就不再发，并受每日上限约束，超出的进早报（§9.3）。要我回的不受这两条影响。
 
 ### v0.15 变更（因缘：人、事、资料的图谱，2026-11-18）
 - **新增 §18**：personal agent 不能只看事，还得知道主人身边有哪些人、是什么样的人、彼此怎么连上的。思路借自 graphify：边分「有记录」和「推测」，一条路径的可信度取它最弱的一跳；纯代码构建、不调模型；圈子按结构自动分，用大家最常在的群命名；名字有歧义就拒绝并列出候选。
@@ -222,7 +231,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
   - 每个放在一个 systemd scope 里，`MemoryMax=1G`，超了只杀这个 worker。
   - 核心设 `OOMScoreAdjust=-500`。
 - **重构建不在 VPS 上跑**：比如 gradle，单次就要 2～4 GB。交给 Mac，或者提 PR 让 CI 跑。
-- **控制台**：走 `tailscale serve`，不对公网开端口。
+- **控制台**：`tailscale serve`，加一个公网 443 入口（和机器上已有的 nginx 共用，密码 + 会话 cookie，§10.1）。
 - **目标**：空闲约 300 MB（核心约 150～250 MB）；2 个对话 run 加 1 个 worker 构建时，峰值 ≤ 2.3 GB。
 
 **放在哪**（全部在 4T 数据盘 `/srv/data`，xfs）
@@ -365,7 +374,7 @@ auto 规则**只存在 `config/auto.yaml`** 里，people 里不再有 `auto` 字
 
 | 群的类型 | 怎么读 | 怎么唤醒 | 怎么回复 |
 |---|---|---|---|
-| **观察群**：我在，bot 不在（默认） | user 身份轮询 | Triage。有人 **@我** 时一定 `notify` 或 `draft` | 只能以**我的身份**回，永远审批 |
+| **观察群**：我在，bot 不在（默认） | user 身份轮询 | Triage。有人 **@我** 时一定 `notify` 或 `draft`；只 @ 了别人的最多 `notify`，只 @ 了机器人的 `archive`（§4.3） | 只能以**我的身份**回，永远审批 |
 | **入驻群**：我在，bot 也在 | @bot 事件实时收 + 轮询其余消息（按 message_id 去重） | @bot 时**立即拉一次这个群**补齐上下文，再开群会话；其余走 Triage | 以 bot 身份回，按 `reply` 开关 |
 
 **私聊**（v0.13）：别人发给我的单聊默认不读；`config/sources.yaml` 里 `feishu.dm: true` 才读，只记事件、发提醒，**不起草**（§17.3）。我和 bot 的私聊是 owner 会话，永远不走这条路。（仅 bot 群后置。）
@@ -539,11 +548,41 @@ auto 规则**只存在 `config/auto.yaml`** 里，people 里不再有 `auto` 字
 pending 消息 ──► 规则预筛（不调模型：黑名单、@我、@bot、关键词）
              └─► Triage（一个群一批）──► ignore | archive | notify | draft | escalate
 ```
-- `notify`：攒一批再推给我。
-- `draft`：交给 **chat 档**做一次"起草 run"（只带当前群的上下文和他人会话的工具范围），产出审批卡片。
-- `escalate`：开一个主 agent 会话来处理。信息源的消息不走这条，封顶到 `notify`（§17.3）。
+- `notify`：等窗口，到点没回应就攒一批推给我。
+- `draft`：等窗口，到点没回应才交给 **chat 档**做一次"起草 run"（只带当前群的上下文和他人会话的工具范围），产出审批卡片。
+- `escalate`：默认不等，开一个主 agent 会话来处理。信息源的消息不走这条，封顶到 `notify`（§17.3）。
 
 v0.13：同一次调用还出**事件**（§17.2）。一批里有意义的时刻记成 kind × level，挂到我手上的某件事（只能填正在进行的事的编号）或一个话头上。分拣的输入除了群，还有开了的私聊和 sources.yaml 里的信息源，都按"一个地方一批"；草稿只在群里起，私聊和信息源只记事件、发提醒。提醒按事 / 话头分组，要你回、要你拍板的排在前面。模型挂了就按规则兜底：@我 的记成「要你回」，摘要用原文。
+
+**说给谁的，由代码定**（2026-11-18）：模型看到「@某人 查一下」容易当成在找我。所以「这条是不是对我说的」不交给模型，代码按 mentions 判断，模型的结论只能往下压，不能越过上限。
+- 飞书 mention 的 id：人是 open_id（`ou_`），机器人是 app_id（`cli_`）；我的 id 是 open_id，两条路（搜索、事件）一致。
+- @ 了我（或信息源标了 `to_me`）：至少 `notify`，不设上限。
+- 没 @ 我、只 @ 了别人（人）：最多 `notify`，事件最多「要盯」，不起草、不上报。
+- 没 @ 我、只 @ 了机器人：最多 `archive`，事件最多「知道就行」。那是在叫机器人干活。
+- 没 @ 任何人（包括 `@所有人`，它不进 mentions）：不设上限，照常交给模型。
+- 给模型的每一行标出对象：`[@我]`、`[@别人：甲、乙（机器人）]`；机器人发的消息，名字后标「机器人」。一个事件里有几条消息时，事件的上限取其中最宽的那条。
+
+**注意力窗口**（v0.16）：有些消息我自己会读会回，要提醒的是我没回、漏掉的。所以分拣后不马上打扰，牺牲一点及时性。
+
+```yaml
+# config/gate.yaml
+attention:
+  wait_minutes: 30             # notify、draft 等多久，0 = 不等
+  escalate_wait_minutes: 0     # escalate 等多久
+  places:                      # 单独调：群 chat_id、信息源 id、某个信息源的「id:where」、feishu_dm（别人发给我的私聊）
+    oc_example: 10
+    jira: 60
+    feishu_dm: 15
+```
+
+- 窗口从消息发出的时间算（一个事件取它最后一条），不从分拣的时间算。最具体的设置优先：chat_id / 信息源的某处 > 信息源 id > `feishu_dm` > `wait_minutes`。
+- 到点复查（`responseTo`，规则见 §17.2）：已回应、事件已关或已放弃，这条记 `answered`，什么都不发，也不起草。`triage_action` 保留分拣当时的判断，§16 的评估照旧读它。
+- 还在等我：`notify` 进下一批提醒，批次之间至少隔 10 分钟，一条提醒只发一次；`draft` 开始起草，一轮最多 3 个，其余下一轮；`escalate` 进我的私聊。
+- 起草时带上窗口期间群里后来说的话，别人已经答了就输出【不回复】，转成提醒。
+- 草稿发卡片后，我说了别的话会让卡片作废（§7.3）；如果那句话没回应这件事，事件还开着，它转回提醒，不会就此消失。
+- `escalate` 的等待取 `escalate_wait_minutes` 和这个地方窗口的较小值：某处设了 0，那里的紧急消息也不等。
+- 窗口只决定什么时候提醒、什么时候起草，审批闸门不变：草稿照样要我在卡片上点发送。
+- 缩短窗口算放宽，管理群单独提醒（§10.3）。
 
 ### 4.4 Expert（expert 档，无工具）
 - **待审材料由代码直接塞进 prompt**（草稿、diff、计划、日志），不给任何读文件的工具；`maxTurns` 很小。
@@ -780,7 +819,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
   - 残余风险：允许的域名可以被用来外传（domain fronting），所以白名单按任务给、默认空；给 worker 的上下文只放任务需要的东西。
 - **worker 的内存**：每个 worker 一个 systemd scope，`MemoryMax=1G`、`MemorySwapMax=256M`、`TasksMax=256`、`OOMPolicy=continue`。CLI 的 `oom_score_adj` 是 -900，sandbox 里的命令经 `/usr/local/lib/sbot/bin/bwrap` 垫片设成 +800。实测 1.5G 的分配只杀掉那个命令，CLI 正常收尾。
 - **Ubuntu 的 AppArmor**：系统自带的 `bwrap-userns-restrict` 不允许 bwrap 里再建 user namespace，而 Claude Code 的 `apply-seccomp` 需要它，报错 `write /proc/self/setgroups … Permission denied`。处理办法：停用这个 profile，换成官方文档给的 `bwrap` profile（`flags=(unconfined) { userns, }`）。这会让本机所有用户的 bwrap 都能建 userns，在这台机器上可以接受。
-- **控制台**：监听 unix socket（属主 `sbot`，目录 700），由 `tailscale serve --https=8444` 代理进来（P0 已验证），并且仍然校验 `Tailscale-User-Login`。
+- **控制台**：两个 unix socket。`/run/sbot/console.sock`（目录 700，属主 `sbot`）由 `tailscale serve --https=8444` 代理进来（P0 已验证），校验 `Tailscale-User-Login`；`/run/sbot-web/console.sock`（目录 2750 `sbot:sbot-web`，只有 nginx 的 www-data 在组里）由公网 nginx 代理进来，只认密码登录后的会话 cookie（§10.1）。
 - **主 agent / Triage / expert** 跑在 `sbot` 用户下，但它们没有 shell，也没有读写文件的工具，只能调用我们的 MCP 工具，而这些工具在核心代码里做了校验。
 
 ---
@@ -902,6 +941,7 @@ agent-home/            # = llm-wiki 的 wiki 层（§8.5）
 ### 9.3 先安静
 - **不是回应我**的消息（早报、摘要、follow-up、任务通知），都算主动消息，在 `gate.yaml` 里设每日上限，默认 6 条。超过的合并进下一次早报。
 - 每周回顾时统计主动消息里"我回复了 / 点了 / 没理"的比例。上限的放宽或收紧**由我在配置里调**，agent 只能提 proposal。
+- 分拣提醒（§4.3）：还在等我回 / 拍板的总是发，和任务来问话一样。其余「知道就好」的，我在飞书读过就不发；没读的一天最多发上限这么多批（单独计数，不占任务通知和 follow-up 的额度），超出的进第二天早报，进早报前我已回应的会去掉。
 - 复盘和前瞻类消息单独计数，不占上面的额度：日复盘最多 1 条/天，周、月的复盘加前瞻各 1 条；今日留意并进早报；我没回就不追问。"要不要给这件事起个局"的提议只出现在当前回复里，不单独发消息（§15.11）。
 
 ---
@@ -912,16 +952,25 @@ M0～M2 不做控制台，用飞书的 `/model`、`/group` 卡片，加上直接
 
 ### 10.1 形态与访问
 ```
-手机 / 电脑（装了 Tailscale）
-   │  https://<host>.<tailnet>.ts.net:8444
-   ▼
-tailscale serve --https=8444（HTTPS + 反向代理 + 注入身份头 Tailscale-User-Login）
-   ▼
-核心进程：控制台监听 unix socket /run/sbot/console.sock（目录 700、属主 sbot）
-   ├─ /api/*   配置读写、探针、状态（SSE）
-   └─ /*       前端静态文件
+手机 / 电脑（装了 Tailscale）                       任何浏览器
+   │  https://<host>.<tailnet>.ts.net:8444            │  https://<console.web.origin>（Cloudflare 只做 DNS，灰云）
+   ▼                                                   ▼
+tailscale serve --https=8444                         nginx :443（Let's Encrypt、HTTP/2、登录限速）
+（注入身份头 Tailscale-User-Login）                   （去掉 Tailscale-* / Authorization，补 X-Real-IP）
+   ▼                                                   ▼
+/run/sbot/console.sock（目录 700 sbot）              /run/sbot-web/console.sock（目录 2750 sbot:sbot-web）
+   只认 Tailscale-User-Login ∈ owners                   只认会话 cookie（密码登录发的）
+   └──────────────── 同一个核心进程、同一套 /api/* 和前端 ────────────────┘
 ```
-- 后端校验 `Tailscale-User-Login` 等于 owner，不是就返回 403。
+- **tailnet 入口**：后端校验 `Tailscale-User-Login` 在 `console.yaml owners` 里，不是就返回 403。
+- **公网入口**（2026-11-18 加，因为 tailscale serve 在主人那边常卡；防护照主人另一个管理面）：
+  - 地址在 `config/console.yaml` 的 `web: { origin: https://… }`，主机名是实例数据，不进仓库。没写 origin、或者服务器上没设密码，这个入口对什么请求都回 404。
+  - 一个密码，`secrets.env` 里只存 `CONSOLE_WEB_PASSWORD_HASH`（PBKDF2-SHA256，30 万轮）和会话密钥 `CONSOLE_WEB_SESSION_KEY`。只能在服务器上用 `console-passwd` 设；重设密码或 `--logout-all` 会换会话密钥，所有会话立刻失效。控制台的密钥页拒绝写这两个名字。
+  - 登录（`POST /_auth`）要本站 `Origin`、表单提交；失败按 IP 每 10 分钟 10 次、总共 30 次限流（nginx 也按 IP 每分钟 10 次）。成功和触发限流都在管理群通知（IP 打码）。
+  - 会话 cookie `__Host-sbot_console`：`时间戳.随机数.HMAC`，12 小时，Secure、HttpOnly、SameSite=Strict、不带 Domain。
+  - 写操作除了原有的 `x-sbot-console: 1`，还要 `Origin` 等于 `web.origin`。为此这个入口的 `Referrer-Policy` 是 `same-origin`（`no-referrer` 下浏览器同源写请求会带 `Origin: null`）；tailnet 入口仍是 `no-referrer`。
+- **为什么两个 socket**：tailscaled 会换掉客户端伪造的 `Tailscale-User-Login`，nginx 不会。两个入口如果共用一个 socket，从公网进来的人自己塞这个头就能过。所以 nginx（www-data）连不上 tailnet 的 socket（目录 700），公网 socket 上完全不看这个头；反过来公网的 cookie 在 tailnet 入口也不算数。www-data 下别的进程能连公网 socket，但那里除了 cookie 什么都不信，所以没用；X-Real-IP 它可以伪造，因此限流另有一个总量上限。
+- **部署**：`deploy/console-web/`（tmpfiles 建 `/run/sbot-web`、sbot-core 的 drop-in 放开这个目录的写权限、nginx 站点模板、`install.sh <host>` 申请证书并启用）。核心启动时这个目录存在才开公网 socket。
 - P0 实测（2026-11-16，tailscale 1.104.5）：
   - 控制台**单独用一个端口**（实例里是 8444），不和本机已有的 serve 配置抢路径，也不改它们。
   - 经 serve 进来的请求带 `Tailscale-User-Login` / `Tailscale-User-Name` / `X-Forwarded-For`；客户端自己塞的同名头会被换掉，伪造不了。
@@ -949,7 +998,7 @@ tailscale serve --https=8444（HTTPS + 反向代理 + 注入身份头 Tailscale-
 - 真相源是配置仓库里的文件。控制台保存时：先用 schema 校验，再写文件、做 git commit（提交信息带 `via console`）、热加载，并在管理群通知一声。
 - schema 用 zod 写在 `shared/` 里，前后端共用。
 - 密钥只能写，不能读。
-- 扩大权限的改动（群开成 `s_auto`、调高预算、放宽主动消息上限）会在管理群单独发一条醒目通知。
+- 扩大权限的改动（群开成 `s_auto`、调高预算、放宽主动消息上限、缩短提醒等待窗口）会在管理群单独发一条醒目通知。
 
 ### 10.4 重做（2026-11-17 定，参考 T3 Code 和 Magpie）
 
@@ -972,7 +1021,9 @@ tailscale serve --https=8444（HTTPS + 反向代理 + 注入身份头 Tailscale-
 
 ```sql
 messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, media_ref, raw_json,
-         triage_status)                                    -- + FTS5；triage_status: pending|done|skipped
+         triage_status, triage_action, triage_note, event_id, attn, wait_until)
+                                                           -- + FTS5；triage_status: pending|done|skipped
+                                                           -- attn（§4.3）: waiting|answered|read|held，NULL = 不在等
 sessions(key, harness, session_ref, generation, surface, tier, model, status, last_active, summary)
                                                            -- harness: sdk|pi；generation：滚动或换模型后 +1
 chat_cursors(chat_id, surface, last_msg_ts, last_msg_id, updated_at)
@@ -1217,7 +1268,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 13.4 M3b 进度（2026-11-17）
 
-控制台：`https://<host>.<tailnet>.ts.net:8444`（只在 tailnet 内可达）。`tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`。
+控制台：`https://<host>.<tailnet>.ts.net:8444`（只在 tailnet 内可达）。`tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`。2026-11-18 加公网入口（§10.1）：`web.origin` 指向的 443，经 nginx 到 `/run/sbot-web/console.sock`，密码 + 会话 cookie。
 
 - [x] **入口与鉴权**：`node:http` 听 `/run/sbot/console.sock`（目录 0700 sbot，由 systemd `RuntimeDirectory` 建，只有 root/tailscaled 能连）。每个请求必须带 `Tailscale-User-Login`，并且在 `config/console.yaml owners` 里，否则 403。非 GET 还要带 `x-sbot-console: 1`（防 CSRF）。CSP `default-src 'self'`，不用内联脚本。本地开发用 `SBOT_CONSOLE_PORT` 听 127.0.0.1
 - [x] **页面**：状态（今日花费/预算、审批、在跑的、连接与健康、定时任务可「现在跑」、记忆）· 流转（按天分组：对话 run、群消息、任务、审批、事件，点开看每一步）· 用量（7/14/30/90 天，按档堆叠日花费 + 预算线、按小时、按请求方、按模型，可切表格）· 模型（三档换模型、预算、端点、密钥）· 群（搜索、筛选，always / @我 / 摘要 / 关闭 四档切换）· 记忆（改动 diff + 撤销、页面浏览、搜索）· 配置（8 个 yaml 在线编辑 + 历史）
@@ -1227,6 +1278,8 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 顺手修：observer 的 `+messages-search` 时间不能带毫秒（99992402），改成整秒 `+00:00`
 - [x] 主人 在「模型 → 密钥」填 `FEISHU_APP_SECRET`
 - [x] 端口：控制台用 8444；客户端如果开了 TUN 类代理，要绕过 `*.ts.net`、`100.64.0.0/10`
+- [x] **公网入口**（v0.17）：两个入口各一个 socket、各信各的身份证明；`core/test/console-web-smoke.ts` 55 项全过（公网入口带伪造的 `Tailscale-User-Login`、没 cookie、mac 错、别的 key、过期、未来时间都被拒；登录要本站 Origin，按 IP 和总量限流；写操作要 cookie + Origin + CSRF 头；密码哈希和会话密钥不能从控制台写；没 `web.origin` 时 404；tailnet 入口行为不变）
+- [x] 公网入口上线（2026-11-18）：Cloudflare 加灰云 A 记录、`install.sh <host>`（Let's Encrypt、nginx、`/run/sbot-web`）、`console-passwd`、经控制台写 `web.origin`。从公网实测：HTTP/2、证书有效，没登录跳登录页 / 接口 401，伪造 `Tailscale-User-Login` 读写都是 401，外站提交登录 403。同一台 Mac 上 8 次请求：tailnet 1.1～5.3 s（中位约 2.7 s），公网 1.1～2.9 s（中位约 1.5 s）
 
 ### 13.5 M3c 进度（2026-11-17）
 
@@ -1297,14 +1350,21 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] `test/graph-smoke.ts` 离线全过（登记、各类边和可信度、self/ 不进图、圈子、初见、路径不经过我、借机观察、纠正、工具权限）
 - [ ] 没做：从对话里自动记关系；周复盘里的因缘段；增量构建（见「仍然未决」）
 
-### 13.10 飞书邮箱进度（2026-11-18）
+### 13.10 注意力窗口进度（2026-11-18）
+
+- [x] `gate.yaml attention`（校验、热加载、按地方覆盖、缩短时醒目通知）；notify / draft 等窗口，escalate 默认不等（§4.3）
+- [x] 「我回应了」一条规则，分拣前后说的话都算（§17.2）；不用回的提醒按已读过滤、受每日上限约束，超出的进早报（§9.3）
+- [x] `test/attention-smoke.ts` 离线全过；m7、m8、triage-address 回归全过
+- [ ] 没做：飞书里在某条消息下新开话题回复时，那条消息记录上没有 thread_id，对不上，这种情况会多提醒一次
+
+### 13.11 飞书邮箱进度（2026-11-18）
 
 §17.3 的 `kind: feishu-mail`。
 
 - [x] **读取**（`src/source-mail.ts`）：收件箱和已发送，只用三个读接口；基线、分页、去重、敏感主题跳过
 - [x] **判定和清洗**：`to_me` / `from_me`、一个邮件会话一个地方、去引用、去签名、截断
 - [x] **分拣围栏**：外面的文字写不出 `<untrusted>` 标记；群消息升级给主 agent 时也包着；信息源不升级，封顶到提醒
-- [x] `test/mail-smoke.ts` 离线全过（假 `lark-cli` 和虚构邮件）；m7、m8、graph 回归全过
+- [x] `test/mail-smoke.ts` 离线全过（假 `lark-cli` 和虚构邮件）；m7、m8、graph、attention、triage-address 回归全过
 - [ ] 没做：自定义文件夹；附件；邮件的「打开」链接
 
 ---
@@ -1660,9 +1720,15 @@ agent-home/self/
 - **state**：`open`（reply / decide 还没处理）· `seen`（fyi / watch）· `done` · `dropped`。
 
 **怎么关**：只认我的行为，不让模型猜。
-- 我在原处说了话 → 原处早于它的 open 事件都算处理了；我回复的是某条具体消息，就只关那条对应的事件。信息源的插件给出 `from_me` 的条目也算。
+- 我回应了（`markReplied`，分拣前后说的都算；v0.16 收紧，拿不准就不关，宁可多提醒）：
+  - 回复了事件里的某条消息 → 关这一件。回复的是别的消息 → 不算。
+  - 在事件所在的话题里说话 → 算。在别的话题里说、问题在话题里而我在主聊天说 → 不算。
+  - 私聊，或信息源里有名字的一处（`where`，比如一张工单）→ 我在那里说的话算回应最新的一件。
+  - 群里一句没指向的话 → 只关紧跟在问题后面的最新一件，中间别人说了超过 3 句就算话题已经过去；一句话不能同时回应几件事。@ 了提问的人算，@ 了别人不算。
+  - 没有 `where` 的信息源是一条流，只认 `reply_to` / `thread`。
+  - 飞书的「已读」不算回应：读了没回正是要提醒的。
 - 草稿以我的名义发出 → done；我拒了草稿 → dropped（我觉得不用回）。
-- 同一批消息里我已经回过 → 记下来就是 done。
+- 分拣之前我已经回过 → 按同样的规则，记下来就是 done；已经用来关掉别的事件的那句话不再算。
 - 我在控制台或用 `event_update` 手动改。我改 level 时，state 跟着变（改成 fyi 就不再等我）。
 
 **怎么串**：
@@ -1671,7 +1737,7 @@ agent-home/self/
 - 把话头挂到一件事上（`matter_link` 或控制台），话头下的事件全部归过去，话头变成这件事的 key，以后 Triage 直接认。
 
 **谁读**：
-- 提醒：一批 notify 按事 / 话头分组，要你回、要你拍板的排前面。
+- 提醒：窗口过后还没回应的（§4.3），一批 notify 按事 / 话头分组，要你回、要你拍板的排前面。
 - 早报：「等你回 / 拍板」「按事：昨天以来」「可能该起局的话头」三段，只给事实，主 agent 写成早报。
 - 控制台：待办里的「要你回 / 拍板」；生活 › 事 里每件事的事件和等你的。
 - 主 agent：`matter_events`（L0）查一件事或一个话头的事件；`matter_link`、`event_update`、`matter_open` 带 topic / keys（L1）。都只在 owner 会话。
@@ -1693,6 +1759,7 @@ sources:
 - 每条读进来的东西进 `messages`（surface `source:<id>`，chat_id `<id>:<where>`），跟群消息一样等分拣。git、fetch 和飞书邮箱第一次拉只定基线，不回填。
 - **command 插件协议**：`${SBOT_PLUGINS:-/opt/sbot/plugins}/sources/<run>/run --since <ISO 时间>`。
   - stdout 每行一个 JSON：`{"ref","text","ts","who","where","link","to_me","from_me","reply_to","thread"}`，只有 ref 和 text 必填。
+  - `from_me` 的条目是我说的话，按 §17.2 判断它回应了哪件事；`reply_to` 填对方条目的 ref，`thread` 填同一串讨论的标识。
   - 以 sbot 用户跑，HOME 和 cwd 是它自己的状态目录，最多 2 分钟；参数在 `SBOT_SOURCE_ARGS`（JSON）。
   - 只拿到 `env:` 里列的 `secrets.env` 名字，别的都没有；要核心自己的密钥（飞书应用、模型端点）直接拒。stderr 里出现密钥一律打码，状态里只留 300 字。
   - 插件由我在服务器上手动装，root 所有；agent 不装、不改插件。

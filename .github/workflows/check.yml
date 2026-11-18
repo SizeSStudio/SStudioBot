@@ -18,7 +18,7 @@ jobs:
       - name: syntax (TypeScript is run by type stripping, so only erasable syntax is allowed)
         run: |
           set -e
-          for f in $(git ls-files 'core/src/*.ts' 'core/test/*.ts' 'core/console/*.js' 'core/console/**/*.js'); do
+          for f in $(git ls-files 'core/src/*.ts' 'core/protocol/*.ts' 'core/test/*.ts' 'core/console/*.js' 'core/console/**/*.js'); do
             node --check "$f" || { echo "::error file=$f::syntax"; exit 1; }
           done
       - name: shell scripts

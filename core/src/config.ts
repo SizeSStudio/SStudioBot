@@ -76,9 +76,10 @@ const GATE_DEFAULTS: GateConfig = {
 };
 export const gateConf = (): GateConfig => ({ ...GATE_DEFAULTS, ...cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {}) });
 
-/** config/jobs.yaml (§9.1): periodic jobs; only the owner edits it, hot-reloaded */
-export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean; retry_hours?: number }
-export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"), (t) => parse(t) ?? {}, {});
+/** config/jobs.yaml (§9.1): periodic jobs; only the owner edits it, hot-reloaded. enabled: false = as if it weren't there */
+export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean; retry_hours?: number; enabled?: boolean }
+export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"),
+  (t) => Object.fromEntries(Object.entries((parse(t) ?? {}) as Record<string, JobSpec>).filter(([, j]) => j?.enabled !== false)), {});
 
 /** the 每日整理 job (§15.14), whatever it is called in jobs.yaml; its knobs live on the job line */
 export const matterReviewConf = () => {

@@ -4,7 +4,7 @@
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
 
 ### v0.20 变更（派发提案，2026-11-18，未启用）
-- **新增 §19**：sbot 把 worker 派到别的机器的方案，比较了 ssh + 现有 SDK worker、T3 Code、Herdr，建议第一步用 ssh，只派一台机器、只读。
+- **新增 §19**：sbot 把 worker 派到别的机器的方案，比较了 ssh + 现有 SDK worker、T3 Code、Herdr，建议用 ssh，第一台目标是我的 Mac（核心所在的机器资源紧），先只读打通链路，再做在 Mac 上跑重活。
 - **只是提案**：没有代码、配置或机器改动。它会放宽 §1.3 和 §7.6，所有开关默认关，等我在 §19.5 拍板；在那之前"不做远程 worker"仍然有效。
 
 ### v0.19 变更（主线与每日整理，2026-11-18）
@@ -1926,7 +1926,9 @@ sbot 是调度方：它决定派什么、派到哪，收结果，走审批，记
 
 ### 19.1 结论
 
-**第一阶段用 ssh + 现有的 Agent SDK worker，只派一台登记过的机器，只读。** T3 Code 留作以后的可选适配器，现在不接。Herdr 不做派发底座。
+**第一阶段用 ssh + 现有的 Agent SDK worker，只派一台登记过的机器，只读。第一台目标是我的 Mac。** T3 Code 留作以后的可选适配器，现在不接。Herdr 不做派发底座。
+
+为什么是 Mac：核心所在的机器资源紧，Mac 的 CPU 和内存富余得多，§1.3 本来也把重构建交给它。但只读任务用不上这些资源，它只验证链路和权限。真正把重活挪过去的是 P2（§19.9）。Mac 上私人内容也最多，所以要守 §19.4 的 Mac 约束。
 
 理由很简单：SDK 的 hook 和进程内 MCP 都走 stdio，stdio 过 ssh 不变。所以闸门、`progress` / `ask_owner` / `submit_report`、取消、resume、按 run 签发的预算令牌都留在核心，任务状态机几乎不用动，也不增加新的外部依赖。T3 Code 和 Herdr 各有长处，但都把这些东西搬到了 sbot 够不着的地方。
 
@@ -2004,12 +2006,12 @@ T3 Code 的 MCP 入口可以选 `runtimeMode`，但它的合约说明窄模式�
 
 ```yaml
 machines:
-  - id: devbox            # 给人和 agent 看的代号，不写真实主机名
+  - id: mac               # 给人和 agent 看的代号，不写真实主机名
     enabled: false
     address: <地址>
     user: <专用账号>
     host_key: "SHA256:<指纹>"   # 固定指纹，不用 accept-new
-    key: devbox           # 私钥的文件名，不是内容
+    key: mac              # 私钥的文件名，不是内容
     profile: read-only    # 第一阶段只有这一档
     roots: [<绝对路径>]    # 我逐个列，不接受整个 home
     tunnel_ports: [<端口>, <端口>, <端口>]
@@ -2029,6 +2031,13 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 
 **和 `ssh_hosts` 的关系**：`worker.yaml` 的 `ssh_hosts` 让 host worker 能完整登录机器（§4.2），比本方案宽得多。**同一台机器如果还留在 `ssh_hosts` 里，这里的限制就没有意义。** 派发密钥也不能给 `ssh_hosts` 共用。
 
+**目标是 Mac 时**（按 macOS 的常规行为写的，P0 要逐条实测）：
+
+- **远程登录**：只开给专用账号，sshd 只听 tailnet 地址，不勾"允许远程用户完全磁盘访问"。
+- **专用账号**：不是管理员，只用它自己主目录下的工作区。不给它授权我的主目录，这样 `.ssh`、钥匙串、`~/.config/sbot`、`self/`、命盘都靠文件权限隔开。要处理的代码和资料由我放进工作区。
+- **休眠**：包装脚本用 `caffeinate -i -w <CLI 进程>` 挡住运行中的空闲休眠。笔记本合盖仍可能休眠，这时按断线处理（§19.7）。sbot 不唤醒 Mac，也不改电源设置。
+- **不和我抢机器**：低优先级运行（`nice` / `taskpolicy`），同时只跑一个。macOS 没有 systemd 的 `MemoryMax`，内存上限不能照搬 §4.2，靠并发和时限控制，P2 之前要测。
+
 **吊销**，从快到慢：
 
 1. 目标机上删掉 `authorized_keys` 那一行。这一步立刻生效，不依赖核心，也是密钥泄露时唯一可靠的动作。
@@ -2044,14 +2053,16 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 | # | 问题 | 选项 | 默认 | 建议 |
 |---|---|---|---|---|
 | 1 | 是否修改 §1.3，允许做 P0 / P1 | 不做 / 只做 P0 探针 / 做到 P1 | 不做 | 先只做 P0，看结果再定 P1 |
-| 2 | 第一台机器 | 不放私人资料的开发机或服务器 / 我的 Mac | 没有 | 开发机。Mac 上私人内容最多，放到最后 |
+| 2 | 第一台机器 | 我的 Mac / 其他开发机或服务器 | 没有 | Mac，资源上最需要；同时守 §19.4 的 Mac 约束 |
 | 3 | 派发前审批 | 每次都审批 / 按"机器 + 目录"批一次 / 不审批 | 每次都审批 | 每次都审批，卡片上不放"以后这类自动" |
-| 4 | 读取范围 | 我逐个列目录，始终排除 `.ssh`、钥匙串、`~/.config/sbot`、`self/`、命盘 / 放宽 | 空（什么都读不了） | 逐个列，用专用账号的文件权限落实 |
-| 5 | 目标机内容能否进模型和飞书 | 报告进工作台 / 工作台只发摘要，全文只在控制台 / 不允许 | 不允许 | 按机器内容定；有任何私人内容就只发摘要 |
-| 6 | 操作系统层加固 | 只靠专用账号 / 再套只读沙箱（macOS `sandbox-exec`、Linux bubblewrap） | 专用账号 | P0 测完账号的实际可读范围再定 |
+| 4 | 读取范围 | 只读专用账号自己的工作区 / 再逐个授权我的目录（始终排除 `.ssh`、钥匙串、`~/.config/sbot`、`self/`、命盘） | 空（什么都读不了） | 只用专用工作区，不碰我的主目录 |
+| 5 | 目标机内容能否进模型和飞书 | 报告进工作台 / 工作台只发摘要，全文只在控制台 / 不允许 | 不允许 | 工作区只放可以进模型和工作台的内容，报告进工作台 |
+| 6 | 操作系统层加固 | 只靠专用账号 / 再套沙箱（macOS `sandbox-exec`、Linux bubblewrap） | 专用账号 | P1 先用专用账号；P2 要跑命令时必须加沙箱 |
 | 7 | 目标机上的任务目录（含会话记录）保留多久 | 7 天 / 任务结束即删（之后不能再 resume）/ 更长 | 7 天 | 7 天 |
 | 8 | 这台机器是否从 `ssh_hosts` 移除 | 移除 / 保留并接受风险 | 不派发 | 移除 |
 | 9 | 控制台能否改 `machines.yaml` | 不能，只在服务器上改 / 能 | 不能 | 不能 |
+| 10 | 是否打开 Mac 的远程登录 | 不开 / 只对专用账号、只听 tailnet 地址 | 不开 | 做 P0 时按后者开，不做就不开 |
+| 11 | Mac 休眠或离线时，任务怎么办 | 报告连不上，等我说再试 / 排队等它上线 | 报告并等我 | 报告并等我，免得它在我不知道时开跑 |
 
 只有 owner 会话能发起：`task_start` 现在就是 `for: ["owner"]`。信息源不会升级给主 agent（§4.3）的规则不变。
 
@@ -2076,7 +2087,7 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 | `ask_owner` / `task_reply` | `needs_input`，我在话题里回复后 `replyTask` → `queued` → 新连接 resume（实测） |
 | 取消 | `cancelTask` → `engine.abort` → ssh 结束 → 目标机清理（实测 3.9 秒） |
 | 超时、看门狗 | 核心的 `timeout` 和 `WATCHDOG_MS` 不变；目标机的 `max_seconds` 兜住核心失联的情况 |
-| 连不上 | 还没启动就失败：`interrupted`，话题里说明。运行中断开：新的结束原因 `transport_lost`，重排队有限次，之后 `interrupted` |
+| 连不上（含 Mac 休眠、离线） | 还没启动就失败：`interrupted`，话题里说明，我说了再试。运行中断开：新的结束原因 `transport_lost`，重排队有限次，之后 `interrupted` |
 | 核心重启 | `recover()` 照旧重排队；ssh 随核心退出，目标机 CLI 由 stdin EOF 清理，新 run 接着 resume |
 | 并发 | P1 共用 `MAX_WORKERS`，再加每台机器的 `max_concurrent`。`LANE_OPEN_MAX`、`GLOBAL_OPEN_MAX` 不变 |
 | 预算耗尽 | `tokenStatus` 判定，和本地一样 |
@@ -2090,7 +2101,7 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 ```jsonc
 {
   "id": "…", "status": "running",
-  "target": { "id": "devbox", "label": "开发机", "reachable": true },   // 不给地址、账号、指纹
+  "target": { "id": "mac", "label": "Mac", "reachable": true },        // 不给地址、账号、指纹
   "transport": "ssh",                                                  // local | ssh | 以后的适配器
   "question": null, "report": null,
   "usage": { "input": 0, "output": 0, "budget": 150000 },
@@ -2102,9 +2113,9 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 
 每一步都单独由我确认，上一步没过不进下一步。
 
-- **P0 真实两机探针**（不接核心）：一台真实目标机、小额真实模型。补 §19.3 没测的：真实网络下的断线和恢复、Linux 和 macOS、专用账号实际能读到什么（含符号链接和 macOS 的隐私保护）、同账号能否看到环境变量、`ClientAlive*`。脚本放 `probes/`，可重复执行。
-- **P1 一台机器、只读**：`machines.yaml`、`WorkerTarget`、`tasks.target`、派发审批卡片、结果回工作台。包装脚本和安装脚本放 `deploy/`，合并后手动安装。通过标准：跑完 §19.3 的全部场景，吊销演练成功，任务和 usage 账目对得上。
-- **P2 写任务**：目标机 worktree、代码怎么回到核心、`git_push` 经 ssh 的 `defer`。这是又一次放宽，要重新设计和确认。
+- **P0 核心机器 → Mac 的真实探针**（不接核心）：小额真实模型。补 §19.3 没测的：真实网络下的断线和恢复、休眠和合盖、专用账号实际能读到什么（含符号链接和 macOS 的隐私保护）、同账号能否看到环境变量、`ClientAlive*`。脚本放 `probes/`，可重复执行。Linux 目标等有第二台机器时再测。
+- **P1 Mac、只读**：`machines.yaml`、`WorkerTarget`、`tasks.target`、派发审批卡片、结果回工作台。包装脚本和安装脚本放 `deploy/`，合并后手动安装。通过标准：跑完 §19.3 的全部场景，吊销演练成功，任务和 usage 账目对得上。这一步还省不了多少资源，只是把链路和权限做实。
+- **P2 在 Mac 上跑重活**：构建、测试这类要 `Bash` 的任务，在专用账号的 worktree 里跑，套沙箱；还要定网络范围、内存控制、代码怎么回到核心、`git_push` 经 ssh 的 `defer`。这是资源上真正的收益，也是最大的一次放宽：派发密钥泄露的后果从"读文件"变成"以这个账号跑命令"。要重新设计和确认。
 - **P3 多台机器和并发**：按机器排队，机器状态进控制台。
 - **P4 可选的 T3 适配器**：用在非 Claude 模型，或者我想在 T3 里旁观的时候。前提是有无人值守的认证、按 run 的计量、能注入闸门或有等价的只读模式。Herdr 最多用来人工旁观。
 
@@ -2113,10 +2124,10 @@ restrict,port-forwarding,permitlisten="127.0.0.1:<端口>",permitopen="127.0.0.1
 agent 不做这些，P0 / P1 开始前由我来：
 
 1. 回答 §19.5，选定第一台机器。
-2. 在目标机建专用低权限账号，不给 sudo，只给要读的目录授权。
+2. 在 Mac 上建专用账号，不是管理员，在它的主目录下建工作区，把要处理的内容放进去。
 3. 安装锁定版本的 Claude CLI 和包装脚本（root 所有，账号不可写），写好目标机的本地策略。
 4. 在服务器上生成这台机器专用的派发密钥，把公钥按 §19.4 的格式加进 `authorized_keys`。
-5. 目标机 sshd 设置 `ClientAliveInterval` / `ClientAliveCountMax`；确认 `AllowTcpForwarding` 允许远程转发。
+5. 打开 Mac 的远程登录，只允许专用账号，只听 tailnet 地址；sshd 设置 `ClientAliveInterval` / `ClientAliveCountMax`，确认 `AllowTcpForwarding` 允许远程转发。
 6. 记下目标机的 host key 指纹，写进 `machines.yaml`，最后再把 `enabled` 改成 `true`。
 7. 如果这台机器在 `ssh_hosts` 里，按选项 8 处理。
 

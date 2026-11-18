@@ -1273,7 +1273,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 主人 在「模型 → 密钥」填 `FEISHU_APP_SECRET`
 - [x] 端口：控制台用 8444；客户端如果开了 TUN 类代理，要绕过 `*.ts.net`、`100.64.0.0/10`
 - [x] **公网入口**（v0.17）：两个入口各一个 socket、各信各的身份证明；`core/test/console-web-smoke.ts` 55 项全过（公网入口带伪造的 `Tailscale-User-Login`、没 cookie、mac 错、别的 key、过期、未来时间都被拒；登录要本站 Origin，按 IP 和总量限流；写操作要 cookie + Origin + CSRF 头；密码哈希和会话密钥不能从控制台写；没 `web.origin` 时 404；tailnet 入口行为不变）
-- [ ] 公网入口上线：等主人合并后在服务器上跑 `deploy/console-web/install.sh`、设密码、写 `web.origin`
+- [x] 公网入口上线（2026-11-18）：Cloudflare 加灰云 A 记录、`install.sh <host>`（Let's Encrypt、nginx、`/run/sbot-web`）、`console-passwd`、经控制台写 `web.origin`。从公网实测：HTTP/2、证书有效，没登录跳登录页 / 接口 401，伪造 `Tailscale-User-Login` 读写都是 401，外站提交登录 403。同一台 Mac 上 8 次请求：tailnet 1.1～5.3 s（中位约 2.7 s），公网 1.1～2.9 s（中位约 1.5 s）
 
 ### 13.5 M3c 进度（2026-11-17）
 

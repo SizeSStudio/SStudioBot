@@ -37,6 +37,11 @@ case "$here/" in
 esac
 [ "$(stat -c %U "$here")" = sbot-h ] || { echo "worker-exec: task dir must be owned by sbot-h" >&2; exit 64; }
 unit="sbot-h-$(basename "$here")-$$"
+# ssh hosts from config/worker.yaml (the core writes the shared copy before each run). ssh only accepts an included
+# config owned by the user or root, so hand sbot-h its own copy.
+if [ -f /srv/data/sbot-shared/ssh_config ]; then
+  install -o sbot-h -g sbot-h -m 0600 /srv/data/sbot-shared/ssh_config /srv/data/sbot-h/home/.ssh/sbot_hosts
+fi
 # A transient service gets no environment from us; pass it in a root-only file (Environment= would be readable by
 # any local user over D-Bus, and ANTHROPIC_AUTH_TOKEN is in there).
 install -d -m 0700 /run/sbot-h

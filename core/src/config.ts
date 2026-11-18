@@ -106,7 +106,8 @@ export const reposConf = (): Record<string, { url: string; branch?: string }> =>
  *   default_mode: host | sandbox            (default host)
  *   path: [/opt/foo/bin]                    extra PATH dirs, prepended, both modes
  *   skills: [name, …] | all                 skills to enable; default = every dir under config/skills/
- *   ssh_hosts: [{ name, host, user?, port? }]   written to the host worker's ssh config (`ssh <name>`)
+ *   ssh_hosts: [{ name, host, user?, port? }]   written to the host worker's ssh config (`ssh <name>`); host = tailnet IP
+ *                                           (the server doesn't use MagicDNS)
  */
 export interface SshHost { name: string; host: string; user?: string; port?: number }
 export interface WorkerConf { default_mode?: "host" | "sandbox"; path?: string[]; skills?: string[] | "all"; ssh_hosts?: SshHost[] }

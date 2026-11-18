@@ -32,9 +32,12 @@ install -d -o sbot-h -g sbot-h -m 0750 $H/home $H/tasks
 install -d -o sbot-h -g sbot-h -m 0700 $H/home/.ssh
 install -d -o sbot-h -g sbot-h -m 0755 $H/home/.local $H/home/.local/bin
 [ -f $H/home/.ssh/id_ed25519 ] || sudo -u sbot-h ssh-keygen -q -t ed25519 -N "" -C "sbot-h@$(hostname -s)" -f $H/home/.ssh/id_ed25519
-# ssh hosts come from config/worker.yaml; the core writes them to the shared dir, the user's own config includes it
-grep -qs "^Include /srv/data/sbot-shared/ssh_config" $H/home/.ssh/config || {
-  { echo "Include /srv/data/sbot-shared/ssh_config"; cat $H/home/.ssh/config 2>/dev/null || true; } > $H/home/.ssh/config.new
+# ssh hosts come from config/worker.yaml: the core writes /srv/data/sbot-shared/ssh_config, worker-exec copies it to
+# ~/.ssh/sbot_hosts (ssh refuses included files not owned by the user or root, and the core can't chown)
+sed -i '/^Include \/srv\/data\/sbot-shared\/ssh_config$/d' $H/home/.ssh/config 2>/dev/null || true   # first version included it directly
+rm -f /etc/ssh/ssh_config.d/sbot-h.conf
+grep -qs "^Include sbot_hosts" $H/home/.ssh/config || {
+  { echo "Include sbot_hosts"; cat $H/home/.ssh/config 2>/dev/null || true; } > $H/home/.ssh/config.new
   install -m 0600 -o sbot-h -g sbot-h $H/home/.ssh/config.new $H/home/.ssh/config; rm -f $H/home/.ssh/config.new
 }
 # shared, world-readable, written by the core: skills plugin + ssh_config (no secrets in here)

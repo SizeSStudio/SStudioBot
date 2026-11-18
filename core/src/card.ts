@@ -54,9 +54,10 @@ export class CardStream {
   private timer?: NodeJS.Timeout;
   failed = false;          // couldn't create/send the card: the caller falls back to a plain text reply
 
-  constructor(ctx: RunCtx) {
+  /** thinking=false: no "思考中" card (a scheduled run: nobody is waiting, and a card would rule out a clean retry, §9.4) */
+  constructor(ctx: RunCtx, o: { thinking?: boolean } = {}) {
     this.ctx = ctx;
-    this.timer = setTimeout(() => { if (!this.cardId) this.update("", "💭 思考中…"); }, START_AFTER_MS);
+    if (o.thinking !== false) this.timer = setTimeout(() => { if (!this.cardId) this.update("", "💭 思考中…"); }, START_AFTER_MS);
   }
 
   get started() { return !!this.cardId; }

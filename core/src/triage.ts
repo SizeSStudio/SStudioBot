@@ -41,7 +41,7 @@ export const triageSystem = (tuning = tunedRaw("tuning/triage.md")) => `你是${
 - notify：他应该知道（被点名、和他负责的事有关、有决定或变化）
 - draft：有人在等他本人回复（问他、请他确认、找他要东西），可以替他起草一条回复
 - escalate：紧急且需要他尽快亲自处理（线上事故、上级急找、截止时间就在眼前）
-标了 [@我] 的至少是 notify。
+标了 [@我] 的至少是 notify。标了 [@别人：…] 的是说给别人的，不是在等他：最多 notify，不 draft、不 escalate；只 @ 了机器人（标「机器人」）的是叫机器人干活，archive。名字后面标「机器人」的是机器人发的。
 
 二、把值得记的点记成事件。说同一件事的几条消息合成一个事件；ignore 的不记；notify / draft / escalate 的消息都要落在某个事件里。
 - kind（发生了什么）：ask 有人问他、请他做事 · decision 定了什么 · commitment 谁答应了什么 · progress 进展 · risk 风险或问题 · deadline 时间点 · info 别的值得知道的
@@ -65,6 +65,26 @@ type Msg = Record<string, any>;
 const rawOf = (r: Msg) => JSON.parse(r.raw_json ?? "{}");
 /** addressed to him: @-mentioned in a chat, or a source item marked to_me (an email to him, a ticket assigned to him) */
 const atMeOf = (r: Msg, owner = ownerFeishu()) => { const x = rawOf(r); return x.to_me === true || (x.mentions ?? []).includes(owner); };
+/** Feishu mentions carry open_id (ou_) for people and the app_id (cli_) for a bot; the owner is an open_id */
+const isBotId = (id: unknown) => /^cli_/.test(String(id ?? ""));
+/**
+ * Who a message is said to (§4.3): `me`, or `others` when it @s people / bots and not him. A model reading "@X 查一下"
+ * sees an ask and raises it as if he were asked; code holds the line, the model only sorts what is left.
+ */
+function addressOf(r: Msg, owner = ownerFeishu()): { me: boolean; others: { name: string; bot: boolean }[] } {
+  const x = rawOf(r);
+  if (atMeOf(r, owner)) return { me: true, others: [] };
+  const ids: unknown[] = Array.isArray(x.mentions) ? x.mentions : [];
+  return { me: false, others: ids.map((id, i) => ({ name: String(x.names?.[i] ?? "?"), bot: isBotId(id) })) };
+}
+/** the most a message may be raised to: @ only bots → archive / fyi; @ other people → notify / watch; else no cap */
+const ACTION_RANK: Record<string, number> = { ignore: 0, archive: 1, notify: 2, draft: 3, escalate: 4 };
+function capOf(r: Msg, owner = ownerFeishu()): { action: string; level: string } {
+  const a = addressOf(r, owner);
+  if (a.me || !a.others.length) return { action: "escalate", level: "decide" };
+  return a.others.every((o) => o.bot) ? { action: "archive", level: "fyi" } : { action: "notify", level: "watch" };
+}
+const capAction = (action: string, cap: string) => (ACTION_RANK[action] ?? 0) > (ACTION_RANK[cap] ?? 0) ? cap : action;
 const placeLabel = (r: Msg) => r.surface === "feishu:p2p" ? "私聊" : String(r.surface ?? "").startsWith("source:") ? "信息源" : "群";
 /** the domain events from this place get when no matter decides it: a source's own setting; Feishu is work */
 const domainOf = (surface: string) => surface.startsWith("source:") ? sourcesConf().sources.find((s) => s.id === surface.slice(7))?.domain ?? "work" : "work";
@@ -74,8 +94,12 @@ const domainOf = (surface: string) => surface.startsWith("source:") ? sourcesCon
  * matters / topics block (events.ts): live state, so replay leaves it out and compares prompts on the messages alone.
  */
 export function triageUserText(chat: string, ctx: Msg[], todo: Msg[], owner = ownerFeishu(), extra = ""): string {
-  const line = (r: Msg, i?: number) =>
-    `${i === undefined ? "" : `[${i}] `}${localStamp(r.ts).slice(11)} ${r.sender_kind === "owner" ? `${ownerName()}（他本人）` : rawOf(r).sender_name ?? "?"}：${String(r.text).slice(0, 500)}${atMeOf(r, owner) ? " [@我]" : ""}`;
+  const who = (r: Msg) => r.sender_kind === "owner" ? `${ownerName()}（他本人）` : `${rawOf(r).sender_name ?? "?"}${r.sender_kind === "bot" ? "（机器人）" : ""}`;
+  const to = (r: Msg) => {
+    const a = addressOf(r, owner);
+    return a.me ? " [@我]" : a.others.length ? ` [@别人：${a.others.map((o) => o.bot ? `${o.name}（机器人）` : o.name).join("、")}]` : "";
+  };
+  const line = (r: Msg, i?: number) => `${i === undefined ? "" : `[${i}] `}${localStamp(r.ts).slice(11)} ${who(r)}：${String(r.text).slice(0, 500)}${to(r)}`;
   return `${placeLabel(todo[0])}：${rawOf(todo[0]).chat_name ?? chat}\n\n之前的消息（参考）：\n<untrusted>\n${ctx.map((r) => line(r)).join("\n") || "（无）"}\n</untrusted>\n\n新消息：\n<untrusted>\n${todo.map((r, i) => line(r, i)).join("\n")}\n</untrusted>${extra ? `\n\n${extra}` : ""}`;
 }
 /** the messages Triage saw before `firstTs` in this chat (context rows), as classify picks them */
@@ -156,9 +180,11 @@ export class Triage {
       let { action, why } = pick.get(i) ?? { action: atMe(r) ? "notify" : "archive", why: RULES_WHY };
       if (atMe(r) && (action === "ignore" || action === "archive")) action = "notify";
       if (action === "draft" && !isGroup) action = "notify";   // drafts go out as him in a group (§4.3); DMs and sources: he answers himself
-      actions[i] = action; whys[i] = why;
+      actions[i] = capAction(action, capOf(r, owner).action); whys[i] = why;
     });
     const evs = this.events(chat, surface, todo, actions, whys, Array.isArray(out?.events) ? out.events : []);
+    // an event's lift (needs him → notify) must not raise a message said to someone else past its cap either
+    todo.forEach((r, i) => { actions[i] = capAction(actions[i], capOf(r, owner).action); });
     let draftRow: Record<string, any> | undefined, draftWhy = "";
     tx(() => todo.forEach((r, i) => {
       const action = actions[i];
@@ -191,6 +217,9 @@ export class Triage {
     const make = (idx: number[], kind: string, level: string, matter: unknown, topic: unknown, sum: string) => {
       const rows = idx.map((i) => todo[i]);
       if (idx.some((i) => actions[i] === "draft" || actions[i] === "escalate")) level = maxLevel(level, "reply");
+      // an event only made of messages said to others is not waiting on him: at most its loosest message's cap
+      const cap = rows.map((r) => capOf(r).level).reduce((a, b) => maxLevel(a, b));
+      if (maxLevel(level, cap) !== cap) level = cap;
       if (needsHim(level)) for (const i of idx) if (actions[i] === "ignore" || actions[i] === "archive") actions[i] = "notify";
       const last = rows[rows.length - 1];
       const ts = Math.max(...rows.map((r) => Number(r.ts)));

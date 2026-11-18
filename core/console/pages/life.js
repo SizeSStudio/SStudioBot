@@ -1,8 +1,8 @@
 // 生活 (owner-only, §15): the timeline with a quick note, matters with their events (§17.2) and the topics that may
 // become one, the people around him and how they connect (§18), imports from another harness (§17.4), outlooks and how they turned out, habits and rhythms (only he
-// endorses or drops them), readings, reviews, and his birth info (self.yaml, edited here and nowhere else).
+// endorses or drops them), readings, reviews, and his birth info and lens settings (self.yaml: a form here; he can also tell the main agent in his DM).
 
-import { $, $$, esc, api, toast, pill, row, rel, hm, mdhm, isoDay, dayLabel, empty, loading, tabs, chips, mdText, busy, busyTyping, ACTS, openDrawer } from "/lib/core.js";
+import { $, $$, esc, api, toast, pill, row, rel, hm, mdhm, isoDay, dayLabel, empty, loading, tabs, chips, mdText, busy, busyTyping, jobWhen, ACTS, openDrawer } from "/lib/core.js";
 import { mountEditor } from "/lib/editor.js";
 import { eventCard } from "/lib/items.js";   // also ACTS.task / ACTS.approval for links inside drawers
 import { peopleTab, yinyuanTab } from "/lib/people.js";   // also ACTS.person for links inside drawers
@@ -15,7 +15,7 @@ const st = { tab: "", meta: null, tl: { days: 7, kind: "", domain: "", q: "" }, 
 
 export async function render(main, args) {
   st.meta ??= await api("/life/meta");
-  main.innerHTML = `<div class="page" id="life"><div class="page-head"><h1>生活</h1><span class="sub">只有你看得到；飞书里只说一两句</span></div><div id="lifetabs"></div><div id="lifebody"></div></div>`;
+  main.innerHTML = `<div class="page" id="life"><div class="page-head"><h1>生活</h1><span class="sub">你的私人内容，只给你看：这里和你跟它的私聊</span></div><div id="lifetabs"></div><div id="lifebody"></div></div>`;
   st.tab = "";
   await update(args);
 }
@@ -340,7 +340,133 @@ ACTS.review = async (el) => {
 };
 
 // ───────── 出生信息 (self.yaml) ─────────
+const JOB_ZH = { day: "日运", week: "周运", month: "月运" };
+const OTHER_PLACE = "__other";
+
 PAGES.birth = async (body) => {
-  body.innerHTML = `<div class="card note"><b>只在这里填。</b><div class="sub">出生时间、地点这些只存在 VPS 的 config/self.yaml，不进飞书、不进对话上下文；只有解读时交给离线的镜头任务。改了以后管理群只会收到「self.yaml 改了」，不显示内容。</div></div><div id="birthed"></div>`;
-  st.editor = await mountEditor($("#birthed"), "self.yaml", { private: true, note: "格式见 DESIGN §15.9：birth（日期、时间、地点、性别）、lens、month_rhythm、送一程阈值。" });
+  let v = await api("/life/birth"), saved = "", raw = null;
+  body.innerHTML = `<div class="card note"><b>不填也能用。</b><div class="sub">六爻和紫占不需要生辰；填了之后紫微才能排盘，每月多一份流月。这里和私聊里跟它说，改的是同一份 config/self.yaml，每次改动都有记录、能回滚。管理群只收到「改了」，不显示内容。</div></div>
+    <div id="birthform"></div>
+    <details class="rawyaml"><summary>直接改 self.yaml（节律、送一程阈值也在这里）</summary><div id="birthed"></div></details>`;
+
+  const val = (id) => $(`#bf-${id}`, body)?.value.trim() ?? "";
+  const opts = (list, cur) => list.map(([k, label]) => `<option value="${esc(k)}"${String(cur ?? "") === String(k) ? " selected" : ""}>${esc(label)}</option>`).join("");
+  // the error node is tied to its field only while shown: text aria-describedby points at is read out even when hidden
+  const field = (id, label, control, hint = "") => `<div class="fld" data-fld="${id}"><label for="bf-${id}">${label}</label>${control}${hint ? `<span class="sub">${hint}</span>` : ""}<span class="fld-err" id="bf-${id}-err" hidden></span></div>`;
+  const text = (id, cur, attrs = "") => `<input type="text" id="bf-${id}" value="${esc(cur ?? "")}" autocomplete="off" aria-invalid="false" ${attrs}>`;
+
+  function collect() {
+    const city = val("city"), lunar = val("calendar") === "lunar", num = (s) => s === "" ? null : Number(s);
+    const birth = { date: val("date"), time: val("time"), calendar: lunar ? "lunar" : v.birth?.calendar === "solar" ? "solar" : null, leap_month: lunar ? $("#bf-leap", body).checked : null, gender: val("gender"),
+      place: city === OTHER_PLACE ? val("place") : city, longitude: num(val("longitude")), timezone: num(val("timezone")) };
+    const blank = !birth.date && !birth.time && !birth.gender && !birth.place && birth.longitude === null && birth.timezone === null;
+    const lenses = Object.fromEntries(Object.keys(v.lenses).map((k) => {
+      const on = $(`#bf-on-${k}`, body).checked;   // only a real change: an untouched save must leave the file alone
+      return [k, { ...(on !== v.lenses[k].enabled ? { enabled: on } : {}), notes: val(`notes-${k}`) || null, ...(k === "liuyao" ? { cast: val(`cast-${k}`) || null } : {}) }];
+    }));
+    return { ...(blank && !v.birth ? {} : { birth }), lenses };
+  }
+  const formDirty = () => !!$("#bf-date", body) && JSON.stringify(collect()) !== saved;
+
+  function showErrors(message) {
+    const box = $("#bf-err", body);
+    let first, placed = 0;
+    // the server is the one validator; its "- birth.date：…" lines also land next to their fields
+    for (const [, key, msg] of message.matchAll(/^- (?:birth\.(\w+)|lenses\.(?:\w+)\.profile\.\w+)：(.+)$/gm)) {
+      const id = { leap_month: "leap", place: "city" }[key] ?? key, input = key && $(`#bf-${id}`, body), err = key && $(`#bf-${id}-err`, body);
+      if (!input || !err) continue;
+      err.textContent = msg; err.hidden = false;
+      input.setAttribute("aria-invalid", "true"); input.setAttribute("aria-describedby", err.id);
+      first ??= input; placed++;
+    }
+    // what landed on a field isn't repeated up here in the file's own terms
+    box.textContent = placed && placed === message.split("\n").filter((l) => l.startsWith("- ")).length ? `有 ${placed} 处要改，看下面标红的地方。` : message;
+    box.hidden = false;
+    (first ?? box).focus?.();
+  }
+  function clearErrors() {
+    $("#bf-err", body).hidden = true;
+    for (const e of $$(".fld-err", body)) e.hidden = true;
+    for (const i of $$("[aria-describedby]", $("#birthform", body))) { i.removeAttribute("aria-describedby"); i.setAttribute("aria-invalid", "false"); }
+  }
+  async function refreshRaw() { if (!raw?.dirty()) raw = await mountEditor($("#birthed", body), "self.yaml", { private: true, onSaved: async () => { v = await api("/life/birth"); if (!formDirty()) draw(); } }); }
+  async function apply(r, what) {
+    v = r; draw(); await refreshRaw();
+    toast(!r.changed ? "没有改动" : `${what}${r.moved.length ? "。之后的看法用新版本，以前写下的不动" : ""}`, 4000);
+  }
+
+  function draw() {
+    const b = v.birth ?? {}, known = v.cities.some((c) => c.name === b.place), city = !b.place ? "" : known ? b.place : OTHER_PLACE, lunar = b.calendar === "lunar";
+    const jobs = Object.entries(v.jobs).map(([h, j]) => `${JOB_ZH[h]}：${j ? esc(jobWhen(j)) : "关着"}`).join(" · ");
+    $("#birthform", body).innerHTML = `<form id="bf" novalidate>
+      <div class="card err" id="bf-err" role="alert" tabindex="-1" hidden></div>
+      <section><h3>出生信息</h3>
+        <div class="sub bf-state">${v.ready ? `排盘用：${esc(v.chart_input.datetime)}（公历）· 经度 ${esc(v.chart_input.longitude)} · UTC${v.chart_input.timezone >= 0 ? "+" : ""}${esc(v.chart_input.timezone)}` : v.birth ? "还不完整，紫微暂时排不了盘" : "还没填"}</div>
+        <div class="formgrid">
+          ${field("calendar", "历法", `<select id="bf-calendar" aria-invalid="false">${opts([["solar", "公历"], ["lunar", "农历"]], b.calendar ?? "solar")}</select>`)}
+          ${field("date", "出生日期", text("date", b.date, `inputmode="numeric" placeholder="1990-05-09"`), "按上面选的历法写")}
+          ${field("time", "出生时间", text("time", b.time, `inputmode="numeric" placeholder="09:40"`), "24 小时制")}
+          ${field("gender", "性别", `<select id="bf-gender" aria-invalid="false">${opts([["", "请选择"], ["male", "男"], ["female", "女"]], b.gender)}</select>`)}
+          ${field("city", "出生地", `<select id="bf-city" aria-invalid="false">${opts([["", "请选择"], ...v.cities.map((c) => [c.name, c.name]), [OTHER_PLACE, "其他地方（自己填经度）"]], city)}</select>`, "用于真太阳时")}
+          ${field("place", "地名", text("place", known ? "" : b.place))}
+          ${field("longitude", "经度", text("longitude", b.longitude, `inputmode="decimal" placeholder="120.155"`), "东经为正，西经为负")}
+          ${field("timezone", "时区", text("timezone", b.timezone, `inputmode="numeric" placeholder="8"`), "不填就是 UTC+8")}
+        </div>
+        <label class="check" id="bf-leapwrap"><input type="checkbox" id="bf-leap" aria-invalid="false"${b.leap_month ? " checked" : ""}> 这个月是闰月</label>
+        <span class="fld-err" id="bf-leap-err" hidden></span>
+      </section>
+      <section><h3>镜头</h3>
+        ${Object.entries(v.lenses).map(([k, l]) => `<div class="card lensbox">
+          <label class="check"><input type="checkbox" id="bf-on-${k}"${l.enabled ? " checked" : ""}> <b>${esc(l.zh)}</b></label>
+          <div class="sub">${l.methods.map((m) => esc(m.zh.split("：")[0]) + (m.runnable ? "" : "（要生辰）")).join(" · ")}</div>
+          <div class="formgrid">
+            ${k === "liuyao" ? field(`cast-${k}`, "起卦方式", `<select id="bf-cast-${k}">${opts([["", "默认（大衍筮法）"], ...Object.entries(v.cast_methods)], l.cast)}</select>`) : ""}
+            ${field(`notes-${k}`, "给这门镜头的要求", text(`notes-${k}`, l.notes, `maxlength="500" placeholder="比如：多看工作，少说术语"`))}
+          </div></div>`).join("")}
+        <div class="sub">例行看法 · ${jobs} · <a href="#/self/config/jobs.yaml">在 jobs.yaml 开关</a></div>
+      </section>
+      <div class="actions"><button type="submit" class="btn primary">保存</button><button type="button" class="btn" id="bf-reset">放弃改动</button>${v.birth ? `<button type="button" class="btn" id="bf-clear">清空出生信息</button>` : ""}</div>
+      <section><h3>历史</h3><div class="list">${v.history.map((h, i) => `<div class="row"><div class="main"><div>${esc(h.subject)}</div><div class="sub">${esc(h.sha)} · ${mdhm(h.at)}</div></div>${i ? `<button type="button" class="btn small" data-back="${esc(h.sha)}">回到这版</button>` : `<span class="sub">当前</span>`}</div>`).join("") || `<div class="empty">（还没有历史）</div>`}</div></section>
+    </form>`;
+    const sync = () => {
+      const isLunar = val("calendar") === "lunar", other = val("city") === OTHER_PLACE;
+      $("#bf-leapwrap", body).hidden = !isLunar;
+      $('[data-fld="place"]', body).hidden = !other;
+    };
+    sync();
+    $("#bf-calendar", body).addEventListener("change", sync);
+    $("#bf-city", body).addEventListener("change", () => {
+      const c = v.cities.find((x) => x.name === val("city"));
+      if (c) { $("#bf-longitude", body).value = c.lon; $("#bf-timezone", body).value = c.tz ?? ""; }
+      sync();
+    });
+    $("#bf", body).addEventListener("submit", (e) => {
+      e.preventDefault();
+      busy(e.submitter ?? $("#bf button[type=submit]", body), "在存…", async () => {
+        clearErrors();
+        try { await apply(await api("/life/birth", { method: "PUT", body: { patch: collect(), hash: v.hash } }), "已保存"); }
+        catch (x) { showErrors(x.message); }
+      });
+    });
+    $("#bf-reset", body).addEventListener("click", draw);
+    $("#bf-clear", body)?.addEventListener("click", (e) => {
+      if (!confirm("清空出生信息？紫微会停下，以前写下的看法不动，之后可以从历史里找回来。")) return;
+      busy(e.currentTarget, "在清…", async () => {
+        clearErrors();
+        try { await apply(await api("/life/birth", { method: "PUT", body: { patch: { birth: null }, hash: v.hash } }), "已清空"); } catch (x) { showErrors(x.message); }
+      });
+    });
+    for (const btn of $$("[data-back]", body)) btn.addEventListener("click", () => {
+      if (!confirm(`回到版本 ${btn.dataset.back}？这也会记成一次新的改动，可以再改回来。`)) return;
+      busy(btn, "在回滚…", async () => {
+        clearErrors();
+        try { await apply(await api("/life/birth/rollback", { method: "POST", body: { sha: btn.dataset.back, hash: v.hash } }), "已回滚"); } catch (x) { showErrors(x.message); }
+      });
+    });
+    saved = JSON.stringify(collect());
+  }
+
+  draw();
+  await refreshRaw();
+  st.editor = { dirty: () => formDirty() || !!raw?.dirty() };
 };

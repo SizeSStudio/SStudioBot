@@ -77,7 +77,7 @@ ok(habits.startsWith("---\nvisibility: owner") && habits.includes("## 候选") &
 // ── 4. tool gates ──
 const tool = (n: string) => TOOLS.find((t) => t.name === n)!;
 const ctx = (channel: string, src: string) => ({ runId: "t", lane: "feishu:dm:owner", principal: "owner", turn: { channel } as any, src, token: "", replies: 0 }) as any;
-await rejects(tool("memory_read").exec({ path: "self/habits.md" } as any, ctx("feishu", "owner@feishu:dm")), /不在飞书里整份读/, "memory_read of self/habits.md blocked on Feishu");
+await rejects(tool("memory_read").exec({ path: "self/habits.md" } as any, ctx("feishu", "owner@feishu:dm")), /亲手问的那一轮整份读/, "memory_read of self/habits.md blocked outside a run he started in his DM");
 await rejects(tool("self_mark").exec({ id: hid, status: "endorsed", owner_quote: "认" } as any, ctx("feishu", "summary@feishu:group:oc_x")), /only in a conversation with the owner/, "self_mark refused outside the owner's words");
 await tool("self_mark").exec({ id: hid, status: "endorsed", owner_quote: "这条我认" } as any, ctx("feishu", "owner@feishu:dm"));
 ok(one("SELECT status FROM self_items WHERE id=?", hid)!.status === "endorsed", "self_mark by the owner endorses");

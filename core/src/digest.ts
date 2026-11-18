@@ -10,6 +10,7 @@ import { matterReviewConf, quietConf, log } from "./config.ts";
 import { localNow, localStamp } from "./memory.ts";
 import { dreamDiffText } from "./dream.ts";
 import { morningOutlookText } from "./reflect.ts";
+import { periodReadingsText } from "./lens.ts";
 import { eventsMorningText, takeHeldNotices } from "./events.ts";
 import { MAIN_OPEN, OPEN_MATTER } from "./matters.ts";
 
@@ -52,6 +53,7 @@ export function morningText(): string {
   const y = localStamp(now - 86400_000).slice(0, 10);
   const cost = one("SELECT COALESCE(SUM(cost),0) c FROM usage WHERE ts>=? AND ts<?", startOfDay - 86400_000, startOfDay)!.c as number;
   const dream = dreamDiffText();
+  const lens = periodReadingsText(day());
   const list = (xs: string[]) => xs.length ? xs.map((x) => `- ${x}`).join("\n") : "（无）";
   return `【早报：定时任务。下面是代码整理的事实，请据此给主人发今天的早报】
 现在 ${localNow()}
@@ -74,7 +76,7 @@ ${list(held.map((h) => `[${localStamp(h.ts).slice(5)}] ${h.text}`))}
 ## 昨天（${y}）模型花费
 $${cost.toFixed(2)}
 
-${morningOutlookText()}
+${lens ? `## 今日一卦（镜头，今早写进解读账本的原文）\n${lens}\n\n` : ""}${morningOutlookText()}
 
-写法：简短，先说要紧的（要主人拍板的、等他回的、今天到点的）；按事说，不按群说；没有就一两句问候带过，不要硬凑。${matterReviewConf().on ? "「事的整理」最多提一句，不要复述内容，也不要替他决定。" : "反复出现的话头只提一句「要不要起个局」，他说要再 matter_open(topic=…)。"}只用上面的事实，不编造。压下来的消息挑仍然要紧的说。今日留意放最后，最多 1 条，没有就不写。`;
+写法：简短，先说要紧的（要主人拍板的、等他回的、今天到点的）；按事说，不按群说；没有就一两句问候带过，不要硬凑。${matterReviewConf().on ? "「事的整理」最多提一句，不要复述内容，也不要替他决定。" : "反复出现的话头只提一句「要不要起个局」，他说要再 matter_open(topic=…)。"}只用上面的事实，不编造。压下来的消息挑仍然要紧的说。${lens ? "今日一卦放在今日留意前面：把看法和留意点直接给他，说明这是一种看法，不用解释方法；还没出来或失败了就说一句。" : ""}今日留意放最后，最多 1 条，没有就不写。`;
 }

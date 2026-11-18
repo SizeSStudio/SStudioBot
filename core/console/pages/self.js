@@ -265,12 +265,12 @@ async function setSecret(form, btn) {
 // ───────── 配置 ─────────
 const FILE_NOTE = {
   "models.yaml": "端点、四档模型、价格、预算", "people.yaml": "认人：你和其他人的 ID", "groups.yaml": "群观察开关（「群」页改得更快）",
-  "gate.yaml": "敏感词、审批有效期、专家次数、主动消息上限、提醒等待窗口、巡检预算线", "jobs.yaml": "定时任务：早报、夜间整理……",
+  "gate.yaml": "敏感词、审批有效期、专家次数、主动消息上限、提醒等待窗口、巡检预算线", "jobs.yaml": "定时任务：早报、夜间整理、例行镜头……",
   "feishu.yaml": "管理群、工作台群", "repos.yaml": "worker 能拿到、批准后能推送的仓库", "console.yaml": "能登录控制台的 Tailscale 账号；公网入口的地址（web.origin）",
-  "self.yaml": "出生信息、节律（私人：在「生活 › 出生信息」改）",
+  "self.yaml": "出生信息、镜头设置、节律（私人：在「生活 › 出生信息」改，或在私聊里说）",
   "sources.yaml": "信息源：飞书私聊开关、仓库、网页、插件（「信息源」页看状态）",
 };
-const SOURCE = { console: "控制台", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
+const SOURCE = { console: "控制台", chat: "主对话", upgrade: "升级", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
 PAGES.config = async (body, file) => {
   if (file === "self.yaml") { location.hash = "#/life/birth"; return; }
   if (file) {

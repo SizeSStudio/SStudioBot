@@ -51,6 +51,9 @@ ${timelineText({ from, to: now, limit: 150 }, 160)}
 ## 今天早上的「今日留意」
 ${outlooksText("day", today())}
 
+## 镜头：今天的一卦（早上写下的原文；他有兴致就问一句今天有没有感应，用 reading_revisit 记他的话，不打分；没有就跳过）
+${readingsForReview({ period: today() })}
+
 ## 进行中的事
 ${openMatters()}
 
@@ -101,8 +104,11 @@ ${page("self/guidance-notes.md", 2000)}
 ## 谁先看见（镜子，不是 KPI；不用每次都说）
 ${noticingsSummary(from, now)}
 
-## 镜头：这周到了回看日期的看法（当时写下的原文；拿出来问他结合生活的感受，用 reading_revisit 记他的话；没有就跳过）
-${readingsForReview({ from, to: nextFrom })}
+## 镜头：这周的看法，和这周到了回看日期的看法（当时写下的原文；拿出来问他结合生活的感受，用 reading_revisit 记他的话；没有就跳过）
+${readingsForReview({ period: week, from, to: nextFrom })}
+
+## 镜头：下周一卦（今晚写下的；直接给他看，可以在下周前瞻里提，标明来自镜头；没有就跳过）
+${readingsForReview({ period: next })}
 
 ## 怎么做
 一场对话，分两半：
@@ -155,7 +161,7 @@ ${noticingsSummary(lastStart, lastEnd)}
 ## 镜头：上个月的看法（回看用；当时写下的原文，问他感受，reading_revisit 记他的话，不替他下结论，不打分）
 ${readingsForReview({ period: lastMonth, from: lastStart, to: lastEnd })}
 
-## 镜头：本月的看法（今早写下的；只当一种看法，可以在本月前瞻里提一句，标明来自镜头；涉及私人的只写一句提示）
+## 镜头：本月的看法（今早写下的；有几门就有几条；直接给他看，只当一种看法，可以在本月前瞻里提，标明来自镜头）
 ${readingsForReview({ period: thisMonth })}
 
 ## 镜头笔记（他以前回看镜头时的感受；决定镜头的话说多少）
@@ -214,6 +220,6 @@ ${outlooksText("week", isoWeek(now))}
 ${outlooksText("month", monthOf(now))}
 今天已写的今日留意：
 ${outlooksText("day", today(now))}
-写法：今天确实有值得留意的（今天的事和提醒，加上本周前瞻在今天的落点）才写 1 条「今日留意」，并用 outlook_submit(horizon=day, period=${today(now)}) 记下；没什么就不写。涉及私人节律的只写一句提示。${ownerName()}认可的习气（送一程的不提）：
+写法：今天确实有值得留意的（今天的事和提醒，加上本周前瞻在今天的落点）才写 1 条「今日留意」，并用 outlook_submit(horizon=day, period=${today(now)}) 记下；没什么就不写。${ownerName()}认可的习气（送一程的不提）：
 ${endorsed()}`;
 }

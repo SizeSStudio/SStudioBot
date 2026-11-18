@@ -2,6 +2,7 @@
 // unknown keys pass through so a newer file never breaks an older core.
 
 import { z } from "zod";
+import { birthIssues } from "./birth.ts";
 
 const price = z.object({ in: z.number().min(0), out: z.number().min(0), cache_read: z.number().min(0).optional(), cache_write: z.number().min(0).optional() });
 const tier = z.object({ endpoint: z.string().min(1), model: z.string().min(1), price: price.optional(), context: z.number().int().positive().optional(), max_tokens: z.number().int().positive().optional() }).passthrough();
@@ -34,7 +35,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   }).passthrough(),
   "jobs.yaml": z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), z.object({
     every: z.enum(["day", "week", "month"]), at: hhmm, weekday: z.number().int().min(0).max(6).optional(), day: z.number().int().min(1).max(31).optional(),
-    do: z.string().min(1), lane: z.string().optional(), text: z.string().optional(), quota: z.boolean().optional(),
+    do: z.string().min(1), lane: z.string().optional(), text: z.string().optional(), quota: z.boolean().optional(), enabled: z.boolean().optional(),
   }).passthrough()).nullable(),
   "feishu.yaml": z.object({ admin_chat: z.string().regex(/^oc_/).optional(), workbench_chat: z.string().regex(/^oc_/).optional() }).passthrough(),
   "repos.yaml": z.record(z.string(), z.object({ url: z.string().min(1), branch: z.string().optional() }).passthrough()).nullable(),
@@ -43,17 +44,19 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
     owners: z.array(z.string().min(3)).min(1),
     web: z.object({ origin: z.string().regex(/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/, "https://主机名，不带路径和结尾的 /") }).passthrough().optional(),
   }).passthrough(),
-  // §15.9, §15.13: birth data for the lenses (M6) and the 送一程 thresholds; only the owner edits this file
+  // §15.9, §15.13: birth data for the lenses and the 送一程 thresholds. The form and self_profile write it too.
   "self.yaml": z.object({
     month: z.enum(["gregorian", "solar_term"]).optional(),
     see_off_after: z.number().int().min(2).max(10).optional(), restore_after: z.number().int().min(1).max(10).optional(),
-    // the lenses' raw input (M6). Copied read-only into a network-less lens run; never sent anywhere else.
-    birth: z.object({
-      date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), time: z.string().regex(/^\d{2}:\d{2}$/), place: z.string().optional(),
-      longitude: z.number().optional(), gender: z.enum(["male", "female"]).optional(), calendar: z.enum(["solar", "lunar"]).optional(),
-    }).passthrough().optional(),
-    // per-lens chart settings (true solar time, school …); any change makes a new profile_version (§15.7)
-    lenses: z.record(z.string(), z.object({ enabled: z.boolean().optional(), profile: z.record(z.string(), z.any()).optional() }).passthrough()).optional(),
+    // the lenses' raw input; birthIssues is what makes it good enough to build a chart from
+    birth: z.object({}).passthrough().superRefine((b, ctx) => {
+      for (const i of birthIssues(b)) ctx.addIssue({ code: "custom", path: [i.path], message: i.message });
+    }).optional(),
+    // per-lens settings (cast method, notes for the reader …); any change makes a new profile_version (§15.7)
+    lenses: z.record(z.string(), z.object({
+      enabled: z.boolean().optional(),
+      profile: z.object({ cast: z.enum(["dayan", "coins", "time", "random"]).optional(), notes: z.string().max(500).optional() }).passthrough().optional(),
+    }).passthrough()).optional(),
   }).passthrough().nullable(),
   // §17.3 信息源: Feishu DMs for the observer, and the other sources the poller reads (sources.ts)
   "sources.yaml": z.object({

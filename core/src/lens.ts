@@ -1,6 +1,6 @@
 // Lenses and the 解读账本 (DESIGN §4.5, §15.7). A lens is a view, to be felt against life: no scoring, no hit rate.
 //
-// A reading is requested (by the main agent in the owner's conversation, or by the month job), queued here and run as
+// A reading is requested (by the main agent in the owner's conversation, or by the day / week / month jobs), queued here and run as
 // a restricted worker: Claude Agent SDK on the pinned CLI as sbot-w, sandboxed, egress proxy with an EMPTY allowlist
 // (the run holds birth data, so it has no way out), skills only from the read-only plugin /opt/sbot/plugins/sbot-lens
 // with an explicit allowlist per lens. Input is a task dir with only what this lens needs: a slice of config/self.yaml,
@@ -20,6 +20,8 @@ import { join, normalize } from "node:path";
 import { stringify } from "yaml";
 import { all, one, run, signal } from "./db.ts";
 import { P, PROXY_BASE, log, ownerName, selfLensConf, tierConf } from "./config.ts";
+import { birthReady, chartInput } from "./birth.ts";
+import { isoWeek, monthOf, periodOk, today } from "./life.ts";
 import { issueToken, revokeToken } from "./proxy.ts";
 import { openEgress } from "./egress.ts";
 import { appendJournal, localNow, localStamp } from "./memory.ts";
@@ -44,10 +46,22 @@ export const LENSES: Record<string, LensDef> = {
   },
   liuyao: {
     zh: "六爻", skills: ["sbot-lens:liuyao-guanxiang"],
-    methods: { cast: { zh: "观象系辞：为一件具体的事起卦", birth: false } },
+    methods: {
+      cast: { zh: "观象系辞：为一件具体的事起卦", birth: false },
+      day: { zh: "日运：为这一天起一卦", birth: false, horizon: "day" },
+      week: { zh: "周运：为这一周起一卦", birth: false, horizon: "week" },
+      month: { zh: "月运：为这个月起一卦", birth: false, horizon: "month" },
+    },
   },
 };
-/** methods that read one concrete matter: 渎则不告, one per matter unless the matter itself changed */
+/** how the 六爻 script may cast (qigua.mjs methods that need nothing from him); dayan is the skill's own default */
+export const CAST_METHODS: Record<string, string> = { dayan: "大衍筮法", coins: "三钱法", time: "时间起卦", random: "程序随机" };
+const HORIZON_ZH: Record<string, string> = { day: "当日", week: "本周", month: "本月" };
+/**
+ * 渎则不告: asking again about the same matter is what the school refuses, so these stay one per matter unless the matter
+ * itself changed. A routine day / week / month cast is a different question each period and is not affected; it has its
+ * own rule below, one per period and version.
+ */
 const ONE_PER_MATTER = new Set(["liuyao:cast", "ziwei:zhanbu"]);
 
 const pluginVersion = () => { try { return JSON.parse(readFileSync(join(PLUGIN, ".claude-plugin", "plugin.json"), "utf8")).version ?? "?"; } catch { return "?"; } };
@@ -72,11 +86,12 @@ export function requestReading(r: ReadingRequest): number {
   if (!m) throw new Error(`${def.zh}没有 ${r.method}（有：${Object.entries(def.methods).map(([k, v]) => `${k}=${v.zh}`).join("；")}）`);
   const { birth, lenses } = selfLensConf();
   if (lenses[r.lens]?.enabled === false) throw new Error(`${def.zh}在 self.yaml 里关掉了`);
-  if (m.birth && !birth?.date) throw new Error("self.yaml 里还没有出生信息（birth）。请他自己去控制台 → 配置 → self.yaml 填，不要在飞书里问出生时间。");
+  if (m.birth && !birthReady(birth)) throw new Error("出生信息还没填全（要日期、时间、性别、出生地经度）。他在私聊里说，用 self_profile 记；或者去控制台「生活 › 出生信息」填。不需要生辰的六爻、紫占现在就能看。");
   const horizon = m.horizon ?? r.horizon ?? null;
-  if (horizon === "month" && !/^\d{4}-\d{2}$/.test(r.period ?? "")) throw new Error("月度看法要带 period，比如 2026-12");
-  if (horizon && one("SELECT id FROM readings WHERE lens=? AND method=? AND horizon=? AND period=? AND status!='failed'", r.lens, r.method, horizon, r.period))
-    throw new Error(`${def.zh} ${r.period} 的看法已经有了（写下后不改，回看用 reading_revisit）`);
+  if (horizon && !periodOk(horizon, r.period ?? "")) throw new Error(`${HORIZON_ZH[horizon] ?? horizon}看法的 period 不对，要像 ${{ day: "2026-12-03", week: "2026-W49", month: "2026-12" }[horizon] ?? "2026-12"}`);
+  // per version: after a corrected birth time the old month view must not block the new chart's (§15.7)
+  if (horizon && !r.changedBecause && one("SELECT id FROM readings WHERE lens=? AND method=? AND horizon=? AND period=? AND profile_version=? AND status!='failed'", r.lens, r.method, horizon, r.period, profileVersion(r.lens, r.method)))
+    throw new Error(`${def.zh} ${r.period} 的看法已经有了（写下后不改，回看用 reading_revisit）。这段时间里事情本身变了才再看，在 changed_because 里写清楚。`);
   if (r.matterId && ONE_PER_MATTER.has(`${r.lens}:${r.method}`) && !r.changedBecause) {
     const prev = one("SELECT id FROM readings WHERE lens=? AND method=? AND matter_id=? AND status!='failed'", r.lens, r.method, r.matterId);
     if (prev) throw new Error(`这件事已经看过一次（解读 #${prev.id}），以第一次为准（渎则不告）。只有事情本身变了（换了对象、换了时间段）才再看，并在 changed_because 里写清楚变在哪。`);
@@ -113,20 +128,27 @@ export function readingsForReview(o: { period?: string; matterId?: number; from?
   if (o.matterId) for (const r of all("SELECT * FROM readings WHERE matter_id=? AND status='done'", o.matterId)) rows.set(r.id, r);
   if (o.from != null && o.to != null) {
     const a = localStamp(o.from).slice(0, 10), b = localStamp(o.to).slice(0, 10);
-    for (const r of all("SELECT * FROM readings WHERE status='done' AND claims_json IS NOT NULL")) {
+    // routine day / week views come back in their own period's review; by date they would flood the bigger ones
+    for (const r of all("SELECT * FROM readings WHERE status='done' AND claims_json IS NOT NULL AND (horizon IS NULL OR horizon NOT IN ('day','week'))")) {
       if ((JSON.parse(r.claims_json) as Claim[]).some((c) => c.revisit_at && c.revisit_at >= a && c.revisit_at < b)) rows.set(r.id, r);
     }
   }
   return [...rows.values()].sort((x, y) => x.id - y.id).map((r) => readingText(r)).join("\n\n") || "（没有）";
 }
 
-export function readingsQuery(o: { lens?: string; period?: string; matterId?: number; limit?: number }): string {
+/** every view for one period, whatever state it is in, so the morning report can say one failed or isn't out yet */
+export function periodReadingsText(period: string): string | undefined {
+  const rows = all("SELECT * FROM readings WHERE period=? ORDER BY id", period);
+  return rows.length ? rows.map((r) => readingText(r)).join("\n\n") : undefined;
+}
+
+export function readingsQuery(o: { lens?: string; period?: string; matterId?: number; limit?: number; full?: boolean }): string {
   const where = ["1=1"], args: any[] = [];
   if (o.lens) { where.push("lens=?"); args.push(o.lens); }
   if (o.period) { where.push("period=?"); args.push(o.period); }
   if (o.matterId) { where.push("matter_id=?"); args.push(o.matterId); }
   const rows = all(`SELECT * FROM readings WHERE ${where.join(" AND ")} ORDER BY id DESC LIMIT ?`, ...args, Math.min(o.limit ?? 10, 30));
-  return rows.map((r) => readingText(r, rows.length <= 3)).join("\n\n") || "（没有）";
+  return rows.map((r) => readingText(r, o.full || rows.length <= 3)).join("\n\n") || "（没有）";
 }
 
 export function revisitReading(id: number, claimIdx: number | undefined, text: string, src: string, runId: string) {
@@ -178,7 +200,11 @@ export class LensEngine {
       (e, out, err) => e ? bad(new Error(`task-mkdir: ${String(err || e.message).trim()}`)) : ok(out.trim())));
     const put = (rel: string, text: string) => { const f = join(dir, rel); mkdirSync(join(f, ".."), { recursive: true }); writeFileSync(f, text); chmodSync(f, 0o640); };
     const { birth, lenses } = selfLensConf();
-    if (m.birth) put("self.yaml", stringify({ birth, profile: lenses[r.lens]?.profile ?? {} }));
+    const profile = lenses[r.lens]?.profile ?? {};
+    if (m.birth) {
+      if (!birthReady(birth)) throw new Error("出生信息不全");
+      put("self.yaml", stringify({ birth, chart_input: chartInput(birth), profile }));
+    }
     const notes = join(P.agentHome, "self", "lens-notes", `${r.lens}.md`);
     put("lens-notes.md", existsSync(notes) ? readFileSync(notes, "utf8") : "（还没有笔记）\n");
     const charts = join(P.agentHome, "self", "charts", r.lens, r.profile_version);
@@ -205,13 +231,19 @@ export class LensEngine {
     const ac = this.ac = new AbortController();
     const dog = setTimeout(() => ac.abort(), TIMEOUT_MS);
     const model = "sbot-work";
+    const cast = CAST_METHODS[profile.cast] ? profile.cast : "dayan";
+    const routine = m.horizon && !m.birth;
     const prompt = [
       `现在 ${localNow()}。你是${ownerName()}的「${def.zh}」镜头。用对应的 skill（${def.skills.join("、")}）按它的方法看，最后用 mcp__sbot__submit_reading 交回。`,
       `方法：${m.zh}（${r.method}）`,
-      r.horizon ? `这是 ${r.horizon === "month" ? "月度" : r.horizon} 看法，时间段：${r.period}。留意点和回看日期都落在这个时间段里。` : "",
+      r.horizon ? `这是${HORIZON_ZH[r.horizon] ?? r.horizon}看法，时间段：${r.period}。留意点和回看日期都落在这个时间段里。` : "",
+      routine ? `这是按时间段的例行起卦：所问之事就是这段时间本身，不用收窄问题，也不用注明问题较泛。只起一卦，用 ${cast}，不重起。` : "",
+      r.lens === "liuyao" && !routine ? `没有别的说法时用 ${cast} 起卦。` : "",
+      r.horizon === "day" ? "写短：看法 300 字以内，留意点 1 条，回看点最多 1 条。" : r.horizon === "week" ? "看法 600 字以内，留意点最多 2 条，回看点最多 2 条。" : "",
+      profile.notes ? `他对这门镜头的要求：${profile.notes}` : "",
       `问题：${r.question}`,
       matter ? `这是他的一件事：#${r.matter_id}「${matter.title}」。` : "",
-      m.birth ? "出生信息在 ./self.yaml（birth；profile 是排盘参数，按它来）。" + (existsSync(charts) ? "./charts/ 里是这个版本已经排好的盘，直接用，不要重排。" : "还没有排好的盘：先用 ziwei-chart 排盘，输出放当前目录，交回时把盘的文件列进 keep_files。") : "",
+      m.birth ? "出生信息在 ./self.yaml。排盘一律用其中的 chart_input（已是公历，农历已换算好）：ziwei-chart build --datetime <datetime> --longitude <longitude> --gender <gender> --timezone <timezone>，不要自己换算。profile 是这门镜头的设置，按它来。" + (existsSync(charts) ? "./charts/ 里是这个版本已经排好的盘，直接用，不要重排。" : "还没有排好的盘：先用 ziwei-chart 排盘，输出放当前目录，交回时把盘的文件列进 keep_files。") : "",
       "./lens-notes.md 是他以前回看这门镜头时的感受笔记，参考它决定怎么说、说多少。",
       "立场：这是一种看法，给他结合生活去感受，不是判决，不打分。写清楚依据。不需要的文件不要写。没有网络，也不需要网络。",
     ].filter(Boolean).join("\n");
@@ -268,11 +300,14 @@ export class LensEngine {
     appendJournal(`解读 #${r.id}（${def.zh} ${r.method}${r.period ? ` ${r.period}` : ""}）写下：${submitted.notice.join("；") || submitted.reading.slice(0, 120)}`, "lens");
     signal("reading_done", { role: "lens", run_id: runId, value: { reading: r.id, lens: r.lens, method: r.method } });
     log("lens", "done", { id: r.id, claims: submitted.claims.length });
+    const surface = JSON.parse(r.origin_turn_json ?? "null")?.surface ?? "feishu:dm";
     if (r.requested_by !== "job") notify(getReading(r.id)!, `【镜头结果：解读 #${r.id}】下面是${def.zh}的看法，已经写进解读账本（写下后不改）。
 
 ${readingText(getReading(r.id)!)}
 
-怎么说：这是一种看法，给他结合生活去感受，不是结论。挑留意点用一两句说给他，问他有没有什么感觉；他想看全文再给。命盘原文不贴（飞书是公司的系统）。到了回看日期，复盘时会拿出来。`);
+怎么说：这是一种看法，给他结合生活去感受，不是结论。${surface === "feishu:dm" || surface === "console"
+    ? `这是他的私聊，把看法直接给他看，问他有没有什么感觉。${chartRef ? `盘面在 ${chartRef}，他要看就用 self_page 读出来贴给他。` : ""}`
+    : "这里不是他的私聊：只说一两句留意点，全文和盘面请他到私聊或控制台看。"}到了回看日期，复盘时会拿出来。`);
   }
 }
 
@@ -285,13 +320,26 @@ function notify(r: Record<string, any>, text: string) {
   hooks.kickDispatcher();
 }
 
-/** job (day 1, early): this month's view from every lens that has a month method and the data it needs; silent */
-export function queueMonthReadings(now = Date.now()) {
-  const period = localStamp(now).slice(0, 7);
+const PERIOD_ASK: Record<string, (p: string) => string> = {
+  day: (p) => `${p} 这一天最该留意什么（工作、家庭、身体、心）`,
+  week: (p) => `${p} 这一周最该留意什么（工作、家庭、身体、心）`,
+  month: (p) => `${p} 这个月整体的留意点（工作、家庭、身体、心）`,
+};
+/** which period a job firing now is about. On Sunday the week job looks at the coming week, like the Sunday review. */
+export function periodFor(horizon: "day" | "week" | "month", now = Date.now()): string {
+  if (horizon === "day") return today(now);
+  if (horizon === "month") return monthOf(now);
+  return isoWeek(new Date(`${today(now)}T12:00:00Z`).getUTCDay() === 0 ? now + 2 * 86400_000 : now);
+}
+
+/** jobs lens_day / lens_week / lens_month: every lens with a method for this horizon and the data it needs; silent */
+export function queueHorizonReadings(horizon: "day" | "week" | "month", now = Date.now()): number[] {
+  const period = periodFor(horizon, now), ids: number[] = [];
   const { birth, lenses } = selfLensConf();
   for (const [lens, def] of Object.entries(LENSES)) for (const [method, m] of Object.entries(def.methods)) {
-    if (m.horizon !== "month" || lenses[lens]?.enabled === false || (m.birth && !birth?.date)) continue;
-    try { requestReading({ lens, method, question: `${period} 这个月整体的留意点（工作、家庭、身体、心）`, period, requestedBy: "job" }); }
-    catch (e: any) { log("lens", "month reading skipped", { lens, err: String(e?.message ?? e).slice(0, 120) }); }
+    if (m.horizon !== horizon || lenses[lens]?.enabled === false || (m.birth && !birthReady(birth))) continue;
+    try { ids.push(requestReading({ lens, method, question: PERIOD_ASK[horizon](period), period, requestedBy: "job" })); }
+    catch (e: any) { log("lens", "period reading skipped", { lens, method, err: String(e?.message ?? e).slice(0, 120) }); }
   }
+  return ids;
 }

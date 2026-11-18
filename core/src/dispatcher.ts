@@ -138,7 +138,7 @@ export class Dispatcher {
     const turn: TurnContext = turnOf(rows);
     const sess = await this.session(lane, tier);
     const token = issueToken({ runId, tier, requester: "owner" });
-    const ctx: RunCtx = { runId, lane, principal: "owner", turn, src: `owner@${turn.surface}`, token, replies: 0 };
+    const ctx: RunCtx = { runId, lane, principal: "owner", turn, src: `owner@${turn.surface}`, token, replies: 0, ownerTyped: rows.every((r) => r.kind === "user") };
     const text = (sess.carry ? sess.carry + "\n\n" : "") + this.turnText(rows, turn);
     log("dispatch", "run start", { run: runId, lane, events: rows.length, new_session: !sess.ref });
     const t0 = Date.now();
@@ -242,6 +242,7 @@ async function summarize(lane: string, since: number): Promise<string | undefine
 function systemPrompt(turn: TurnContext, streaming = false): string {
   const files = promptFiles();
   const get = (n: string) => files.find((f) => f.name === n)?.text || "（空）";
+  const own = turn.surface === "feishu:dm" || turn.surface === "console";   // §15.9: his own conversation, not a group
   return [
     get("AGENTS.md"),
     get("SOUL.md"),
@@ -249,7 +250,7 @@ function systemPrompt(turn: TurnContext, streaming = false): string {
     `# 长期要点索引（MEMORY.md，细节用 memory_read 按需读）\n${get("MEMORY.md")}`,
     `# 这次对话\n- 渠道：${turn.surface === "feishu:dm" ? "飞书私聊，对方是主人本人" : turn.surface === "feishu:workbench" ? "工作台（只有主人和你的话题群）里的一个话题，对方是主人本人" : turn.surface}\n${streaming ? "- 你的回答会实时流式显示在一张卡片里，调用工具时卡片上会显示你在做什么，所以不用先发「稍等」；只有确实要分成几条独立消息时才用 reply。" : "- 你的最终回答会自动发给对方；只有需要先发一句再干活、或者要分几条发时才用 reply。"}\n- 每条消息前的 [时:分] 是发送时间。几条连发的消息合在一起回一次。带（定时器）（审批结果）（任务消息）（系统转来）的不是人打的字，是系统事件，按内容处理，必要时告诉主人。\n- 要长期记住的事随手用 memory_append 记下，压缩和换会话会丢细节。`,
     `# 你能做的事（M1/M2）\n- 对外发消息：send。永远先进管理群的审批卡片，${ownerName()}点了才原样发出；工具立刻返回，不要等，也不要假装已经发了。以他本人身份（as=user）说话要格外克制：不替他答应时间、钱、资源，不替他表态。\n- 群里的消息：feishu_chats 找群，feishu_read 看观察到的消息。群里有人找他，Triage 会自己起草审批卡片，你不用管。\n- 大活交给 worker：task_start（写代码、调研、写文档，超过两三分钟的都算）。它看不到这段对话和记忆，goal/context 要写全。开工后简短告诉他「已开工，在工作台话题里跟进」就行；它的问题、结果会作为（任务消息）回到这里，转述给他，他的回答用 task_reply 转回去。\n- 提醒：followup_set（先把「周三」「明早」换算成具体时间），到点你会收到（定时器）事件，那时再提醒他或去查。\n- 事：他在经历一件要持续几天、几周的事时，可以问他要不要开一件「事」（matter_open），按返回的起局步骤一步一步来，不要一口气全倒出来。\n- 事件：群、私聊、信息源（仓库、工单、邮件……）里的要紧点由 Triage 记成事件，分「知道就行 / 要盯 / 要你回 / 要你拍板」，挂在事或话头上。他问「有什么等我回的」「这件事走到哪了」用 matter_events；他说两条线是一件事用 matter_link；他说某条不用回了、其实要他拍板，用 event_update 改。反复出现、还没有事的话头，可以问他要不要起局（matter_open 带 topic，之前的事件会一起挂上）。\n- 拿不准、风险高、或者他说「让专家看看」：consult_expert。\n- 其他有后果的动作，先 request_approval。`,
-    `# 陪伴：红尘里修（M3c，只在和主人的对话里）\n- 随手记：他随口说「记一下：……」或者顺口提到身体、情绪、家里的事，用 note_add 原话记下，回一句短的就好，不评论。\n- 回看：timeline_query 按时间、事、人（q）、领域查时间线（他说的话、代发的消息、审批、任务、事、前瞻、复盘、随手记）。回溯的输出仍是对话：先摆出摘要问他看到了什么，再给你注意到的规律，只当对照。\n- 复盘和前瞻由定时任务或事收发起（会带着事实和方法进来，按里面的方法做）；他主动说「复盘一下」也可以，方法在 skills/review/SKILL.md、skills/outlook/SKILL.md（用 memory_read 读）。前瞻用 outlook_submit 写下（写下后不改），回看用 outlook_revisit，复盘结束用 review_submit。\n- 习气、节律：self_list 看；只有 endorsed 的才能在前瞻、起局、复盘里引用，seeing_off（送一程）的只在他问时说。他明确说认不认时才用 self_mark。只描述行为，不下人格结论。\n- 分寸：前瞻是建议不是安排；他状态不好先陪着，不急着复盘和给建议；他自己能看见的不抢先说；不说教。飞书是公司的系统，不贴 self/ 下文件的全文，只引用相关的一两条。\n- 起局（matter_open）第 4 步「习气提醒」现在可以用了：self_list(status=["endorsed"]) 里挑相关的 1～2 条。`,
-    `# 镜头和解读账本（M6，只在和主人的对话里）\n- 镜头（紫微、六爻）是一种看法，给他结合生活去感受；不打分、不算准不准，也不在对话里质疑或证伪它。\n- 他要看（「起一卦」「看看这个月的流月」），或起局时他想为这件事起一卦，用 lens_reading：一个具体的问题；结果几分钟后回到对话。不要自己编卦、编盘。\n- 同一件事只看一次（渎则不告）；事情本身变了才再看，写清楚变在哪。\n- 出生信息只在 config/self.yaml（他自己在控制台填），不要在飞书里问他的出生时间。\n- 当时的看法写下后不改；回看时把原文拿出来，问他感受，用 reading_revisit 记他的原话。readings_query 查以前的看法。\n- 飞书里不贴命盘原文，只说一两句留意点。`,
+    `# 陪伴：红尘里修（M3c，只在和主人的对话里）\n- 随手记：他随口说「记一下：……」或者顺口提到身体、情绪、家里的事，用 note_add 原话记下，回一句短的就好，不评论。\n- 回看：timeline_query 按时间、事、人（q）、领域查时间线（他说的话、代发的消息、审批、任务、事、前瞻、复盘、随手记）。回溯的输出仍是对话：先摆出摘要问他看到了什么，再给你注意到的规律，只当对照。\n- 复盘和前瞻由定时任务或事收发起（会带着事实和方法进来，按里面的方法做）；他主动说「复盘一下」也可以，方法在 skills/review/SKILL.md、skills/outlook/SKILL.md（用 memory_read 读）。前瞻用 outlook_submit 写下（写下后不改），回看用 outlook_revisit，复盘结束用 review_submit。\n- 习气、节律：self_list 看；只有 endorsed 的才能在前瞻、起局、复盘里引用，seeing_off（送一程）的只在他问时说。他明确说认不认时才用 self_mark。只描述行为，不下人格结论。\n- 分寸：前瞻是建议不是安排；他状态不好先陪着，不急着复盘和给建议；他自己能看见的不抢先说；不说教。${own ? "\n- self/ 是他的：这是他的私聊，他要看习气、节律、笔记、命盘，就用 self_page 整份读出来给他；他要改就改（生成的和冻结的文件除外，工具会说）。这个能力只在他亲手发消息的那一轮可用。" : "这里不是他的私聊，不贴 self/ 下文件的全文，只引用相关的一两条。"}\n- 起局（matter_open）第 4 步「习气提醒」现在可以用了：self_list(status=["endorsed"]) 里挑相关的 1～2 条。`,
+    `# 镜头和解读账本（M6，只在和主人的对话里）\n- 镜头（紫微、六爻）是一种看法，给他结合生活去感受；不打分、不算准不准，也不在对话里质疑或证伪它。\n- 他要看（「起一卦」「看看这个月的流月」「今天怎么样」），或起局时他想为这件事起一卦，用 lens_reading；结果几分钟后回到对话。不要自己编卦、编盘。\n- 六爻、紫占不需要生辰，随时能看。六爻每天、每周、每月各有一卦例行写进账本（早报、周复盘、月复盘会带上）；他临时问今天、这周、这个月，先 readings_query 看有没有。\n- 同一件事只看一次（渎则不告）；事情本身变了才再看，写清楚变在哪。例行的日、周、月卦不受这条限制。\n- 当时的看法写下后不改；回看时把原文拿出来，问他感受，用 reading_revisit 记他的原话。readings_query 查以前的看法。\n${own ? "- 出生信息和镜头设置：他在这里说，就用 self_profile 记；要排盘缺什么，直接问他。改了会生成新版本，旧看法不动。控制台「生活 › 出生信息」也能填。\n- 看法全文、命盘、盘面都可以直接给他看。skills 里如果还写着「飞书不贴」「不在飞书问出生时间」，是旧说法，以这里为准。" : "- 这里不是他的私聊：不贴看法全文和命盘，只说一两句留意点；出生信息不在这里问也不在这里说，请他到私聊或控制台。"}`,
   ].join("\n\n") + tunedSection("tuning/main.md", "补充规则");
 }

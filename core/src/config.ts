@@ -75,8 +75,10 @@ const GATE_DEFAULTS: GateConfig = {
 export const gateConf = (): GateConfig => ({ ...GATE_DEFAULTS, ...cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {}) });
 
 /** config/jobs.yaml (§9.1): periodic jobs; only the owner edits it, hot-reloaded */
-export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean }
-export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"), (t) => parse(t) ?? {}, {});
+export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean; enabled?: boolean }
+/** enabled: false keeps a job's line in the file but stops it */
+export const jobsConf = (): Record<string, JobSpec> => Object.fromEntries(
+  Object.entries(cached<Record<string, JobSpec>>(join(P.config, "jobs.yaml"), (t) => parse(t) ?? {}, {})).filter(([, j]) => j?.enabled !== false));
 
 /** the 每日整理 job (§15.14), whatever it is called in jobs.yaml; its knobs live on the job line */
 export const matterReviewConf = () => {
@@ -112,13 +114,13 @@ export function waitMinutes(chat: string, surface: string, action: string): numb
   return action === "escalate" ? Math.min(escalate, base) : base;
 }
 
-/** config/self.yaml (§15.9, §15.13): owner-only; month rhythm and the 送一程 thresholds */
+/** config/self.yaml (§15.9, §15.13): month rhythm and the 送一程 thresholds */
 export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
   return { month: s.month === "solar_term" ? "solar_term" : "gregorian", see_off_after: Number(s.see_off_after ?? 3), restore_after: Number(s.restore_after ?? 2) };
 };
 
-/** the lens part of self.yaml (M6). Only lens.ts reads this; it goes nowhere but a network-less lens run's task dir. */
+/** the lens part of self.yaml. Goes to a network-less lens run, the console's form, and self_profile in his own DM. */
 export const selfLensConf = (): { birth?: Record<string, any>; lenses: Record<string, { enabled?: boolean; profile?: Record<string, any> }> } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
   return { birth: s.birth, lenses: s.lenses ?? {} };

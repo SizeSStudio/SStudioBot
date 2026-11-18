@@ -55,9 +55,9 @@ export function commitIfDirty(dir: string, message: string): boolean {
 
 /**
  * Edit a YAML file in the config repo (comments kept), commit, and log it in config_changes (§10.3). Only code paths
- * driven by the owner (commands, card clicks) call this; no agent tool can.
+ * driven by the owner (commands, card clicks) or a one-time upgrade call this; no agent tool can.
  */
-export function editConfig(file: string, edit: (doc: ReturnType<typeof parseDocument>) => string | undefined, source: "card" | "command" | "console") {
+export function editConfig(file: string, edit: (doc: ReturnType<typeof parseDocument>) => string | undefined, source: "card" | "command" | "console" | "upgrade") {
   const path = join(P.config, file);
   const doc = parseDocument(existsSync(path) ? readFileSync(path, "utf8") : "");
   if (!doc.contents) doc.contents = doc.createNode({}) as any;
@@ -85,9 +85,12 @@ export type Principal = "owner" | "known" | "other";
 const OWNER_ONLY = ["self/"];
 const NEVER = [".git/"];
 
+/** the path as the filesystem will see it, so a check on it can't be dodged with ./ or a/../ */
+export const cleanRel = (rel: string) => normalize(rel.replace(/^\/+/, "")).split(sep).join("/");
+
 /** Resolve a model-supplied relative path; throws on anything outside agent-home or not visible to the principal. */
 export function safePath(rel: string, who: Principal): string {
-  const n = normalize(rel.replace(/^\/+/, "")).split(sep).join("/");
+  const n = cleanRel(rel);
   if (n.startsWith("..") || n.includes("/../") || n === ".") throw new Error(`bad path: ${rel}`);
   if (!n.endsWith(".md")) throw new Error("only .md files");
   if (NEVER.some((p) => n.startsWith(p))) throw new Error(`not allowed: ${rel}`);

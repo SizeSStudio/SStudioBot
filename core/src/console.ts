@@ -94,7 +94,7 @@ async function status(d: ConsoleDeps) {
     inbox: one("SELECT SUM(CASE WHEN status='received' THEN 1 ELSE 0 END) waiting, SUM(CASE WHEN status='processing' THEN 1 ELSE 0 END) processing FROM inbox")!,
     outbox: one("SELECT SUM(CASE WHEN status IN ('queued','sending') THEN 1 ELSE 0 END) pending, SUM(CASE WHEN status IN ('failed','unknown') AND ts>? THEN 1 ELSE 0 END) failed24h FROM outbox", now - 86400_000)!,
     usage: { calls: today.n, cost: today.c, output: today.o, errors: today.bad ?? 0, budget: models().budgets?.daily_cost ?? null, alertAt: budget },
-    quiet: { today: proactiveToday(), cap, held: (pj(kvGet("quiet.held")) ?? []).length },
+    quiet: { today: proactiveToday(), cap, held: (pj(kvGet("quiet.held")) ?? []).length + Number(one("SELECT COUNT(*) n FROM messages WHERE attn='held'")?.n ?? 0) },
     jobs,
     sentinel: { last: Number(kvGet("sentinel.last") ?? 0) || null, active: Object.keys(sentinel) },
     dream: { lastAt: Number(kvGet("dream.last_at") ?? 0) || null, report: pj(kvGet("dream.report")) },
@@ -133,12 +133,12 @@ function flow(before: number, limit: number) {
   // things that happen outside conversational runs
   for (const i of all("SELECT id, lane, kind, source, status, payload_json, ts FROM inbox WHERE run_id IS NULL AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 50", since, before))
     items.push({ type: "event", ts: i.ts, id: i.id, lane: i.lane, kind: i.kind, source: i.source, status: i.status, text: excerpt(pj(i.payload_json)?.text, 240) });
-  const triage = all(`SELECT id, chat_id, sender_kind, ts, text, raw_json, triage_status, triage_action, triage_note FROM messages
+  const triage = all(`SELECT id, chat_id, sender_kind, ts, text, raw_json, triage_status, triage_action, triage_note, attn FROM messages
     WHERE surface='feishu:group' AND ts>=? AND ts<? ORDER BY ts DESC LIMIT 120`, since, before);
   for (const m of triage) {
     const raw = pj(m.raw_json) ?? {};
     items.push({ type: "message", ts: m.ts, id: m.id, chat: raw.chat_name || m.chat_id, sender: raw.sender_name ?? m.sender_kind, senderKind: m.sender_kind,
-      status: m.triage_status, action: m.triage_action, note: m.triage_note, text: excerpt(m.text, 200), link: raw.link });
+      status: m.triage_status, action: m.triage_action, attn: m.attn, note: m.triage_note, text: excerpt(m.text, 200), link: raw.link });
   }
   for (const t of all("SELECT id, status, goal, tier, repo, started, ended, error, ts FROM tasks WHERE ts>=? AND ts<?", since, before))
     items.push({ type: "task", ...t, goal: excerpt(t.goal, 200) });

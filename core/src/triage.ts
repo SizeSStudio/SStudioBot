@@ -5,26 +5,29 @@
 //                     └► per message: ignore | archive | notify | draft | escalate   (@me is at least notify, in code)
 //                     └► events: kind × level, hung on an open matter or a topic (events.ts); notify / draft / escalate
 //                        always land in an event, an event that needs him never stays ignored
+//                     └► every raised message waits its window (gate.yaml attention); if he responds meanwhile, nothing is sent
 //   draft    → groups only: a chat-tier draft run (others' tool scope, new session) → commitment check → send approval
-//   notify   → batched into one admin-group message every NOTIFY_MS, grouped by matter / topic, asks first
-//   escalate → a system event in the owner DM lane; the main agent tells the owner
+//   notify   → batched into one admin-group message at most every NOTIFY_MS, grouped by matter / topic, asks first
+//   escalate → a system event in the owner DM lane; the main agent tells the owner (no wait by default)
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { all, one, run, tx } from "./db.ts";
-import { P, feishuConf, log, ownerFeishu, ownerName, sourcesConf, tierConf } from "./config.ts";
+import { all, one, run, tx, kvGet, kvSet } from "./db.ts";
+import { P, feishuConf, log, ownerFeishu, ownerName, quietConf, sourcesConf, tierConf, waitMinutes } from "./config.ts";
 import { complete, issueToken, revokeToken } from "./proxy.ts";
 import { localStamp } from "./memory.ts";
 import { activationOf } from "./observer.ts";
 import { submitApproval, postCards, hooks } from "./approvals.ts";
 import { sendText } from "./cards.ts";
+import { lark } from "./feishu.ts";
 import { toolsFor, type RunCtx } from "./tools.ts";
 import type { Runner } from "./runner.ts";
 import { tunedRaw, tunedSection, tuningVersion } from "./tuning.ts";
-import { LEVEL_ZH, maxLevel, needsHim, recordEvent, settleFromApprovals, triageMatterContext } from "./events.ts";
+import { LEVEL_ZH, closeAnswered, isOpenAsk, maxLevel, needsHim, recordEvent, requeueVoidedDrafts, responseTo, settleFromApprovals, triageMatterContext } from "./events.ts";
 
 const TICK_MS = 45_000, NOTIFY_MS = 10 * 60_000;
+const MAX_DRAFTS_PER_PASS = 3;   // drafts held by the window can come due together; the rest wait for the next tick
 const ACTIONS = ["ignore", "archive", "notify", "draft", "escalate"];
 const RULES_WHY = "（分拣失败，按规则）";
 const RAISED = ["notify", "draft", "escalate"];
@@ -129,11 +132,25 @@ function voiceFor(chatId: string, chatName: string): { text: string; examples: n
 const checkSystem = () => `检查一条将以${ownerName()}本人身份发出的消息草稿，只输出 JSON：{"promise":bool,"stance":bool,"private":bool,"hits":["命中的具体内容"]}
 promise：替他答应了时间、金钱、资源或要做的事；stance：替他对争议、人事、决策表了态；private：带出了与这个群无关的私人信息。`;
 
+/** which of these Feishu messages he has read (user identity, 50 ids a call) */
+async function readByHim(ids: string[]): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (let i = 0; i < ids.length; i += 50) {
+    const d = JSON.parse(await lark(["im", "messages", "read_status", "--as", "user", "--data", JSON.stringify({ message_ids: ids.slice(i, i + 50) })]));
+    for (const x of (d.data ?? d).items ?? []) if (x.is_read) out.add(x.message_id);
+  }
+  return out;
+}
+
 export class Triage {
   private runner: Runner;
   private busy = false;
   private timer?: NodeJS.Timeout;
-  constructor(runner: Runner) { this.runner = runner; }
+  private send: typeof sendText;
+  private readIds: typeof readByHim;
+  constructor(runner: Runner, io: { send?: typeof sendText; readIds?: typeof readByHim } = {}) {
+    this.runner = runner; this.send = io.send ?? sendText; this.readIds = io.readIds ?? readByHim;
+  }
 
   start() { this.timer = setInterval(() => void this.tick(), TICK_MS); }
   stop() { clearInterval(this.timer); }
@@ -150,6 +167,8 @@ export class Triage {
         catch (e: any) { log("triage", "batch failed", { chat, n: batch.length, err: String(e?.message ?? e).slice(0, 200) }); }
       }
       settleFromApprovals();
+      requeueVoidedDrafts();
+      await this.release();
       await this.flushNotices();
     } finally { this.busy = false; }
   }
@@ -191,16 +210,49 @@ export class Triage {
       if (action === "draft") { if (draftRow) mark(draftRow, "notify", draftWhy); draftRow = r; draftWhy = whys[i]; }   // one draft per chat batch: the latest
       mark(r, action, whys[i]);
     }));
+    const ids: number[] = [], eventTs = new Map<string, number>();
     for (const ev of evs) {
       const id = recordEvent(ev);
-      for (const m of ev.msg_ids ?? []) run("UPDATE messages SET event_id=? WHERE id=?", id, m);
+      ids.push(id);
+      for (const m of ev.msg_ids ?? []) { run("UPDATE messages SET event_id=? WHERE id=?", id, m); eventTs.set(m, ev.ts); }
     }
-    todo.forEach((r, i) => { if (actions[i] === "escalate") this.escalate(r, whys[i]); });
-    log("triage", "classified", { chat, n: todo.length, events: evs.length, actions: todo.map((r) => one("SELECT triage_action a FROM messages WHERE id=?", r.id)?.a).join(",") });
-    if (draftRow) await this.draft(draftRow, draftWhy).catch((e) => {
-      log("triage", "draft failed", { msg: draftRow!.id, err: String(e?.message ?? e).slice(0, 300) });
-      mark(draftRow!, "notify", `${draftWhy}（起草失败）`);
+    closeAnswered(chat, ids);
+    // the window runs from when it was said (the event's last message, so one event comes due together), not from now
+    const finalActions = todo.map((r) => String(one("SELECT triage_action a FROM messages WHERE id=?", r.id)?.a));
+    todo.forEach((r, i) => {
+      if (RAISED.includes(finalActions[i])) run("UPDATE messages SET attn='waiting', wait_until=? WHERE id=?", (eventTs.get(r.id) ?? Number(r.ts)) + waitMinutes(chat, surface, finalActions[i]) * 60_000, r.id);
     });
+    log("triage", "classified", { chat, n: todo.length, events: evs.length, actions: finalActions.join(",") });
+    await this.release(chat);
+  }
+
+  /**
+   * Raised messages whose window is over (§4.3): if he has responded they end here, quietly; otherwise each goes its
+   * way. notify just becomes eligible for the next batch. triage_action keeps what Triage decided (§16 reads it).
+   */
+  async release(chat?: string) {
+    const rows = all(`SELECT * FROM messages WHERE attn='waiting' AND wait_until<=?${chat ? " AND chat_id=?" : ""} ORDER BY ts, id LIMIT 200`, ...(chat ? [Date.now(), chat] : [Date.now()]));
+    let drafts = 0;
+    for (const r of rows) {
+      if (responseTo(r)) { run("UPDATE messages SET attn='answered' WHERE id=?", r.id); continue; }
+      let action = String(r.triage_action);
+      const ev = r.event_id ? one("SELECT level FROM events WHERE id=?", r.event_id) : undefined;
+      if (action !== "notify" && ev && !needsHim(ev.level)) {   // he lowered the event meanwhile: it no longer calls for a reply
+        action = "notify";
+        run("UPDATE messages SET triage_action='notify' WHERE id=?", r.id);
+      }
+      if (action === "draft" && drafts >= MAX_DRAFTS_PER_PASS) continue;
+      run("UPDATE messages SET attn=NULL WHERE id=?", r.id);
+      const why = String(r.triage_note ?? "");
+      if (action === "escalate") this.escalate(r, why);
+      if (action === "draft") {
+        drafts++;
+        await this.draft(r, why).catch((e) => {
+          log("triage", "draft failed", { msg: r.id, err: String(e?.message ?? e).slice(0, 300) });
+          run("UPDATE messages SET triage_action='notify', triage_note=? WHERE id=?", `${why}（起草失败）`.slice(0, 300), r.id);
+        });
+      }
+    }
   }
 
   /**
@@ -223,8 +275,6 @@ export class Triage {
       if (needsHim(level)) for (const i of idx) if (actions[i] === "ignore" || actions[i] === "archive") actions[i] = "notify";
       const last = rows[rows.length - 1];
       const ts = Math.max(...rows.map((r) => Number(r.ts)));
-      // he already answered in this place after these messages (same poll): the ask is not waiting on him
-      const answered = needsHim(level) ? one("SELECT ts FROM messages WHERE chat_id=? AND sender_kind='owner' AND ts>=? ORDER BY ts LIMIT 1", chat, ts) : undefined;
       const first = rows[0].id as string;
       const k = (firsts.get(first) ?? 0) + 1;
       firsts.set(first, k);
@@ -234,7 +284,7 @@ export class Triage {
         place: raw(last).chat_name ?? null, place_id: chat, actor: actors.slice(0, 3).join("、") || null,
         link: [...rows].reverse().map((r) => raw(r).link).find(Boolean) ?? null, domain: domainOf(surface),
         matter_id: openMatters.has(Number(matter)) ? Number(matter) : null, topic: typeof topic === "string" ? topic : null,
-        msg_ids: rows.map((r) => r.id), ...(answered ? { state: "done", done_at: answered.ts, done_by: "replied" } : {}),
+        msg_ids: rows.map((r) => r.id),
       });
       for (const i of idx) used.add(i);
     };
@@ -254,9 +304,10 @@ export class Triage {
   /** The draft run (§4.3): chat tier, only this chat's context, others' tool scope, a fresh session. */
   async draft(r: Record<string, any>, why: string) {
     const raw = JSON.parse(r.raw_json ?? "{}");
-    const ctxRows = r.thread_id
-      ? all("SELECT * FROM messages WHERE chat_id=? AND (thread_id=? OR id=?) AND ts<=? ORDER BY ts DESC, id DESC LIMIT 30", r.chat_id, r.thread_id, r.thread_id, r.ts).reverse()
-      : all("SELECT * FROM messages WHERE chat_id=? AND ts<=? ORDER BY ts DESC, id DESC LIMIT 30", r.chat_id, r.ts).reverse();
+    // includes what was said after it: a draft now runs after the window, and someone may have answered meanwhile
+    const scope = r.thread_id ? "chat_id=? AND (thread_id=? OR id=?)" : "chat_id=?", args = r.thread_id ? [r.chat_id, r.thread_id, r.thread_id] : [r.chat_id];
+    const ctxRows = [...all(`SELECT * FROM messages WHERE ${scope} AND ts<=? ORDER BY ts DESC, id DESC LIMIT 30`, ...args, r.ts).reverse(),
+      ...all(`SELECT * FROM messages WHERE ${scope} AND ts>? ORDER BY ts, id LIMIT 20`, ...args, r.ts)];
     const who = (m: Record<string, any>) => m.sender_kind === "owner" ? `${ownerName()}（他本人）` : m.sender_kind === "bot" ? "bot" : JSON.parse(m.raw_json ?? "{}").sender_name ?? "?";
     const contextText = ctxRows.filter((m) => m.id !== r.id).map((m) => `${localStamp(m.ts).slice(5)} ${who(m)}：${String(m.text).slice(0, 400)}`).join("\n");
     const voice = voiceFor(r.chat_id, raw.chat_name ?? "");
@@ -308,15 +359,42 @@ export class Triage {
     hooks.kickDispatcher();
   }
 
-  private async flushNotices() {
+  /**
+   * One batch at most every NOTIFY_MS; the clock only starts when something is sent, so a lone reminder goes when due.
+   * What he responded to since it came due is dropped here. Asks still waiting on him always go, read or not (like a
+   * task asking him something, §9.3): reading is not answering. The rest are only "worth knowing": dropped if he has
+   * read them, else they count against the daily cap, on their own counter so they can't use up the quota of task
+   * notices and follow-ups, and over the cap wait for the morning report.
+   */
+  async flushNotices() {
     const admin = feishuConf().admin_chat;
-    const last = Number(one("SELECT v FROM kv WHERE k='triage.notified_at'")?.v ?? 0);
-    if (!admin || Date.now() - last < NOTIFY_MS) return;
-    const rows = all("SELECT * FROM messages WHERE triage_action='notify' ORDER BY ts LIMIT 60");
-    run("INSERT INTO kv(k,v) VALUES('triage.notified_at', ?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", String(Date.now()));
-    if (!rows.length) return;
-    await sendText(admin, noticeText(rows));
-    for (const r of rows) run("UPDATE messages SET triage_action='notified' WHERE id=?", r.id);
+    if (!admin || Date.now() - Number(kvGet("triage.notified_at") ?? 0) < NOTIFY_MS) return;
+    const rows = all("SELECT * FROM messages WHERE triage_action='notify' AND attn IS NULL ORDER BY ts LIMIT 60").filter((r) => {
+      if (!responseTo(r)) return true;
+      run("UPDATE messages SET attn='answered' WHERE id=?", r.id);
+      return false;
+    });
+    const asks = rows.filter(isOpenAsk);
+    let rest = rows.filter((r) => !asks.includes(r));
+    const ids = rest.filter((r) => String(r.surface).startsWith("feishu:") && /^om_/.test(r.id)).map((r) => String(r.id));
+    if (ids.length) {
+      // a failed lookup only means he gets a reminder he might not have needed
+      const read = await this.readIds(ids).catch((e) => { log("triage", "read status failed", { err: String(e?.message ?? e).slice(0, 200) }); return new Set<string>(); });
+      for (const r of rest) if (read.has(r.id)) run("UPDATE messages SET attn='read' WHERE id=?", r.id);
+      rest = rest.filter((r) => !read.has(r.id));
+    }
+    const key = `notice.${localStamp().slice(0, 10)}`, used = Number(kvGet(key) ?? 0);
+    const over = rest.length > 0 && used >= quietConf().cap;
+    if (over) {
+      for (const r of rest) run("UPDATE messages SET attn='held' WHERE id=?", r.id);
+      log("quiet", "notices held for the morning report", { n: rest.length });
+    }
+    const out = over ? asks : [...asks, ...rest];
+    if (!out.length) return;
+    kvSet("triage.notified_at", String(Date.now()));
+    await this.send(admin, noticeText(out));
+    for (const r of out) run("UPDATE messages SET triage_action='notified' WHERE id=?", r.id);
+    if (!over && rest.length) kvSet(key, String(used + 1));
   }
 }
 

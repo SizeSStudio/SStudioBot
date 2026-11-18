@@ -145,6 +145,7 @@ async function onSteps(d) {
 
 // ───────── 全部动态 (lane "*") ─────────
 const FLOW_FILTERS = { all: "要紧的", run: "对话与起草", message: "群消息", task: "任务", approval: "审批" };
+const ATTN = { waiting: "等你回应", answered: "你已回应", read: "你已读", held: "进早报" };
 const ACTION = { draft: "起草回复", notify: "提醒你", notified: "已提醒", archive: "归档", digest: "进摘要", ignore: "忽略", skip: "跳过", skipped: "跳过", escalate: "升级" };
 
 async function drawFlowPane(force) {
@@ -161,7 +162,7 @@ async function drawFlowPane(force) {
 function paintFlow() {
   const f = st.flow, body = $("#tlbody");
   if (!body) return;
-  const needsOwner = (i) => i.type !== "message" || ["draft", "notify", "notified", "escalate"].includes(i.action) || i.status === "pending";
+  const needsOwner = (i) => i.type !== "message" || (i.attn !== "answered" && i.attn !== "read" && ["draft", "notify", "notified", "escalate"].includes(i.action)) || i.status === "pending";
   const items = f.items.filter((i) => (f.filter === "all" && needsOwner(i)) || i.type === f.filter ||
     (f.filter === "approval" && i.type === "run" && i.approvals?.length) || (f.filter === "task" && i.type === "run" && i.role === "worker"));
   let html = "", day = "";
@@ -186,8 +187,8 @@ function flowItem(i) {
       ${ins}${ap}${outs}${i.error ? `<div class="err sub">${esc(i.error)}</div>` : ""}</div></div>`;
   }
   if (i.type === "message") {
-    const act = i.action ? ACTION[i.action] ?? i.action : i.senderKind === "owner" ? "你自己发的" : i.status === "pending" ? "等分拣" : null;
-    const cls = i.action === "draft" ? "warn" : i.action === "notify" || i.action === "notified" ? "serious" : "plain";
+    const act = i.attn ? ATTN[i.attn] ?? i.attn : i.action ? ACTION[i.action] ?? i.action : i.senderKind === "owner" ? "你自己发的" : i.status === "pending" ? "等分拣" : null;
+    const cls = i.attn ? "plain" : i.action === "draft" ? "warn" : i.action === "notify" || i.action === "notified" ? "serious" : "plain";
     return `<div class="row"><div class="main"><div class="sub clip">群消息 · ${esc(i.chat)} · ${esc(i.sender)} · ${hm(i.ts)}</div>
       <div class="clip2">${esc(i.text)}</div>${i.note ? `<div class="sub clip">分拣：${esc(i.note)}</div>` : ""}</div>
       <div class="side">${act ? `<span class="pill ${cls}">${esc(act)}</span>` : pill(i.status)}${i.link ? ` <a class="btn small" href="${esc(i.link)}" target="_blank" rel="noopener">飞书</a>` : ""}</div></div>`;

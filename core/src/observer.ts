@@ -7,7 +7,7 @@
 //   - first start: no reading until the owner confirms the group-list review card; new groups → a notice card
 //   - p2p chats (DMs others send him) only when sources.yaml feishu.dm is on (§17.3); never the owner↔bot DM, which
 //     is the main lane. They go in as surface feishu:p2p, are cached in `chats` (chat_mode p2p), and Triage reads them.
-//   - his own message in any observed chat closes the asks waiting on him there (events.ts markReplied)
+//   - his own message in any observed chat closes the asks it answers there (events.ts markReplied)
 
 import { all, one, run, kvGet, kvSet } from "./db.ts";
 import { feishuConf, gateConf, groupsConf, log, ownerFeishu, sourcesConf, type Activation } from "./config.ts";
@@ -198,9 +198,10 @@ export class Observer {
            VALUES(?,?,?,?,?,?,?,?,?,?)`, m.message_id, p2p ? "feishu:p2p" : "feishu:group", m.chat_id, m.thread_id ?? null, s.id ?? null,
         isOwner ? "owner" : isBot ? "bot" : "other", ts, String(m.content ?? ""),
         JSON.stringify({ chat_name: chatName, sender_name: s.name, msg_type: m.msg_type, link: m.message_app_link, reply_to: m.reply_to,
+          pos: Number(m.message_position) || undefined,   // create_time is per minute; this orders messages inside a chat
           mentions: (m.mentions ?? []).map((x: any) => x.id), names: (m.mentions ?? []).map((x: any) => x.name) }), status);
       added++;
-      if (isOwner) { invalidateForOwnerMessage(m.chat_id, ts, m.message_id); markReplied(m.chat_id, ts, m.reply_to); }
+      if (isOwner) { invalidateForOwnerMessage(m.chat_id, ts, m.message_id); markReplied(m.chat_id, ts, m.reply_to, { id: m.message_id, thread: m.thread_id, pos: Number(m.message_position) || undefined, mentions: (m.mentions ?? []).map((x: any) => x.id) }); }
     }
     kvSet("observer.cursor", String(end));
     if (added) log("observer", "polled", { rows: rows.length, added });

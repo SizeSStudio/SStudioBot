@@ -157,6 +157,21 @@ CREATE INDEX IF NOT EXISTS events_place ON events(place_id, state);
 -- §17.4 imports from another harness. status: applied|undone. summary_json: counts + the matter ids it created.
 CREATE TABLE IF NOT EXISTS imports(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, origin TEXT, sha TEXT, raw_path TEXT, summary_json TEXT,
   commit_sha TEXT, status TEXT NOT NULL DEFAULT 'applied');
+-- v0.14 §18 因缘. persons = everyone met (no permission meaning: trust stays in people.yaml, §2.2); his merges, splits,
+-- circles and notes live here. aliases: kind feishu|wechat (ids) or name; a name may point at several persons (ambiguous).
+-- cluster is derived (rebuilt with the graph). relations: person ↔ person, conf EXTRACTED (he confirmed) | INFERRED.
+CREATE TABLE IF NOT EXISTS persons(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, slug TEXT, config_key TEXT, circle TEXT, note TEXT,
+  first_seen INTEGER, first_via TEXT, last_seen INTEGER, cluster INTEGER, status TEXT NOT NULL DEFAULT 'active', merged_into INTEGER, created_at INTEGER);
+CREATE TABLE IF NOT EXISTS person_aliases(kind TEXT NOT NULL, alias TEXT NOT NULL, person_id INTEGER NOT NULL, src TEXT, ts INTEGER,
+  PRIMARY KEY(kind, alias, person_id));
+CREATE INDEX IF NOT EXISTS person_aliases_p ON person_aliases(person_id);
+CREATE TABLE IF NOT EXISTS relations(id INTEGER PRIMARY KEY AUTOINCREMENT, a INTEGER NOT NULL, b INTEGER NOT NULL, rel TEXT NOT NULL,
+  conf TEXT NOT NULL, src TEXT, evidence TEXT, ts INTEGER, status TEXT NOT NULL DEFAULT 'active');
+-- derived view of everything above + messages / events / matters / pages; dropped and rebuilt, never edited
+CREATE TABLE IF NOT EXISTS graph_edges(a TEXT NOT NULL, b TEXT NOT NULL, rel TEXT NOT NULL, conf TEXT NOT NULL, weight REAL NOT NULL,
+  first_ts INTEGER, last_ts INTEGER, evidence TEXT, PRIMARY KEY(a, b, rel));
+CREATE INDEX IF NOT EXISTS graph_edges_b ON graph_edges(b);
+CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, ts INTEGER);
 `);
 
 // additive migrations (ALTER TABLE ADD COLUMN fails if it already exists)

@@ -1,7 +1,15 @@
-# SStudioBot 设计文档（v0.14 草案）
+# SStudioBot 设计文档（v0.15 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
+
+### v0.15 变更（因缘：人、事、资料的图谱，2026-11-18）
+- **新增 §18**：personal agent 不能只看事，还得知道主人身边有哪些人、是什么样的人、彼此怎么连上的。思路借自 graphify：边分「有记录」和「推测」，一条路径的可信度取它最弱的一跳；纯代码构建、不调模型；圈子按结构自动分，用大家最常在的群命名；名字有歧义就拒绝并列出候选。
+- **人分三层（§2.2）**：`persons` 表是它见过的每一个人（不带任何权限）；`people/<slug>.md` 是 TA 是什么样的人；`config/people.yaml` 仍然只管身份和权限，图谱只读它、永远不写。
+- **因缘**：每个人第一次出现在哪、同场有谁、我在不在；之后每月的往来。**借机观察**只摆事实：新结的缘、常在一起但还不知道什么关系的两个人、牵线的人（跨两个以上圈子）、渐远的、待认的（只有名字、重名）。
+- **控制台**：生活 › 人（每个人的因缘、关系、常一起的人和事、页面、叫法，可以改名、分圈子、记关系、合并、拆开）；生活 › 因缘（圈子图和借机观察）。
+- **工具**：`person_lookup`、`person_path`（L0）、`person_relate`（L1，记下的关系一律算推测，等我在控制台点「对」才算有记录），都只在 owner 会话。
+- **新增表**：`persons`、`person_aliases`、`relations`（我的纠正，持久），`graph_nodes`、`graph_edges`（派生视图，随时可重建）（§11）。
 
 ### v0.14 变更（worker 默认上宿主机，2026-11-18 主人定）
 - **worker 分两种模式（§4.2、§7.6）**：默认 **host**：用户 `sbot-h`，以 transient service 的形式跑在宿主机上，不套 bwrap，也不受 iptables 限制，公网、DNS、tailnet 全通，**有完整 sudo**，HOME 持久保留（ssh key、各 CLI 的登录状态都在里面）。**sandbox** 就是原来的 `sbot-w` 隔离，任务要处理不可信内容时才用。主 agent 觉得有风险，先问我要不要用 sandbox。
@@ -260,12 +268,15 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 
 **认人只认 ID，不认名字。** 有人说"主人 让你……"，一律按 others 处理。
 
-### 2.2 人的信息拆成两半
+### 2.2 人的信息分三层（v0.15）
 
 | 内容 | 存在哪 | 谁能改 |
 |---|---|---|
 | **权限相关**：跨渠道 ID、关系、`importance`、微信唯一备注 | `config/people.yaml`（配置仓库） | 只有我（改文件 / 控制台 / 卡片） |
 | **笔记**：偏好、近况、正在跟进的事 | `agent-home/people/<slug>.md` 正文 | dream（§8.3） |
+| **认识**：见过的每一个人、各处的叫法、圈子、彼此的关系、因缘（§18） | `persons` / `person_aliases` / `relations` 表 | 代码登记；我在控制台纠正；`person_relate` 只能记推测 |
+
+第三层**不带任何权限**：在 `persons` 里不等于可信，能让它做什么只看 people.yaml。图谱只读 people.yaml，从不写；两个各自有 people.yaml 条目的人不能在控制台里合并（那要改 people.yaml）。
 
 ```yaml
 # config/people.yaml
@@ -925,6 +936,7 @@ tailscale serve --https=8444（HTTPS + 反向代理 + 注入身份头 Tailscale-
 | M5 | People、策略、Auto 规则、定时任务、提议 | 对应的配置文件 / `proposals` |
 | M3（2026-11-17 补） | **流转**：消息 → Triage → run / worker → 审批 → 发件箱，实时一条条走过去，点开看每一步的输入输出和用量 | `inbox` / `runs` / `approvals` / `outbox`（SSE） |
 | M3（2026-11-17 补） | **沉淀**：知识库（index / log / 页面）、事和复盘、镜头看法账本、心得、§16 的信号和提案 | agent-home git + 对应的表 |
+| v0.15 | **生活 › 人**：每个人的因缘（初见、每月往来）、关系、常一起的人和事、资料和页面、叫法；改名、分圈子、记关系、合并、拆开；people.yaml 的信任只读显示。**生活 › 因缘**：圈子图、圈子、新结的缘、常在一起还不知道什么关系、牵线的人、渐远的、待认 | `persons` / `relations` / `graph_*`（§18） |
 | M8 | **待办 › 要你回 / 拍板**；**生活 › 事**：每件事的事件、等你的、话头（挂到事上）；**生活 › 导入**：预览、导入、撤销、提示词和样例；**它自己 › 信息源**：每个源上次拉取的结果、现在拉一次 | `events` / `imports` + `config/sources.yaml` |
 
 ### 10.3 原则
@@ -1030,6 +1042,20 @@ events(id, ts, source, ref, place, place_id, actor, kind, level, summary, link, 
       -- done_by: replied|approved|rejected|owner|owner@console|import
       -- source: feishu|<sources.yaml 的 id>|import；place_id = messages.chat_id（群、私聊、<源 id>:<where>）
 imports(id, ts, origin, sha, raw_path, summary_json, commit_sha, status)   -- status: applied|undone
+
+-- v0.15：因缘（§18）。前三张是持久的（我的纠正在这里），后两张是派生视图，随时可以整张重建
+persons(id, name, slug NULL, config_key NULL, circle NULL, note NULL, first_seen, first_via, last_seen, cluster,
+        status, merged_into NULL, created_at)
+      -- slug = people/<slug>.md；config_key = people.yaml 的键（只读引用）；circle: 家人|朋友|同事|合作方|同学|邻里|其他（我分的）
+      -- cluster = 自动分的圈子；first_via (JSON)：{kind: chat|matter|page, id, label, with[], me}；status: active|hidden|merged
+person_aliases(kind, alias, person_id, src, ts, PRIMARY KEY(kind, alias, person_id))
+      -- kind: name|feishu|wechat；同一个 name 指向两个人就是重名，查的时候拒绝并列候选
+relations(id, a, b, rel, conf, src, evidence, ts, status)
+      -- rel: 夫妻|家人|同事|上级|下属|朋友|合作方|同学|介绍人|…；conf: EXTRACTED（我认过）|INFERRED（推测）
+      -- src: owner@console | 会话的 src；status: active|dropped
+graph_nodes(id, kind, label, ts)            -- id: me | p:<person> | m:<matter> | c:<chat> | g:<页面路径> | r:<资料 sha>
+graph_edges(a, b, rel, conf, weight, first_ts, last_ts, evidence, PRIMARY KEY(a, b, rel))
+      -- rel: talks|in|dm|matter|at|link|mentions|key|source|rel；evidence (JSON)：最多 5 条出处
 ```
 v0.13：`messages` 加 `event_id`（这条消息记进了哪个事件，用来按"回复的是哪条"关事件）；`matters` 加 `keys`（这件事在各处的叫法，JSON 数组，Triage 靠它把不同地方说的同一件事串起来），status 加 `done`（导入时已经办完的事）。信息源的消息也进 `messages`：surface `source:<id>`，chat_id `<id>:<where>`。
 runs 加 `versions_json`（这次用的 prompt、skill、范例库、模型版本）和 `input_ref`（起草类 run 的输入快照，保留 1 年）；approvals 加 `revise_notes`（我"改一下"时说的话）和 `final_text`。
@@ -1068,6 +1094,7 @@ v0.6 的 `events` 表合并进了 `inbox`（推送群消息进 `messages`），`
 
 ### 仍然未决
 - 月前瞻按公历月还是节气月：先做成 `config/self.yaml` 里的一个选项。
+- §18 因缘的后续：dream / 分拣从对话里顺手记关系（推测，等我认）；周复盘里带一段因缘；AGENTS.md 里约定人物页互相用 `[[people/…]]` 链接（AGENTS.md 是我改的）；数据大了以后改成增量构建。
 
 ---
 
@@ -1251,6 +1278,18 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 控制台：待办、生活 › 事 / 导入、它自己 › 信息源（§10.2）
 - [x] `test/m8-smoke.ts` 离线全过（分拣、自动关、话头、信息源三种 kind + 插件密钥规则、导入预览 / 应用 / 合并 / 撤销）；`--live` 真跑分拣 3 个地方和一次原始材料导入，$0.05；m7 回归全过
 - [ ] 没做：微信侧的事件（等微信接入）；控制台里编辑 sources.yaml 之外的插件管理（插件只能主人在服务器上装）；我纠正事件级别 / 归属算不算 §16 的信号（D 级，等我定）
+
+### 13.9 因缘进度（2026-11-18）
+
+§18 人、事、资料的图谱。
+
+- [x] **登记**（`src/graph.ts`）：people.yaml（只读）→ 人物页 → 飞书 / 微信里说过话的人 → 事件里的 actor，按 ID 和名字认人；名字有两个人对得上就不猜
+- [x] **构建**：消息（挨着说话、@、在哪个群、私聊）、事件（谁在哪件事里、事在哪）、页面（链接、提到、事的「关键人」）、资料（喂过哪些页）、我记的关系。纯代码，最多 15 分钟重算一次，打开控制台或工具查人时触发
+- [x] **圈子**：带权标签传播；名字取大家最常在的群。**因缘**：初见（在哪、同场有谁、我在不在）、最近一次、每月往来
+- [x] **纠正**：改名、分圈子、隐藏、合并、拆开叫法、记关系 / 认 / 去掉；people.yaml 字节不变
+- [x] 工具 `person_lookup` / `person_path`（L0）、`person_relate`（L1，只能记推测），只给 owner；控制台 生活 › 人 / 因缘（§10.2）
+- [x] `test/graph-smoke.ts` 离线全过（登记、各类边和可信度、self/ 不进图、圈子、初见、路径不经过我、借机观察、纠正、工具权限）
+- [ ] 没做：从对话里自动记关系；周复盘里的因缘段；增量构建（见「仍然未决」）
 
 ---
 
@@ -1661,6 +1700,60 @@ sources:
 - 信息源和插件属于"读什么"：只有我改配置、我装插件；agent 不提。导入的提示词和格式是代码的一部分（C 级）。
 - 我在控制台改事件的级别、关掉、挂到别的事上，本身就是对 Triage 的纠正。**要不要把这些记成 §16 的信号**（比如 `event_relevel`、`event_relink`），改的是信号定义，属于 **D 级**，等我定；在那之前只记在 `events` 里，不进 `signals`。
 
+## 18. 因缘：人、事、资料的图谱（v0.15）
+
+### 18.1 为什么
+只看事是 work agent。陪一个人过日子，得知道他身边有哪些人、是什么样的人、彼此怎么连上的，事又是在哪些人之间发生的。缘起缘灭本身也值得看：谁是什么时候、经由谁出现的，谁渐渐远了，谁一直在几个圈子之间牵线。这些都能从已有的记录里看出来，不用模型猜。
+
+### 18.2 三层，权限不变
+- `persons`：它见过的每一个人，一个人一行，各处的叫法（飞书 ID、微信 ID、名字、people.yaml 的键）都在 `person_aliases` 里指向它。**在这里不等于可信。**
+- `people/<slug>.md`：TA 是什么样的人，dream 写（§8.3）。
+- `config/people.yaml`：身份和权限，只有我改。图谱只读它，用来把同一个人的各处 ID 认到一起。
+
+### 18.3 图里有什么
+节点：我、人、事、群 / 私聊（地方）、页面、资料。边都带出处（最多 5 条），分两种可信度（借自 graphify）：
+
+| 边 | 从哪来 | 可信度 |
+|---|---|---|
+| 人—人 `talks` | 同一个群里挨着说话（相隔 ≤ 10 分钟）、@ 了对方，按次数累计 | 有记录 |
+| 人—地方 `in`，我—人 `dm` | 在哪个群说过话；私聊 | 有记录 |
+| 人—事 `matter` | 事件的消息是 TA 发的 | 有记录 |
+| 人—事 `matter` | 只是事件的 actor 名字对上了 | 推测 |
+| 事—地方 `at` | 事件发生在哪 | 有记录 |
+| 页面—页面 / 人 / 事 `link` | 页面里的 `[[…]]` 和 `.md` 链接 | 有记录 |
+| 页面—人 `mentions` | 页面正文里出现了某个已知人的名字 | 推测 |
+| 事—人 `key` | 事的页面「关键人」一节 | 推测 |
+| 资料—页面 `source` | `raw_sources.pages_json`（§8.5） | 有记录 |
+| 人—人 `rel` | 我记的关系（有记录），或 `person_relate` 记的（推测，等我认） | 看来源 |
+
+一条路径的可信度取最弱的一跳。路径不经过「我」（不然谁都和谁两跳就连上了）。
+
+**不进图**：`self/`、`journal/`、出生信息、命盘和解读（只给我看，§15.9）；skills、AGENTS.md、SOUL.md、index / log 这类结构文件。
+
+### 18.4 怎么建
+- **登记**（顺序即优先级）：people.yaml 的条目 → 人物页（名字唯一对上就挂到同一个人）→ 飞书 / 微信里说过话的人（按 sender_id，名字取最近的）→ 事件 actor 里出现的名字（只有名字的人，等认）。名字有两个以上的人对得上，就**不猜**，工具会拒绝并列出候选。
+- **构建**：上面每一类边各一遍 SQL / 文件扫描，最近 400 天。纯代码，几十毫秒级。`graph_*` 两张表整张重建；**最多 15 分钟一次**，打开控制台的人 / 因缘或工具查人时触发，也能在控制台「现在重算」。
+- **圈子**：带权标签传播（关系 8、提到 1、其他按 log 次数；同在一件 ≤ 15 人的事里加 1）。圈子的名字：一半以上成员都在同一个群，就叫「「群名」那拨人」，否则取两个成员的名字。我手动分的 `circle`（家人 / 朋友 / 同事……）和自动圈子并存，不互相覆盖。
+- **因缘**：每个人的初见取最早的一条记录：在哪个群、前后 30 分钟里同场说话的人、我在不在场；只从人物页认识的人取页面的创建时间。初见只会往前挪。
+
+### 18.5 借机观察
+控制台「生活 › 因缘」只摆事实，不下判断，也不发到任何地方：
+- **新结的缘**：近 30 天第一次出现的人，在哪、同场有谁、我在不在。
+- **常在一起，还不知道什么关系**：挨着说话最多、还没记关系的两个人。点开可以一键记关系；不记也没关系。
+- **牵线的人**：和两个以上圈子都有往来的人。
+- **渐远的**：往来不少（权重 ≥ 15）、但 60 天到一年没出现的人。
+- **待认**：只有名字的人数、重名。
+
+### 18.6 纠正和工具
+- 控制台：改名、分圈子、一句话备注、隐藏、合并两个人（叫法、关系、初见都并过去）、把认错的叫法拆成一个新的人、记关系 / 认（推测 → 有记录）/ 去掉。这些写在 `persons` / `person_aliases` / `relations`，重建不会冲掉。
+- 主 agent（只在 owner 会话）：`person_lookup`（L0，一个人的卡片：叫法、圈子、关系、常一起的人和事、页面）、`person_path`（L0，两个人怎么连上的）、`person_relate`（L1，记一条关系，必须带依据，**一律算推测**，我认了才算有记录）。
+- 发到飞书的东西里不带图谱内容；它查到的只用来帮我想事。
+
+### 18.7 和 §16 的关系
+- 图谱是派生视图，算法和权重属于代码（C 级）。
+- 它只能记推测的关系，认不认由我。我在控制台合并、拆开、认关系要不要记成 §16 的信号，属于信号定义（D 级），等我定；在那之前只在这几张表里。
+- 图谱不碰 people.yaml、不碰任何权限和规则。
+
 ---
 
 ## 附：参考
@@ -1671,6 +1764,7 @@ sources:
 - **LayerFS**（Ephemeral-AI-Lab/layerfs）：候选思路是 worker 每次写操作一个 checkpoint（影子分支），以及 dream 在分支上整理再合并；还没写进正文，也不引入依赖。
 - OpenClaw / NanoClaw / nanobot / Hermes Agent：见 v0.6 附录。
 - T3 Code：thread / delegate / task notification / queue 的交互模型。
+- **graphify**：把代码和资料建成知识图谱。借了这几条：边分 EXTRACTED / INFERRED，路径取最弱一跳；只用代码构建；邻居、最短路径、解释三种查询；社区自动分、不靠模型命名；名字有歧义就拒绝并列候选。§18 按它设计，没有引入依赖。
 - **HappyClaw**（riba2534/happyclaw）：技术栈和场景跟我们最接近，不 fork，只借设计：
   - `src/group-queue.ts`：会话串行和合批
   - `src/channel-reliability-store.ts`：收件箱和发件箱

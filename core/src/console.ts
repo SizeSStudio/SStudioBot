@@ -38,6 +38,7 @@ export interface ConsoleDeps { feishu?: FeishuAdapter; dispatcher?: Dispatcher; 
 
 import { HttpError, bad } from "./console-data.ts";
 import * as V from "./console-data.ts";
+import * as G from "./graph.ts";
 const sha = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 const excerpt = (s: unknown, n = 160) => { const t = String(s ?? "").replace(/\s+/g, " ").trim(); return t.length > n ? t.slice(0, n) + "…" : t; };
 const pj = (s: unknown) => { try { return JSON.parse(String(s ?? "null")); } catch { return null; } };
@@ -476,6 +477,25 @@ export function startConsole(d: ConsoleDeps): http.Server {
         void notifyAdmin(`↩️ 控制台撤销了导入 #${m[1]}`);
         return json(200, r);
       }
+      // §18 人 / 因缘: persons and relations are memory (no config, no permission), so no admin notice
+      const gerr = <T,>(f: () => T): T => { try { return f(); } catch (e: any) { if (e instanceof HttpError) throw e; throw bad(String(e?.message ?? e)); } };
+      if (p === "/life/people") return json(200, { people: G.peopleList(String(url.searchParams.get("q") ?? "").trim(), String(url.searchParams.get("circle") ?? "")), circles: G.CIRCLES, rels: G.REL_PRESETS });
+      if ((m = /^\/life\/person\/(\d+)$/.exec(p))) {
+        if (method === "POST") { const b = await body(req); return json(200, gerr(() => G.setPerson(Number(m![1]), b))); }
+        return json(200, gerr(() => G.personDetail(Number(m![1]))));
+      }
+      if (p === "/life/person/merge" && method === "POST") { const b = await body(req); return json(200, gerr(() => G.mergePersons(Number(b.from), Number(b.into)))); }
+      if (p === "/life/person/split" && method === "POST") { const b = await body(req); return json(200, gerr(() => G.splitAlias(Number(b.from), String(b.kind ?? ""), String(b.alias ?? "")))); }
+      if (p === "/life/relation" && method === "POST") { const b = await body(req); return json(200, gerr(() => G.addRelation(Number(b.a), Number(b.b), String(b.rel ?? ""), { conf: "EXTRACTED", src: "owner@console" }))); }
+      if ((m = /^\/life\/relation\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, gerr(() => G.setRelation(Number(m![1]), b.act === "confirm" ? "confirm" : "drop"))); }
+      if (p === "/life/graph") {
+        const focus = String(url.searchParams.get("focus") ?? "");
+        return json(200, gerr(() => focus ? G.egoView(focus, Number(url.searchParams.get("depth")) === 2 ? 2 : 1)
+          : G.circleView(Math.min(Number(url.searchParams.get("limit")) || 60, 200), url.searchParams.get("matters") === "1")));
+      }
+      if (p === "/life/graph/path") return json(200, gerr(() => G.pathBetween(String(url.searchParams.get("from") ?? ""), String(url.searchParams.get("to") ?? ""))));
+      if (p === "/life/yinyuan") return json(200, G.observations());
+      if (p === "/life/graph/rebuild" && method === "POST") return json(200, G.rebuildGraph());
       if (p === "/life/outlooks") return json(200, V.outlooks());
       if (p === "/life/self") return json(200, V.selfItems());
       if ((m = /^\/life\/self\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.markSelf(Number(m[1]), String(b.status), b.note ? String(b.note) : undefined)); }

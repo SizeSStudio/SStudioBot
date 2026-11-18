@@ -86,6 +86,24 @@ export const quietConf = () => {
   return { cap: Number(g.proactive_daily_cap ?? 6), budget: Number(g.daily_budget_usd ?? daily ?? 10) };
 };
 
+/**
+ * gate.yaml attention (§4.3): how long a raised message waits for him to respond by himself before it reaches him.
+ *   wait_minutes (30) · escalate_wait_minutes (0) · places: { <chat_id | source id | source:where place | feishu_dm>: minutes }
+ */
+const minutes = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
+export const attentionConf = () => {
+  const a = cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {} as any).attention ?? {};
+  return { wait: minutes(a.wait_minutes) ? a.wait_minutes : 30, escalate: minutes(a.escalate_wait_minutes) ? a.escalate_wait_minutes : 0, places: (a.places ?? {}) as Record<string, unknown> };
+};
+/** the most specific setting wins; a place can only shorten an escalation's wait, never lengthen it */
+export function waitMinutes(chat: string, surface: string, action: string): number {
+  const { wait, escalate, places } = attentionConf();
+  const source = surface.startsWith("source:") ? surface.slice(7) : undefined;
+  const place = [places[chat], source ? places[source] : undefined, surface === "feishu:p2p" ? places.feishu_dm : undefined].find(minutes);
+  const base = place ?? wait;
+  return action === "escalate" ? Math.min(escalate, base) : base;
+}
+
 /** config/self.yaml (§15.9, §15.13): owner-only; month rhythm and the 送一程 thresholds */
 export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);

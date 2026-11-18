@@ -6,10 +6,11 @@
 //   level = what it asks of him:    fyi 知道就行 · watch 要盯 · reply 要你回 · decide 要你拍板
 //   state = open (reply / decide, not handled yet) · seen (fyi / watch) · done · dropped
 // The level is what separates "know it" from "answer it"; the kind is what makes a matter's timeline readable.
-// Closing is done by code from his behaviour (he spoke in that place, the draft went out, he rejected it as 不用回)
-// or by him (console, event_update), never guessed by a model.
+// Closing is done by code from his behaviour (he answered it there, the draft went out, he rejected it as 不用回)
+// or by him (console, event_update), never guessed by a model. When unsure it stays open: an extra reminder is cheap,
+// a silently closed ask is not.
 
-import { all, one, run, tx } from "./db.ts";
+import { all, one, run, tx, type Row } from "./db.ts";
 import { localStamp } from "./memory.ts";
 
 export const KINDS = ["ask", "decision", "commitment", "progress", "risk", "deadline", "info"] as const;
@@ -49,14 +50,113 @@ export function recordEvent(e: EventIn): number {
   return r.changes ? Number(r.lastInsertRowid) : one("SELECT id FROM events WHERE source=? AND ref=?", e.source, e.ref)!.id as number;
 }
 
+/** one thing he said: a Feishu message or a source item marked from_me. `pos` orders a chat; Feishu times are per minute. */
+export interface Word { id?: string; ts: number; pos?: number; replyTo?: string; thread?: string | null; mentions?: string[] }
+interface Said { id?: string; ts: number; pos?: number; thread?: string | null; sender?: string | null; surface?: string; chat?: string }
+type Timed = { ts: number; pos?: number };
+
+const rawOf = (m: Row) => JSON.parse(m.raw_json ?? "{}");
+const saidOf = (m: Row): Said => ({ id: m.id, ts: Number(m.ts), pos: rawOf(m).pos, thread: m.thread_id, sender: m.sender_id, surface: m.surface, chat: m.chat_id });
+export const wordOf = (m: Row): Word => { const x = rawOf(m); return { id: m.id, ts: Number(m.ts), pos: x.pos, replyTo: x.reply_to, thread: m.thread_id, mentions: x.mentions }; };
+const later = (a: Timed, b: Timed) => a.pos != null && b.pos != null ? a.pos > b.pos : a.ts >= b.ts;
+/** a DM, or one named thing in a source (a ticket): anything he says there is about it. A source with no `where` is a feed. */
+const oneConversation = (m: Said) => m.surface === "feishu:p2p" || (!!m.surface?.startsWith("source:") && m.chat !== `${m.surface.slice(7)}:${m.surface.slice(7)}`);
+const eventSaid = (e: Row): Said[] => {
+  const ids: string[] = JSON.parse(e.msg_ids ?? "[]");
+  const rows = ids.length ? all(`SELECT * FROM messages WHERE id IN (${ids.map(() => "?").join(",")})`, ...ids) : [];
+  return rows.length ? rows.map(saidOf) : [{ ts: Number(e.ts), chat: e.place_id }];   // imported events have no messages
+};
+/** in a group, a plain word only counts right after the ask: this many others talking in between means the talk moved on */
+const MAX_BETWEEN = 3;
+
 /**
- * He spoke in this place at `ts`: what was waiting on him there counts as answered. If his message replies to a
- * specific message that belongs to an event, only that event closes; otherwise every open ask raised before it.
+ * Does this word respond to these messages? The one rule for "he responded" (§17.2).
+ * direct: he replied to one of them, or spoke in their thread. plain: an unaddressed word that follows them closely in
+ * the same conversation, or one that @s whoever asked. Replying to something else, speaking in another thread, or
+ * @-ing someone else is not a response.
  */
-export function markReplied(placeId: string, ts: number, replyTo?: unknown): number {
-  const target = typeof replyTo === "string" && replyTo ? one("SELECT event_id FROM messages WHERE id=? AND event_id IS NOT NULL", replyTo)?.event_id : undefined;
-  if (target) return Number(run("UPDATE events SET state='done', done_at=?, done_by='replied' WHERE id=? AND state='open'", ts, target).changes);
-  return Number(run("UPDATE events SET state='done', done_at=?, done_by='replied' WHERE place_id=? AND state='open' AND ts<=?", ts, placeId, ts).changes);
+function answerKind(w: Word, said: Said[], chat: string): "direct" | "plain" | null {
+  if (w.replyTo) return said.some((m) => m.id === w.replyTo) ? "direct" : null;
+  const last = said.reduce((a, b) => (later(b, a) ? b : a));
+  if (!later(w, last)) return null;
+  if (w.thread) return said.some((m) => m.thread === w.thread || m.id === w.thread) ? "direct" : null;
+  if (said.every((m) => m.thread)) return null;   // asked in a thread, he spoke in the main chat
+  if (said.some(oneConversation)) return "plain";
+  if (said.some((m) => m.surface?.startsWith("source:"))) return null;   // a feed: only reply_to / thread tie his word to an item
+  if (w.mentions?.length) return said.some((m) => m.sender && w.mentions!.includes(m.sender)) ? "plain" : null;
+  const mine = new Set(said.map((m) => m.id));
+  const others = all("SELECT * FROM messages WHERE chat_id=? AND sender_kind='other' AND thread_id IS NULL AND ts>=? AND ts<=? LIMIT 50", chat, last.ts, w.ts)
+    .map(saidOf).filter((m) => !mine.has(m.id) && later(m, last) && later(w, m));
+  return others.length <= MAX_BETWEEN ? "plain" : null;
+}
+
+/**
+ * He said something at `ts` in this place: close what it answers. A direct reply closes its own event; a plain word
+ * closes only the newest open ask it fits (one "好的" is not an answer to everything). `only` limits it to some events.
+ */
+export function markReplied(placeId: string, ts: number, replyTo?: unknown, more: Omit<Word, "ts" | "replyTo"> = {}, only?: number[]): number {
+  const close = (id: number) => Number(run("UPDATE events SET state='done', done_at=?, done_by='replied' WHERE id=? AND state='open'", ts, id).changes);
+  const reply = typeof replyTo === "string" && replyTo ? replyTo : undefined;
+  const target = reply ? one("SELECT event_id FROM messages WHERE id=? AND event_id IS NOT NULL", reply)?.event_id : undefined;
+  if (target) return !only || only.includes(target) ? close(target) : 0;   // a source reply can sit under another `where`
+  const w: Word = { ...more, ts, replyTo: reply };
+  // re-weighing an earlier word for new events: if it already closed something here, it is spent
+  let n = 0, plainUsed = !!only && !!one("SELECT 1 FROM events WHERE place_id=? AND done_by='replied' AND done_at=?", placeId, ts);
+  for (const e of all("SELECT * FROM events WHERE place_id=? AND state='open' ORDER BY ts DESC, id DESC", placeId)) {
+    if (only && !only.includes(e.id)) continue;
+    const kind = answerKind(w, eventSaid(e), placeId);
+    if (!kind || (kind === "plain" && plainUsed)) continue;
+    plainUsed ||= kind === "plain";
+    n += close(e.id);
+  }
+  return n;
+}
+
+/** New events: weigh what he already said there (his word can land before Triage gets to the ask). */
+export function closeAnswered(placeId: string, ids: number[]): number {
+  if (!ids.length) return 0;
+  const from = Math.min(...ids.flatMap((id) => { const e = one("SELECT * FROM events WHERE id=?", id); return e ? eventSaid(e).map((m) => m.ts) : []; }));
+  let n = 0;
+  for (const m of all("SELECT * FROM messages WHERE chat_id=? AND sender_kind='owner' AND ts>=? ORDER BY ts, id", placeId, from)) {
+    const { ts, replyTo, ...more } = wordOf(m);
+    n += markReplied(placeId, ts, replyTo, more, ids);
+  }
+  return n;
+}
+
+/**
+ * Is a raised message no longer worth bringing to him? Returns why, or null if it still is. An ask follows its event:
+ * every word he says is weighed once as it arrives (markReplied), so a word spent on another ask isn't reused here.
+ */
+export function responseTo(m: Row): string | null {
+  const e = m.event_id ? one("SELECT * FROM events WHERE id=?", m.event_id) : undefined;
+  if (e?.state === "done" || e?.state === "dropped") return e.done_by ?? e.state;
+  if (e?.state === "open") return null;
+  const said = e ? eventSaid(e) : [saidOf(m)];
+  const from = Math.min(...said.map((s) => s.ts));
+  for (const o of all("SELECT * FROM messages WHERE chat_id=? AND sender_kind='owner' AND ts>=? ORDER BY ts, id LIMIT 50", m.chat_id, from))
+    if (answerKind(wordOf(o), said, m.chat_id)) return "replied";
+  return null;
+}
+
+/** A draft voided because he spoke there, by words that didn't answer it: the ask goes back to being a reminder. Recent ones only, so old drafts don't resurface. */
+export const requeueVoidedDrafts = () => Number(run(`UPDATE messages SET triage_action='notify' WHERE triage_action='draft' AND attn IS NULL
+    AND event_id IN (SELECT id FROM events WHERE state='open')
+    AND id IN (SELECT trigger_msg_id FROM approvals WHERE kind='send' AND status='invalidated' AND decided_at>=?)`, Date.now() - DAY).changes);
+
+/** true while this message's event is an ask still waiting on him */
+export const isOpenAsk = (m: Row) => !!m.event_id && !!one("SELECT 1 FROM events WHERE id=? AND state='open' AND level IN ('reply','decide')", m.event_id);
+
+/** Notices held over the daily cap (§9.3), for the morning report; what he has since responded to is dropped. */
+export function takeHeldNotices(): { ts: number; text: string }[] {
+  const out = new Map<string, { ts: number; text: string }>();
+  for (const m of all("SELECT * FROM messages WHERE attn='held' ORDER BY ts, id LIMIT 200")) {
+    if (responseTo(m)) { run("UPDATE messages SET attn='answered' WHERE id=?", m.id); continue; }
+    run("UPDATE messages SET attn=NULL, triage_action='notified' WHERE id=?", m.id);
+    const e = m.event_id ? one("SELECT * FROM events WHERE id=?", m.event_id) : undefined;
+    out.set(e ? `e${e.id}` : m.id, { ts: Number(m.ts), text: e ? eventLine(e, { date: false, tag: false }) : `「${rawOf(m).chat_name ?? "?"}」${m.triage_note || String(m.text).slice(0, 80)}` });
+  }
+  return [...out.values()];
 }
 
 /** Close asks whose draft he decided: sent in his name → done; rejected → dropped (he said no reply was needed). */

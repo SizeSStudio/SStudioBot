@@ -24,6 +24,7 @@ const ok = (cond: unknown, what: string) => { console.log(`${cond ? "PASS" : "FA
 const LIVE = process.argv.includes("--live");
 for (const d of [P.sessions, P.logs]) mkdirSync(d, { recursive: true });
 ensureAgentHome(join(here, "..", "seed", "agent-home"));
+writeFileSync(join(P.config, "gate.yaml"), "attention: { wait_minutes: 0 }\n");   // these checks read the result of classify directly
 process.env.SBOT_PLUGINS = join(P.home, "plugins");   // read when sources.ts loads: everything below is imported after
 const E = await import("../src/events.ts");
 const { Triage, noticeText, triageSystem } = await import("../src/triage.ts");

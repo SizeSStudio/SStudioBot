@@ -15,7 +15,7 @@ export function metricsWindow(from: number, to: number) {
   const days: string[] = [];
   for (let t = from; t < to; t += DAY) days.push(localStamp(t).slice(0, 10));
   const kvSum = (prefix: string) => days.reduce((s, d) => s + Number(kvGet(`${prefix}.${d}`) ?? 0), 0);
-  const triage = Object.fromEntries(all("SELECT COALESCE(triage_action,'none') a, COUNT(*) n FROM messages WHERE surface='feishu:group' AND ts>=? AND ts<? GROUP BY 1", from, to).map((r) => [r.a, r.n]));
+  const triage = Object.fromEntries(all("SELECT CASE WHEN attn IN ('answered','read') THEN attn ELSE COALESCE(triage_action,'none') END a, COUNT(*) n FROM messages WHERE surface='feishu:group' AND ts>=? AND ts<? GROUP BY 1", from, to).map((r) => [r.a, r.n]));
   // 漏: he wrote in a group within 2 h after a message Triage had filed as ignore / archive, with nothing raised in between
   const missed = one(`SELECT COUNT(*) n FROM messages o WHERE o.surface='feishu:group' AND o.sender_kind='owner' AND o.ts>=? AND o.ts<?
     AND EXISTS (SELECT 1 FROM messages p WHERE p.chat_id=o.chat_id AND p.sender_kind='other' AND p.ts<o.ts AND p.ts>=o.ts-7200000 AND p.triage_action IN ('ignore','archive'))

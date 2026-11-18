@@ -10,7 +10,7 @@ import { quietConf, log } from "./config.ts";
 import { localNow, localStamp } from "./memory.ts";
 import { dreamDiffText } from "./dream.ts";
 import { morningOutlookText } from "./reflect.ts";
-import { eventsMorningText } from "./events.ts";
+import { eventsMorningText, takeHeldNotices } from "./events.ts";
 
 const day = () => localStamp().slice(0, 10);
 export const proactiveToday = () => Number(kvGet(`proactive.${day()}`) ?? 0);
@@ -46,7 +46,7 @@ export function morningText(): string {
   const done = all("SELECT id, status, goal FROM tasks WHERE ended>=? AND status IN ('done','failed') ORDER BY ended", now - 86400_000);
   const fus = all("SELECT id, due_at, note FROM timers WHERE kind='followup' AND status='pending' AND due_at < ? ORDER BY due_at", startOfDay + 86400_000);
   const matters = all("SELECT id, title, status FROM matters WHERE status IN ('open','active','closing') ORDER BY id");
-  const held: { ts: number; text: string }[] = JSON.parse(kvGet("quiet.held") ?? "[]");
+  const held: { ts: number; text: string }[] = [...JSON.parse(kvGet("quiet.held") ?? "[]"), ...takeHeldNotices()].slice(-30);
   kvSet("quiet.held", "[]");
   const y = localStamp(now - 86400_000).slice(0, 10);
   const cost = one("SELECT COALESCE(SUM(cost),0) c FROM usage WHERE ts>=? AND ts<?", startOfDay - 86400_000, startOfDay)!.c as number;

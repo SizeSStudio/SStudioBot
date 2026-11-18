@@ -170,8 +170,16 @@ function build() {
   }
 
   // 2. events → person ↔ matter (by the messages' sender ids; by name only for imports = INFERRED), matter ↔ place
-  const matters = all("SELECT id, title, opened_at, file_path, status FROM matters");
-  for (const m of matters) node(`m:${m.id}`, "matter", m.title ?? `事 #${m.id}`, m.opened_at ?? 0);
+  // one node per 主线: 子事 and merged matters count towards it, so the graph follows every regrouping (and its undo)
+  const matters = all("SELECT id, title, opened_at, file_path, status, parent_id, merged_into FROM matters");
+  const mById = new Map(matters.map((m) => [Number(m.id), m]));
+  const mRoot = (id: number) => {
+    let m = mById.get(id);
+    for (let i = 0; m?.merged_into && i < 20; i++) m = mById.get(Number(m.merged_into));
+    const p = m?.parent_id ? mById.get(Number(m.parent_id)) : undefined;
+    return Number((p ?? m)?.id ?? id);
+  };
+  for (const m of matters) if (mRoot(Number(m.id)) === Number(m.id)) node(`m:${m.id}`, "matter", m.title ?? `事 #${m.id}`, m.opened_at ?? 0);
   for (const e of all("SELECT id, ts, actor, matter_id, place, place_id, msg_ids, source FROM events WHERE ts>=?", since)) {
     const who = new Map<number, Conf>();
     let ids: unknown = []; try { ids = JSON.parse(e.msg_ids ?? "[]"); } catch { /* */ }
@@ -183,10 +191,10 @@ function build() {
       }
     }
     if (!who.size && e.actor) for (const n of String(e.actor).split("、")) { const p = byName(n); if (typeof p === "number" && !hidden.has(p)) who.set(p, "INFERRED"); }
-    const m = e.matter_id ? `m:${e.matter_id}` : null;
+    const mid = e.matter_id ? mRoot(Number(e.matter_id)) : null, m = mid ? `m:${mid}` : null;
     for (const [p, conf] of who) {
       if (m && nodes.has(m)) add(`p:${p}`, m, "matter", conf, e.ts, `事件 #${e.id}`);
-      seen(p, e.ts, m && nodes.has(m) ? { kind: "matter", id: e.matter_id, label: nodes.get(m)!.label } : { kind: "chat", label: e.place ?? "事件" });
+      seen(p, e.ts, m && nodes.has(m) ? { kind: "matter", id: mid!, label: nodes.get(m)!.label } : { kind: "chat", label: e.place ?? "事件" });
     }
     if (m && nodes.has(m) && e.place_id && nodes.has(`c:${e.place_id}`)) add(m, `c:${e.place_id}`, "at", "EXTRACTED", e.ts, e.place ?? undefined);
   }
@@ -200,7 +208,7 @@ function build() {
     const pm = /^people\/(.+)\.md$/.exec(rel);
     if (pm) { const p = slugMap.get(pm[1]); return p && !hidden.has(p) ? `p:${p}` : null; }
     const mm = /^matters\/(\d+)\.md$/.exec(rel);
-    if (mm) return nodes.has(`m:${mm[1]}`) ? `m:${mm[1]}` : null;
+    if (mm) { const k = `m:${mRoot(Number(mm[1]))}`; return nodes.has(k) ? k : null; }
     return node(`g:${rel}`, "page", titles.get(rel) ?? rel.replace(/\.md$/, ""), ts);
   };
   const known = all(`SELECT DISTINCT a.alias name, p.id FROM persons p JOIN person_aliases a ON a.person_id=p.id
@@ -225,7 +233,7 @@ function build() {
     for (const line of sec.split("\n")) for (const tok of line.replace(/^[-*]\s*(\[[^\]]*\]\s*)*/, "").split(/[、，,；;\/]/)) {
       const n = normName(tok.replace(/[（(].*$/, "").replace(/[:：].*$/, ""));
       const p = n.length >= 2 ? byName(n) : null;
-      if (typeof p === "number" && !hidden.has(p)) add(`p:${p}`, `m:${m.id}`, "key", "INFERRED", m.opened_at ?? 0, "关键人");
+      if (typeof p === "number" && !hidden.has(p)) add(`p:${p}`, `m:${mRoot(Number(m.id))}`, "key", "INFERRED", m.opened_at ?? 0, "关键人");
     }
   }
   // 4. raw sources (§8.5): a document links the pages it fed (the table comes with ingest; until then there is none)

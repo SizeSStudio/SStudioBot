@@ -13,6 +13,7 @@ import { onGroupClick, onReviewClick, sendGroupCard } from "./observer.ts";
 import { onWorkbenchReply } from "./tasks.ts";
 import { rollback } from "./dream.ts";
 import { sendText } from "./cards.ts";
+import { onMatterReviewClick } from "./matter-review.ts";
 import type { Incoming } from "./feishu.ts";
 import type { TurnContext } from "./tools.ts";
 
@@ -64,5 +65,6 @@ export async function onCardAction(ev: any) {
     if (v.k === "appr") await onApprovalClick(v, operator);
     else if (v.k === "group") await onGroupClick(v, operator, msg);
     else if (v.k === "review") await onReviewClick(v, operator, msg);
+    else if (v.k === "mr") await onMatterReviewClick(v, operator, msg);
   } catch (e) { err(`card ${v.k}`)(e); }
 }

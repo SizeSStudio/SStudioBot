@@ -20,7 +20,8 @@ import { git, localStamp } from "./memory.ts";
 import { commitMemory, rebuildIndex } from "./wiki.ts";
 import { complete } from "./proxy.ts";
 import { parseLocal } from "./timers.ts";
-import { noteMatter, openMatter } from "./matters.ts";
+import { deleteMatter, liveId, matterInUse, noteMatter, openMatter, rootId } from "./matters.ts";
+import { undoOpsTouching } from "./matter-ops.ts";
 import { KINDS, LEVELS, addMatterKeys, matterKeys, needsHim, recordEvent } from "./events.ts";
 
 export const FORMAT = "sbot-import/1";
@@ -35,6 +36,7 @@ export interface ImportPerson { name: string; aka: string[]; org: string; role: 
 export interface ImportMatter {
   key: string; title: string; domain: "work" | "personal"; status: "active" | "closing" | "done" | "dropped"; why: string; direction: string[]; facts: string[];
   people: string[]; places: string[]; keys: string[]; close_condition: string; opened?: number; closed?: number; next: string[];
+  parent: string;   // key of the 主线 this is a 子事 of (§15.3); empty for a 主线
 }
 export interface ImportEvent { matter: string | null; ts: number; kind: string; level: string; who: string; where: string; text: string; link?: string; state: "open" | "done" }
 export interface ImportDoc { format: string; from: string; exported_at: string; people: ImportPerson[]; matters: ImportMatter[]; events: ImportEvent[] }
@@ -53,6 +55,22 @@ export function when(v: unknown): number | undefined {
 }
 const link = (u: unknown) => typeof u === "string" && /^https?:\/\/\S+$/.test(u.trim()) ? u.trim().slice(0, 1000) : undefined;
 const normTitle = (s: string) => s.replace(/[\s"'“”‘’「」『』《》【】()（）#·,，.。:：-]/g, "").toLowerCase();
+
+/** parents point straight at a 主线: one level, same domain, no loops */
+function flattenParents(matters: ImportMatter[]) {
+  const byKey = new Map(matters.map((m) => [m.key, m]));
+  const top = (m: ImportMatter) => {
+    const seen = new Set([m.key]);
+    let p = m;
+    while (p.parent && byKey.has(p.parent)) {
+      if (seen.has(p.parent)) return null;
+      seen.add(p.parent); p = byKey.get(p.parent)!;
+    }
+    return p === m || p.domain !== m.domain ? null : p;
+  };
+  const tops = matters.map(top);
+  matters.forEach((m, i) => { m.parent = tops[i]?.key ?? ""; });
+}
 
 /** check and clean a doc: lenient on shape (strings, lists), strict on the format line; throws in plain words */
 export function normalizeDoc(x: any): ImportDoc {
@@ -73,9 +91,10 @@ export function normalizeDoc(x: any): ImportDoc {
       key, title: S(m?.title, 60), domain: S(m?.domain, 20) === "personal" ? "personal" : "work",
       status: (["closing", "done", "dropped"].includes(st) ? st : "active") as ImportMatter["status"],
       why: S(m?.why, 1000), direction: L(m?.direction, 10, 400), facts: L(m?.facts, 30, 400), people: L(m?.people, 20, 40), places: L(m?.places, 10, 60),
-      keys: L(m?.keys, 10, 24), close_condition: S(m?.close_condition, 200), opened: when(m?.opened), closed: when(m?.closed), next: L(m?.next, 10, 300),
+      keys: L(m?.keys, 10, 24), close_condition: S(m?.close_condition, 200), opened: when(m?.opened), closed: when(m?.closed), next: L(m?.next, 10, 300), parent: S(m?.parent, 40),
     };
   }).filter((m: ImportMatter) => m.title);
+  flattenParents(matters);
   const keys = new Set(matters.map((m: ImportMatter) => m.key));
   const events = (Array.isArray(x.events) ? x.events : []).slice(0, 3000).map((e: any) => ({
     matter: e?.matter != null && keys.has(S(e.matter, 40)) ? S(e.matter, 40) : null, ts: when(e?.ts) ?? NaN,
@@ -98,18 +117,21 @@ export function mergeDocs(parts: ImportDoc[], from: string): ImportDoc {
       o.aka = uniq(o.aka, p.aka, 10); o.notes = uniq(o.notes, p.notes, 30); o.ids = { ...p.ids, ...o.ids };
       for (const k of ["org", "role", "relation", "how_to_work"] as const) o[k] ||= p[k];
     }
-    const remap = new Map<string, string>();
+    const remap = new Map<string, string>(), parents: [ImportMatter, string][] = [];
     for (const m of d.matters) {
       const same = matters.find((x) => normTitle(x.title) === normTitle(m.title));
-      if (!same) { const key = parts.length > 1 ? `${i + 1}.${m.key}` : m.key; remap.set(m.key, key); matters.push({ ...m, key }); continue; }
+      if (!same) { const key = parts.length > 1 ? `${i + 1}.${m.key}` : m.key; remap.set(m.key, key); const copy = { ...m, key, parent: "" }; matters.push(copy); if (m.parent) parents.push([copy, m.parent]); continue; }
       remap.set(m.key, same.key);
+      if (m.parent && !same.parent) parents.push([same, m.parent]);
       for (const k of ["direction", "facts", "people", "places", "keys", "next"] as const) same[k] = uniq(same[k], m[k], 30);
       for (const k of ["why", "close_condition"] as const) same[k] ||= m[k];
       if (m.opened && (!same.opened || m.opened < same.opened)) same.opened = m.opened;
       if (m.status !== "active") { same.status = m.status; same.closed = m.closed ?? same.closed; }   // a later chunk saying it ended wins
     }
+    for (const [m, p] of parents) { const k = remap.get(p); if (k && k !== m.key) m.parent = k; }
     for (const e of d.events) events.push({ ...e, matter: e.matter ? remap.get(e.matter) ?? null : null });
   });
+  flattenParents(matters);
   return { format: FORMAT, from, exported_at: parts[0]?.exported_at ?? "", people: [...people.values()], matters, events };
 }
 
@@ -146,19 +168,32 @@ async function normalizeRaw(text: string, from: string): Promise<ImportDoc> {
   return mergeDocs(parts, from);
 }
 
-/** an open matter this one should merge into: same title, or one's title is the other's key */
+/** an open matter this one should merge into: same title, or one's title is the other's key. A duplicate merged away answers for its survivor. */
 function findMatter(m: ImportMatter) {
   const t = normTitle(m.title), mk = new Set(m.keys.map((k) => normTitle(k)));
-  return all("SELECT id, title, status, keys FROM matters WHERE status NOT IN ('dropped') ORDER BY id DESC").find((x) =>
+  const hit = all("SELECT id, title, status, keys FROM matters WHERE status NOT IN ('dropped') ORDER BY id DESC").find((x) =>
     normTitle(x.title) === t || (JSON.parse(x.keys ?? "[]") as string[]).some((k) => normTitle(k) === t) || mk.has(normTitle(x.title)));
+  return hit?.status === "merged" ? one("SELECT id, title, status, keys FROM matters WHERE id=?", liveId(hit.id)) : hit;
 }
 const slugOf = (name: string) => name.replace(/[\/\\:*?"<>|#\s.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 
+/** how many lines he would end up following (§17.4), and a word of warning when the material came out too fine-grained */
+function shapeOf(doc: ImportDoc) {
+  const live = doc.matters.filter((m) => m.status === "active" || m.status === "closing");
+  const mains = live.filter((m) => !m.parent).length, subs = live.length - mains;
+  const onMatters = doc.events.filter((e) => e.matter).length, warn: string[] = [];
+  if (mains > 12) warn.push(`在办的主线有 ${mains} 条，偏多。一般人同时跟的长线不超过十来条，看看哪些其实是同一条线的阶段，可以写成 parent 或事件。`);
+  if (live.length > 20) warn.push(`在办的事一共 ${live.length} 件，导入后会很难追。`);
+  if (doc.matters.length >= 6 && onMatters / doc.matters.length < 3) warn.push(`平均每件事不到 3 个事件，颗粒度可能太细：里程碑写成事件，不要单独成事。`);
+  return { mains, subs, total: doc.matters.length, closed: doc.matters.length - live.length, warn };
+}
+
 function planOf(doc: ImportDoc) {
   return {
+    shape: shapeOf(doc),
     people: doc.people.map((p) => { const rel = `people/${slugOf(p.name)}.md`; return { name: p.name, rel, exists: existsSync(join(P.agentHome, rel)), relation: p.relation }; })
       .filter((p) => slugOf(p.name)),
-    matters: doc.matters.map((m) => { const hit = findMatter(m); return { key: m.key, title: m.title, status: m.status, domain: m.domain, merge: hit ? { id: hit.id, title: hit.title } : null,
+    matters: doc.matters.map((m) => { const hit = findMatter(m); return { key: m.key, title: m.title, status: m.status, domain: m.domain, parent: m.parent || null, merge: hit ? { id: hit.id, title: hit.title } : null,
       events: doc.events.filter((e) => e.matter === m.key).length }; }),
     events: { n: doc.events.length, open: doc.events.filter((e) => e.state === "open" && needsHim(e.level)).length, loose: doc.events.filter((e) => !e.matter).length },
   };
@@ -243,6 +278,13 @@ export function applyImport(sha: string) {
       if (!hit && (m.status === "done" || m.status === "dropped")) run("UPDATE matters SET status=?, closed_at=? WHERE id=?", m.status, m.closed ?? Date.now(), mid);
       else if (!hit) run("UPDATE matters SET status=? WHERE id=?", m.status === "closing" ? "closing" : "active", mid);
     }
+    // 子事 go under their 主线; a matter that already existed stays where he put it
+    for (const m of doc.matters) {
+      const mid = keyMap.get(m.key), p = m.parent ? keyMap.get(m.parent) : undefined;
+      if (!mid || !p || !sum.matters_new.includes(mid)) continue;
+      const root = rootId(p);
+      if (root && root !== mid && one("SELECT 1 FROM matters a, matters b WHERE a.id=? AND b.id=? AND a.domain=b.domain", mid, root)) run("UPDATE matters SET parent_id=? WHERE id=?", root, mid);
+    }
     // events → the ledger; only what is still waiting on him stays open, and his next word in that chat closes it
     doc.events.forEach((e, n) => {
       const open = e.state === "open" && needsHim(e.level);
@@ -291,16 +333,13 @@ function undoWith(id: number, sum: Summary) {
   for (const [mid, keys] of Object.entries(sum.keys_added)) {
     if (keys.length) run("UPDATE matters SET keys=? WHERE id=?", JSON.stringify(matterKeys(Number(mid)).filter((k) => !keys.includes(k))), Number(mid));
   }
-  for (const mid of sum.matters_new) {
-    const m = one("SELECT * FROM matters WHERE id=?", mid);
-    if (!m) continue;
-    const used = ["tasks", "timers", "approvals", "events", "life_notes", "outlooks", "readings", "reviews"]
-      .some((t) => one(`SELECT 1 FROM ${t} WHERE matter_id=? LIMIT 1`, mid));
-    if (!used) {
-      try { unlinkSync(join(P.agentHome, m.file_path ?? `matters/${mid}.md`)); } catch { /* */ }
-      run("DELETE FROM matters WHERE id=?", mid);
-    } else {   // something else hangs on it by now: keep the matter, drop it, and say why
-      if (m.file_path) strip(m.file_path);
+  // 子事 first, so their 主线 are free to go
+  const fresh = sum.matters_new.map((mid) => one("SELECT * FROM matters WHERE id=?", mid)).filter((m) => !!m).sort((a, b) => Number(!!b!.parent_id) - Number(!!a!.parent_id));
+  for (const m of fresh) {
+    const mid = Number(m!.id);
+    if (!matterInUse(mid)) deleteMatter(mid);
+    else {   // something else hangs on it by now: keep the matter, drop it, and say why
+      if (m!.file_path) strip(m!.file_path);
       run("UPDATE matters SET status='dropped', closed_at=? WHERE id=?", Date.now(), mid);
       noteMatter(mid, "收", `导入 #${id} 撤销了；这件事之后有了别的记录，所以留着、标为不办`, "undo");
     }
@@ -319,7 +358,9 @@ export function undoImport(id: number) {
   const imp = one("SELECT * FROM imports WHERE id=?", id);
   if (!imp) throw new Error(`没有导入 #${id}`);
   if (imp.status !== "applied") throw new Error(`导入 #${id} 现在是 ${imp.status}，不能撤销`);
-  undoWith(id, JSON.parse(imp.summary_json ?? "{}"));
+  const sum = JSON.parse(imp.summary_json ?? "{}") as Summary;
+  undoOpsTouching(sum.matters_new ?? [], "import-undo");   // regrouping done since then comes apart first, or these matters would look in use
+  undoWith(id, sum);
   rebuildIndex();
   commitMemory(`undo import #${id}`);
   run("UPDATE imports SET status='undone' WHERE id=?", id);

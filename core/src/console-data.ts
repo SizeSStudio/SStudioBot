@@ -4,7 +4,7 @@
 
 import { gunzipSync } from "node:zlib";
 import { all, one, run, kvGet } from "./db.ts";
-import { jobsConf, ownerFeishu, feishuConf, log } from "./config.ts";
+import { jobsConf, matterReviewConf, ownerFeishu, feishuConf, log } from "./config.ts";
 import { readPage, localStamp } from "./memory.ts";
 import { onApprovalClick, reviseApproval, editDraft, getApproval, submitApproval } from "./approvals.ts";
 import { replyTask, cancelTask } from "./tasks.ts";
@@ -14,6 +14,9 @@ import { metricsWindow } from "./health.ts";
 import { lineDiff, replayText, improveStatus } from "./improve.ts";
 import { sendText } from "./cards.ts";
 import { eventsQuery, linkEvents, matterEventStats, openAsks, setEventLevel, setEventState } from "./events.ts";
+import { familyIds, inList } from "./matters.ts";
+import { attachMatters, createMainline, detachMatter, listOps, mergeMatters, undoOp } from "./matter-ops.ts";
+import { actOnReview, reviewQueue, undoReview } from "./matter-review.ts";
 
 export const VIA = "经控制台";
 const DAY = 86400_000;
@@ -236,18 +239,37 @@ export function lifeNote(text: string, domain?: string) {
   return { id: addNote({ text, domain: domain || undefined, src: "owner@console" }) };
 }
 export function matters() {
-  return all("SELECT * FROM matters ORDER BY CASE WHEN status IN ('open','active','closing') THEN 0 ELSE 1 END, id DESC LIMIT 100").map((m) => {
-    const ev = matterEventStats(m.id);
-    return { ...m, keys: pj(m.keys) ?? [], tasks: one("SELECT COUNT(*) n FROM tasks WHERE matter_id=?", m.id)!.n, followups: one("SELECT COUNT(*) n FROM timers WHERE matter_id=? AND status='pending'", m.id)!.n,
-      readings: one("SELECT COUNT(*) n FROM readings WHERE matter_id=?", m.id)!.n, events: ev.n, asks: ev.open ?? 0, last_event: ev.last };
+  return all("SELECT * FROM matters ORDER BY CASE WHEN status IN ('open','active','closing') THEN 0 ELSE 1 END, id DESC LIMIT 500").map((m) => {
+    const ev = matterEventStats(m.id), f = familyIds(m.id), q = inList(f);   // a 主线's numbers add up its 子事
+    return { ...m, keys: pj(m.keys) ?? [], tasks: one(`SELECT COUNT(*) n FROM tasks WHERE matter_id IN (${q})`, ...f)!.n, followups: one(`SELECT COUNT(*) n FROM timers WHERE matter_id IN (${q}) AND status='pending'`, ...f)!.n,
+      readings: one(`SELECT COUNT(*) n FROM readings WHERE matter_id IN (${q})`, ...f)!.n, events: ev.n, asks: ev.open ?? 0, last_event: ev.last };
+  });
+}
+const opErr = <T>(f: () => T): T => { try { return f(); } catch (e: any) { throw bad(String(e?.message ?? e)); } };
+export const matterReview = () => ({ on: matterReviewConf().on, ...reviewQueue(), ops: listOps({ limit: 30 }) });
+export const reviewAct = (id: number, a: string) => opErr(() => (a === "undo" ? undoReview(id, "owner@console") : actOnReview(id, a, "owner@console")));
+export const opUndo = (id: number) => opErr(() => undoOp(id, "owner@console"));
+/** his hand on the 事 page: attach / merge / detach / a new 主线 over this and others */
+export function matterRegroup(id: number, b: Record<string, any>) {
+  const x = { by: "owner@console", why: b.why ? String(b.why).slice(0, 300) : undefined }, target = Number(b.target);
+  return opErr(() => {
+    if (b.action === "attach") return { op: attachMatters([id], target, x) };
+    if (b.action === "merge") return { op: mergeMatters([id], target, x) };
+    if (b.action === "detach") return { op: detachMatter(id, x) };
+    if (b.action === "main") return createMainline(String(b.title ?? ""), [id, ...(Array.isArray(b.ids) ? b.ids.map(Number) : [])], x);
+    throw new Error("不认识的操作");
   });
 }
 export function matter(id: number) {
   const m = one("SELECT * FROM matters WHERE id=?", id);
   if (!m) throw bad("no such matter", 404);
+  const f = familyIds(id), q = inList(f);
   return { ...m, keys: pj(m.keys) ?? [], text: m.file_path ? readPage(m.file_path, "owner", 120_000) : "",
-    tasks: all("SELECT id, status, goal, ts FROM tasks WHERE matter_id=? ORDER BY ts DESC", id),
-    followups: all("SELECT id, due_at, note, status FROM timers WHERE matter_id=? ORDER BY due_at DESC LIMIT 20", id),
+    parent: m.parent_id ? one("SELECT id, title, status FROM matters WHERE id=?", m.parent_id) : null,
+    children: all("SELECT id, title, status FROM matters WHERE parent_id=? AND status<>'merged' ORDER BY id", id),
+    merged: all("SELECT id, title FROM matters WHERE merged_into=? ORDER BY id", id), ops: listOps({ matter: id, limit: 20 }),
+    tasks: all(`SELECT id, status, goal, ts FROM tasks WHERE matter_id IN (${q}) ORDER BY ts DESC`, ...f),
+    followups: all(`SELECT id, due_at, note, status FROM timers WHERE matter_id IN (${q}) ORDER BY due_at DESC LIMIT 20`, ...f),
     events: eventsQuery({ matter: id, limit: 300 }).map(eventView),
     timeline: timeline({ from: m.opened_at ?? 0, to: Date.now(), matter: id, limit: 200 }).rows.filter((r) => r.kind !== "event") };
 }

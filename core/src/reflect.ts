@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { all, one, run } from "./db.ts";
 import { P, jobsConf, log, ownerName } from "./config.ts";
 import { localNow, localStamp } from "./memory.ts";
+import { MAIN_OPEN } from "./matters.ts";
 import {
   isoWeek, monthOf, monthStart, noticingsSummary, outlooksText, ownerActivity, selfItemsText, startOfDay, timelineText, today, weekStart,
 } from "./life.ts";
@@ -22,7 +23,7 @@ const page = (rel: string, max = 3000) => {
   const s = readFileSync(f, "utf8").replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
   return s.length > max ? s.slice(0, max) + "\n…" : s || "（空）";
 };
-const openMatters = () => all("SELECT id, title, status, close_condition FROM matters WHERE status IN ('open','active','closing') ORDER BY id")
+const openMatters = () => all(`SELECT id, title, status, close_condition FROM matters WHERE ${MAIN_OPEN} ORDER BY id`)
   .map((m) => `#${m.id} ${m.title}（${m.status}${m.close_condition ? `；收：${m.close_condition}` : ""}）`).join("\n") || "（无）";
 const followupsBetween = (from: number, to: number) => all("SELECT due_at, note, matter_id FROM timers WHERE kind='followup' AND status='pending' AND due_at>=? AND due_at<? ORDER BY due_at", from, to)
   .map((t) => `${localStamp(t.due_at).slice(5, 16)} ${t.note}${t.matter_id ? `（事 #${t.matter_id}）` : ""}`).join("\n") || "（无）";

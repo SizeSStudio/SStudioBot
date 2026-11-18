@@ -264,7 +264,7 @@ web.close();
 
 // ---- imports: the example, a merge, re-apply, undo ----
 const pv = await I.previewImport(I.exampleText());
-ok(pv.kind === "json" && pv.from === "示例：旧助手" && pv.plan.people.length === 2 && pv.plan.matters.length === 2 && pv.plan.events.n === 3 && pv.plan.events.open === 1 && !pv.already, "preview of the example: 2 people, 2 matters, 3 events (1 waiting)");
+ok(pv.kind === "json" && pv.from === "示例：旧助手" && pv.plan.people.length === 2 && pv.plan.matters.length === 3 && pv.plan.events.n === 5 && pv.plan.events.open === 1 && !pv.already, "preview of the example: 2 people, 3 matters, 5 events (1 waiting)");
 ok(!existsSync(join(P.agentHome, "people", "王一.md")) && !one("SELECT 1 FROM matters WHERE title='新版本发布评审'"), "preview writes nothing");
 const r1 = I.applyImport(pv.sha);
 const p1 = readFileSync(join(P.agentHome, "people", "王一.md"), "utf8");
@@ -273,7 +273,7 @@ const im1 = one("SELECT * FROM matters WHERE title='新版本发布评审'")!, i
 ok(im1.status === "active" && JSON.parse(im1.keys).includes("v3发布") && im2.status === "done" && im2.closed_at > 0 && im2.domain === "personal", "matters opened with their status, keys and domain");
 ok(readFileSync(join(P.agentHome, im1.file_path), "utf8").includes("先灰度一周再全量"), "matter page has the imported direction");
 const iev = all("SELECT * FROM events WHERE source='import' ORDER BY ts");
-ok(iev.length === 3 && iev.filter((e) => e.state === "open").length === 1 && iev.find((e) => e.state === "open")?.level === "decide" && iev.every((e) => e.matter_id), "events → ledger on their matters; only the waiting one stays open");
+ok(iev.length === 5 && iev.filter((e) => e.state === "open").length === 1 && iev.find((e) => e.state === "open")?.level === "decide" && iev.every((e) => e.matter_id), "events → ledger on their matters; only the waiting one stays open");
 ok(V.inbox().asks.some((a: any) => a.source === "import"), "an imported ask shows up in 待办");
 ok(one("SELECT status, commit_sha FROM imports WHERE id=?", r1.id)?.status === "applied" && git(P.agentHome, "log", "-1", "--format=%s").includes(`import #${r1.id}`), "import recorded and committed");
 ok(existsSync(join(P.home, "imports", `${r1.id}.txt`)) && existsSync(join(P.agentHome, "imports", `${r1.id}.md`)), "raw kept on the server; summary page written");

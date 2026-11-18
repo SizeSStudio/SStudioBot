@@ -3,8 +3,11 @@
 #   do: morning      → the morning report: code gathers the facts, the main agent writes it in the owner DM
 #       event        → puts `text` into `lane` (default the owner DM) as a timer event; quota: true counts it against 先安静
 #       dream        → nightly memory tidy (§8.3); dream_diff → posts last night's changes to the admin group
+#       matter_review → the daily look over matters (§15.14): one card of suggestions in the owner DM, nothing changes until he clicks.
+#                      limit (5 a day) · first_limit (12, the first card) · stale_days (30) · ask_days (7, imported asks) · tier (light; work on the first run)
 # A job more than 15 minutes late (core was down) is recorded as missed, not run. /job in the DM lists them; /job <name> runs one now.
 
 dream:      { every: day, at: "03:00", do: dream }
+matter_review: { every: day, at: "08:15", do: matter_review, limit: 5, first_limit: 12, stale_days: 30, ask_days: 7 }
 dream_diff: { every: day, at: "08:25", do: dream_diff }
 morning:    { every: day, at: "08:30", do: morning }

@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS timers(
   status TEXT NOT NULL DEFAULT 'pending', matter_id INTEGER, created_by TEXT, fired_at INTEGER, ts INTEGER);
 CREATE INDEX IF NOT EXISTS timers_due ON timers(status, due_at);
 
--- §15.3. status: open|active|closing|reviewed|dropped|done (done: finished before it came here, §17.4 import)
+-- §15.3. status: open|active|closing|reviewed|dropped|done|merged (done: finished without a 复盘, e.g. §17.4 import; merged: see merged_into)
 -- keys (v0.13, JSON list): other names / topics for it; Triage links what it reads by these (§17.2)
 CREATE TABLE IF NOT EXISTS matters(
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, domain TEXT, lane TEXT, status TEXT NOT NULL DEFAULT 'open',
@@ -172,6 +172,16 @@ CREATE TABLE IF NOT EXISTS graph_edges(a TEXT NOT NULL, b TEXT NOT NULL, rel TEX
   first_ts INTEGER, last_ts INTEGER, evidence TEXT, PRIMARY KEY(a, b, rel));
 CREATE INDEX IF NOT EXISTS graph_edges_b ON graph_edges(b);
 CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, ts INTEGER);
+-- v0.19 §15.3: every regrouping or correction of matters / events, with what it takes to put it back.
+-- kind: merge|attach|main|detach|status|event|move|topic|rename · touches (JSON): m<id> / e<id> it changed
+CREATE TABLE IF NOT EXISTS matter_ops(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, summary TEXT, why TEXT, by TEXT NOT NULL,
+  review_id INTEGER, touches TEXT NOT NULL DEFAULT '[]', undo_json TEXT, undone_at INTEGER, undone_by TEXT);
+-- v0.19 §15.14 每日整理: suggestions only; nothing changes until he acts on one. fp identifies the question, so a settled one is not asked again.
+-- kind: group|stale|old_ask|suspect|topic · status: pending|shown|acted|ok|void
+CREATE TABLE IF NOT EXISTS matter_reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, fp TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, prio INTEGER NOT NULL DEFAULT 0,
+  why TEXT, data_json TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'code', status TEXT NOT NULL DEFAULT 'pending', shown_n INTEGER NOT NULL DEFAULT 0, last_shown INTEGER,
+  snooze_until INTEGER, created_at INTEGER, decided_at INTEGER, decided_by TEXT, action TEXT, op_id INTEGER);
+CREATE INDEX IF NOT EXISTS matter_reviews_status ON matter_reviews(status, snooze_until);
 `);
 
 // additive migrations (ALTER TABLE ADD COLUMN fails if it already exists)
@@ -179,11 +189,14 @@ for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["o
   ["outbox", "as_identity TEXT NOT NULL DEFAULT 'bot'"], ["messages", "triage_action TEXT"], ["messages", "triage_note TEXT"],
   ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"],
   ["messages", "event_id INTEGER"], ["matters", "keys TEXT"], ["tasks", "mode TEXT"],
-  ["messages", "attn TEXT"], ["messages", "wait_until INTEGER"]]) {
+  ["messages", "attn TEXT"], ["messages", "wait_until INTEGER"],
+  ["matters", "parent_id INTEGER"], ["matters", "merged_into INTEGER"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 // §4.3 attention window. attn: waiting (in its window) | answered (he responded, nothing sent) | read (not an ask, he has read it) | held (over the cap, for the morning report)
 db.exec("CREATE INDEX IF NOT EXISTS messages_attn ON messages(attn, wait_until)");
+// §15.3 主线 and 子事: parent_id is one level deep; merged_into points at the matter a duplicate became (status 'merged')
+db.exec("CREATE INDEX IF NOT EXISTS matters_parent ON matters(parent_id)");
 
 export type Row = Record<string, any>;
 export const one = (sql: string, ...a: any[]): Row | undefined => db.prepare(sql).get(...a) as Row | undefined;

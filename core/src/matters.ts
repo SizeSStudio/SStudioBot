@@ -2,7 +2,7 @@
 // agent-home/matters/<id>.md, which is memory. 起局 runs in the matter's own lane as a protocol the main agent follows
 // (the playbook below is returned by matter_open), not as a separate process. Lenses (M6) are optional step 4.6; 复盘 comes at 收 (M3c).
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { all, one, run } from "./db.ts";
 import { P } from "./config.ts";
@@ -23,6 +23,46 @@ export const PLAYBOOK = `起局按这个顺序，一步一步来，不要一口�
 
 const file = (id: number) => join(P.agentHome, "matters", `${id}.md`);
 
+// 主线 and 子事 (§15.3): a matter with no parent is a 主线; its children fold under it and their events add up to it.
+// One level only. A duplicate merged away keeps its row (status 'merged', merged_into) so it can be taken back out.
+const OPEN = "('open','active','closing')";
+export const OPEN_MATTER = `status IN ${OPEN}`;
+/** the open matters he sees: 主线, plus any open 子事 whose 主线 has already closed */
+export const MAIN_OPEN = `status IN ${OPEN} AND (parent_id IS NULL OR parent_id NOT IN (SELECT id FROM matters WHERE status IN ${OPEN}))`;
+export const inList = (xs: unknown[]) => xs.map(() => "?").join(",");
+
+/** the matter this id is now: follows merges; null if there is no such matter */
+export function liveId(id: number): number | null {
+  let m = one("SELECT id, merged_into FROM matters WHERE id=?", id);
+  for (let i = 0; m?.merged_into && i < 20; i++) m = one("SELECT id, merged_into FROM matters WHERE id=?", m.merged_into);
+  return m ? Number(m.id) : null;
+}
+/** the 主线 this matter belongs to (itself if it is one) */
+export function rootId(id: number): number | null {
+  const l = liveId(id);
+  if (l == null) return null;
+  const p = one("SELECT parent_id FROM matters WHERE id=?", l)?.parent_id;
+  return p ? liveId(Number(p)) ?? l : l;
+}
+/** a 主线 and its 子事: what its numbers add up over. A 子事 is just itself. */
+export function familyIds(id: number): number[] {
+  const l = liveId(id);
+  return l == null ? [] : [l, ...all("SELECT id FROM matters WHERE parent_id=? AND status<>'merged' ORDER BY id", l).map((r) => Number(r.id))];
+}
+/** anything besides its own page hanging on this matter? */
+export const matterInUse = (id: number) => ["tasks", "timers", "approvals", "events", "life_notes", "outlooks", "readings", "reviews"]
+  .some((t) => one(`SELECT 1 FROM ${t} WHERE matter_id=? LIMIT 1`, id)) || !!one("SELECT 1 FROM matters WHERE parent_id=? OR merged_into=? LIMIT 1", id, id);
+export function deleteMatter(id: number) {
+  const m = one("SELECT file_path FROM matters WHERE id=?", id);
+  try { unlinkSync(join(P.agentHome, m?.file_path ?? `matters/${id}.md`)); } catch { /* already gone */ }
+  run("DELETE FROM matters WHERE id=?", id);
+}
+/** take the lines one writer added back out of a matter's page */
+export function stripMatterLines(id: number, tag: string) {
+  const f = file(id);
+  if (existsSync(f)) writeFileSync(f, readFileSync(f, "utf8").split("\n").filter((l) => !l.includes(tag)).join("\n"));
+}
+
 export function openMatter(o: { title: string; domain: "work" | "personal"; lane: string; close_condition?: string }) {
   const r = run("INSERT INTO matters(title, domain, lane, status, close_condition, opened_at) VALUES(?,?,?,?,?,?)",
     o.title, o.domain, o.lane, "open", o.close_condition ?? null, Date.now());
@@ -35,7 +75,8 @@ export function openMatter(o: { title: string; domain: "work" | "personal"; lane
 }
 
 /** Append a line under one section of the matter file; the source tag is set by code (§8.3). */
-export function noteMatter(id: number, section: Section, text: string, src: string): string {
+export function noteMatter(idIn: number, section: Section, text: string, src: string): string {
+  const id = liveId(idIn) ?? idIn;
   const m = one("SELECT * FROM matters WHERE id=?", id);
   if (!m) throw new Error(`no matter #${id}`);
   if (!SECTIONS.includes(section)) throw new Error(`section must be one of ${SECTIONS.join(" / ")}`);
@@ -56,18 +97,21 @@ export function noteMatter(id: number, section: Section, text: string, src: stri
   return m.file_path;
 }
 
-export function setMatterStatus(id: number, status: "closing" | "dropped", note?: string) {
+export function setMatterStatus(id: number, status: "closing" | "dropped" | "done", note?: string) {
   if (!run("UPDATE matters SET status=?, closed_at=? WHERE id=?", status, Date.now(), id).changes) throw new Error(`no matter #${id}`);
   if (note) noteMatter(id, "收", note, "owner");
 }
 
 export function listMatters(open = true) {
-  const rows = all(`SELECT * FROM matters ${open ? "WHERE status IN ('open','active','closing')" : ""} ORDER BY id DESC LIMIT 30`);
+  const rows = all(`SELECT * FROM matters WHERE ${open ? MAIN_OPEN : "parent_id IS NULL AND status<>'merged'"} ORDER BY id DESC LIMIT 30`);
   if (!rows.length) return "（没有）";
   return rows.map((m) => {
-    const tasks = one("SELECT COUNT(*) n FROM tasks WHERE matter_id=?", m.id)!.n, fu = one("SELECT COUNT(*) n FROM timers WHERE matter_id=? AND status='pending'", m.id)!.n;
-    const ev = one("SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open FROM events WHERE matter_id=?", m.id)!;
+    const fam = familyIds(m.id), q = inList(fam);
+    const tasks = one(`SELECT COUNT(*) n FROM tasks WHERE matter_id IN (${q})`, ...fam)!.n, fu = one(`SELECT COUNT(*) n FROM timers WHERE matter_id IN (${q}) AND status='pending'`, ...fam)!.n;
+    const ev = one(`SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open FROM events WHERE matter_id IN (${q})`, ...fam)!;
     const keys = JSON.parse(m.keys ?? "[]") as string[];
-    return `#${m.id} ${m.title}（${m.status}，${localStamp(m.opened_at).slice(5, 10)} 起；${m.file_path}；任务 ${tasks}、待提醒 ${fu}、事件 ${ev.n}${ev.open ? `（等他 ${ev.open}）` : ""}${keys.length ? `；又叫：${keys.join("、")}` : ""}${m.close_condition ? `；收：${m.close_condition}` : ""}）`;
+    const kids = all(`SELECT id, title, status FROM matters WHERE parent_id=? AND status<>'merged' ${open ? `AND ${OPEN_MATTER}` : ""} ORDER BY id`, m.id);
+    return `#${m.id} ${m.title}（${m.status}，${localStamp(m.opened_at).slice(5, 10)} 起；${m.file_path}；任务 ${tasks}、待提醒 ${fu}、事件 ${ev.n}${ev.open ? `（等他 ${ev.open}）` : ""}${keys.length ? `；又叫：${keys.join("、")}` : ""}${m.close_condition ? `；收：${m.close_condition}` : ""}）` +
+      kids.map((k) => `\n  └ #${k.id} ${k.title}（${k.status}）`).join("");
   }).join("\n");
 }

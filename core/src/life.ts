@@ -13,6 +13,7 @@ import { db, all, one, run, tx, signal } from "./db.ts";
 import { P, selfConf, log } from "./config.ts";
 import { appendJournal, localStamp } from "./memory.ts";
 import { parseLocal } from "./timers.ts";
+import { familyIds, inList } from "./matters.ts";
 
 export const DOMAINS = ["work", "family", "friends", "body", "mind"] as const;
 export const DOMAIN_ZH: Record<string, string> = { work: "工作", family: "家庭", friends: "朋友", body: "身体", mind: "心" };
@@ -89,7 +90,7 @@ export function timeline(o: { from?: string | number; to?: string | number; kind
   const to = typeof o.to === "number" ? o.to : parseWhen(o.to, true) ?? Date.now();
   const where = ["ts>=?", "ts<=?"], args: any[] = [from, to];
   if (o.kinds?.length) { where.push(`kind IN (${o.kinds.map(() => "?").join(",")})`); args.push(...o.kinds); }
-  if (o.matter) { where.push("matter_id=?"); args.push(o.matter); }
+  if (o.matter) { const fam = familyIds(o.matter); where.push(`matter_id IN (${inList(fam) || "NULL"})`); args.push(...fam); }   // a 主线 includes its 子事
   if (o.domain) { where.push("domain=?"); args.push(o.domain); }
   if (o.q) { where.push("text LIKE ?"); args.push(`%${o.q}%`); }
   const limit = Math.min(o.limit ?? 200, 500);

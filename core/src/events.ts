@@ -12,6 +12,8 @@
 
 import { all, one, run, tx, type Row } from "./db.ts";
 import { localStamp } from "./memory.ts";
+import { matterReviewConf } from "./config.ts";
+import { MAIN_OPEN, OPEN_MATTER, familyIds, inList, liveId, rootId } from "./matters.ts";
 
 export const KINDS = ["ask", "decision", "commitment", "progress", "risk", "deadline", "info"] as const;
 export const LEVELS = ["fyi", "watch", "reply", "decide"] as const;
@@ -22,7 +24,6 @@ const RANK: Record<string, number> = { fyi: 0, watch: 1, reply: 2, decide: 3 };
 export const needsHim = (level: string) => level === "reply" || level === "decide";
 export const maxLevel = (a: string, b: string) => ((RANK[a] ?? 0) >= (RANK[b] ?? 0) ? a : b);
 const DAY = 86400_000;
-const OPEN_MATTER = "status IN ('open','active','closing')";
 
 /** a topic is a short label shared across places; keep it comparable (no quotes, no spaces, ≤ 24 chars) */
 export function normTopic(t: unknown): string | null {
@@ -40,7 +41,8 @@ export interface EventIn {
 export function recordEvent(e: EventIn): number {
   const kind = (KINDS as readonly string[]).includes(e.kind) ? e.kind : "info";
   const level = (LEVELS as readonly string[]).includes(e.level) ? e.level : "fyi";
-  const matter = e.matter_id ? one("SELECT id, domain FROM matters WHERE id=?", e.matter_id) : undefined;
+  const live = e.matter_id ? liveId(e.matter_id) : null;   // a matter merged away: its events land on what it became
+  const matter = live ? one("SELECT id, domain FROM matters WHERE id=?", live) : undefined;
   const state = e.state && (STATES as readonly string[]).includes(e.state) ? e.state : needsHim(level) ? "open" : "seen";
   const r = run(`INSERT OR IGNORE INTO events(ts, source, ref, place, place_id, actor, kind, level, summary, link, domain, matter_id, topic, state,
       done_at, done_by, msg_ids, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -186,14 +188,14 @@ export function setEventLevel(id: number, level: string) {
 export const matterKeys = (id: number): string[] => JSON.parse(one("SELECT keys FROM matters WHERE id=?", id)?.keys ?? "[]");
 export function addMatterKeys(id: number, keys: (string | null | undefined)[]) {
   const cur = matterKeys(id);
-  const next = [...new Set([...cur, ...keys.map(normTopic).filter((k): k is string => !!k)])].slice(0, 20);
+  const next = [...new Set([...cur, ...keys.map(normTopic).filter((k): k is string => !!k)])].slice(0, 40);
   if (next.length !== cur.length) run("UPDATE matters SET keys=? WHERE id=?", JSON.stringify(next), id);
   return next;
 }
 
 /** hang events on a matter: by id, or every event of a topic that has no matter yet (the topic becomes a key) */
 export function linkEvents(o: { matterId: number; ids?: number[]; topic?: string }): number {
-  const m = one("SELECT id, domain FROM matters WHERE id=?", o.matterId);
+  const m = one("SELECT id, domain FROM matters WHERE id=?", liveId(o.matterId) ?? o.matterId);
   if (!m) throw new Error(`no matter #${o.matterId}`);
   return tx(() => {
     let n = 0;
@@ -209,7 +211,7 @@ export function linkEvents(o: { matterId: number; ids?: number[]; topic?: string
 
 export function eventsQuery(o: { matter?: number; topic?: string; from?: number; to?: number; levels?: string[]; states?: string[]; q?: string; limit?: number }) {
   const where = ["ts>=?", "ts<=?"], args: any[] = [o.from ?? 0, o.to ?? Date.now() + DAY];
-  if (o.matter) { where.push("matter_id=?"); args.push(o.matter); }
+  if (o.matter) { const fam = familyIds(o.matter); where.push(`matter_id IN (${inList(fam) || "NULL"})`); args.push(...fam); }   // a 主线 shows its 子事 too
   const topic = normTopic(o.topic);
   if (topic) { where.push("topic=?"); args.push(topic); }
   if (o.levels?.length) { where.push(`level IN (${o.levels.map(() => "?").join(",")})`); args.push(...o.levels); }
@@ -230,23 +232,52 @@ export function eventLine(e: Record<string, any>, o: { date?: boolean; tag?: boo
 export const openAsks = (days = 14, limit = 40) =>
   all("SELECT * FROM events WHERE state='open' AND level IN ('reply','decide') AND ts>=? ORDER BY CASE level WHEN 'decide' THEN 0 ELSE 1 END, ts DESC LIMIT ?", Date.now() - days * DAY, limit);
 
-/** topics that keep coming up in more than one place without a matter: candidates for 起局 */
-export const topicCandidates = (days = 7, minEvents = 3, minPlaces = 2) =>
+/** the one open matter a topic names (a key or its title). Under one 主线 the 子事 that carries it wins; across 主线 it is ambiguous: null. */
+export function matterByKey(topicIn: unknown): number | null {
+  const t = normTopic(topicIn);
+  if (!t) return null;
+  const hits = all(`SELECT id, title, keys, parent_id FROM matters WHERE ${OPEN_MATTER}`)
+    .filter((m) => normTopic(m.title) === t || (JSON.parse(m.keys ?? "[]") as string[]).includes(t));
+  if (hits.length < 2) return hits.length ? Number(hits[0].id) : null;
+  if (new Set(hits.map((m) => rootId(Number(m.id)))).size > 1) return null;
+  const kids = hits.filter((m) => m.parent_id);
+  return kids.length === 1 ? Number(kids[0].id) : rootId(Number(hits[0].id));
+}
+
+/**
+ * Which matter a new event goes on (§17.2). Triage names a 主线 by number; a topic that is the key of one of its 子事
+ * narrows it. With no usable number, a topic that is a known key still finds its matter, so a key really does link.
+ */
+export function resolveEventMatter(matter: unknown, topic: unknown): number | null {
+  const n = Number(matter);
+  const picked = Number.isInteger(n) && n > 0 ? liveId(n) : null;
+  const keyed = matterByKey(topic);
+  if (picked && one(`SELECT 1 FROM matters WHERE id=? AND ${OPEN_MATTER}`, picked)) return keyed && rootId(keyed) === rootId(picked) ? keyed : picked;
+  return keyed;
+}
+
+/** topics that keep coming up in more than one place without a matter: candidates for 起局. A topic some matter already answers to isn't one. */
+export const topicCandidates = (days = 7, minEvents = 3, minPlaces = 2, limit = 6) =>
   all(`SELECT topic, COUNT(*) n, COUNT(DISTINCT COALESCE(place_id, place)) places, GROUP_CONCAT(DISTINCT place) where_, MAX(ts) last,
       SUM(CASE WHEN level IN ('reply','decide') THEN 1 ELSE 0 END) asks FROM events
-    WHERE matter_id IS NULL AND topic IS NOT NULL AND ts>=? AND state<>'dropped' GROUP BY topic HAVING n>=? AND places>=? ORDER BY n DESC, last DESC LIMIT 6`,
-    Date.now() - days * DAY, minEvents, minPlaces);
+    WHERE matter_id IS NULL AND topic IS NOT NULL AND ts>=? AND state<>'dropped' GROUP BY topic HAVING n>=? AND places>=? ORDER BY n DESC, last DESC LIMIT 40`,
+    Date.now() - days * DAY, minEvents, minPlaces).filter((t) => !matterByKey(t.topic)).slice(0, limit);
 
 /**
  * What Triage sees about his ongoing matters and recent topics, so the same thing said in different chats lands on
- * the same matter / topic. Titles, keys and place names only; never the matter pages.
+ * the same matter / topic. 主线 only, carrying the names of everything under them; titles, keys and place names, never
+ * the matter pages. The most recently active come first, so a long list loses the quiet ones.
  */
 export function triageMatterContext(): string {
-  const ms = all(`SELECT id, title, keys FROM matters WHERE ${OPEN_MATTER} ORDER BY id DESC LIMIT 30`);
+  const last = (id: number) => { const f = familyIds(id); return Number(one(`SELECT MAX(ts) t FROM events WHERE matter_id IN (${inList(f)})`, ...f)?.t ?? 0); };
+  const ms = all(`SELECT id, title, keys FROM matters WHERE ${MAIN_OPEN} ORDER BY id DESC`).map((m) => ({ ...m, last: last(m.id) }))
+    .sort((a, b) => b.last - a.last || b.id - a.id).slice(0, 40);
   const lines = ms.map((m) => {
-    const keys = JSON.parse(m.keys ?? "[]") as string[];
-    const places = all("SELECT DISTINCT place FROM events WHERE matter_id=? AND place IS NOT NULL ORDER BY ts DESC LIMIT 4", m.id).map((r) => r.place);
-    return `#${m.id} ${m.title}${keys.length ? `（又叫：${keys.slice(0, 6).join("、")}）` : ""}${places.length ? `；最近在：${places.join("、")}` : ""}`;
+    const kids = all(`SELECT title, keys FROM matters WHERE parent_id=? AND ${OPEN_MATTER} ORDER BY id`, m.id);
+    const keys = [...new Set([m.keys, ...kids.map((k) => k.keys)].flatMap((k) => JSON.parse(k ?? "[]") as string[]))];
+    const fam = familyIds(m.id);
+    const places = all(`SELECT place, MAX(ts) t FROM events WHERE matter_id IN (${inList(fam)}) AND place IS NOT NULL GROUP BY place ORDER BY t DESC LIMIT 4`, ...fam).map((r) => r.place);
+    return `#${m.id} ${m.title}${keys.length ? `（又叫：${keys.slice(0, 8).join("、")}）` : ""}${kids.length ? `；包括：${kids.slice(0, 6).map((k) => k.title).join("、")}` : ""}${places.length ? `；最近在：${places.join("、")}` : ""}`;
   });
   const topics = all(`SELECT topic, COUNT(*) n, GROUP_CONCAT(DISTINCT place) where_ FROM events WHERE matter_id IS NULL AND topic IS NOT NULL AND ts>=?
     GROUP BY topic ORDER BY MAX(ts) DESC LIMIT 15`, Date.now() - 7 * DAY);
@@ -254,27 +285,47 @@ export function triageMatterContext(): string {
     topics.map((t) => `- ${t.topic}（${t.n} 次${t.where_ ? `，${String(t.where_).split(",").slice(0, 3).join("、")}` : ""}）`).join("\n") || "（没有）"}`;
 }
 
-/** per matter: counts by level and the asks still open (console list, matter_list) */
+/** per matter, adding up its 子事: counts by level and the asks still open (console list, matter_list) */
 export function matterEventStats(id: number) {
-  return one(`SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open, MAX(ts) last FROM events WHERE matter_id=?`, id)!;
+  const f = familyIds(id);
+  return one(`SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open, MAX(ts) last FROM events WHERE matter_id IN (${inList(f) || "NULL"})`, ...f)!;
+}
+
+/** an imported ask nobody has confirmed is still live: old, or on a matter that is no longer open (§15.14) */
+export function isStaleImportAsk(e: Record<string, any>, days = matterReviewConf().ask_days): boolean {
+  if (e.source !== "import" || e.state !== "open" || !needsHim(e.level)) return false;
+  if (one("SELECT 1 FROM matter_reviews WHERE fp=? AND status='ok'", `ask:${e.id}`)) return false;   // he said it is still waiting on him
+  if (Number(e.ts) < Date.now() - days * DAY) return true;
+  return !!e.matter_id && !one(`SELECT 1 FROM matters WHERE id=? AND ${OPEN_MATTER}`, liveId(e.matter_id) ?? e.matter_id);
 }
 
 /** the morning report's event sections (facts only; the main agent writes the report) */
 export function eventsMorningText(since: number): string {
   const list = (xs: string[]) => xs.length ? xs.map((x) => `- ${x}`).join("\n") : "（无）";
-  const asks = openAsks(14, 15);
-  const byMatter = all(`SELECT e.matter_id, m.title, COUNT(*) n, SUM(CASE WHEN e.level IN ('reply','decide') THEN 1 ELSE 0 END) asks,
-      GROUP_CONCAT(DISTINCT e.place) where_ FROM events e JOIN matters m ON m.id=e.matter_id WHERE e.ts>=? GROUP BY e.matter_id ORDER BY n DESC LIMIT 10`, since);
-  const latest = (id: number) => one("SELECT * FROM events WHERE matter_id=? AND ts>=? ORDER BY CASE WHEN level IN ('reply','decide','watch') THEN 0 ELSE 1 END, ts DESC LIMIT 1", id, since);
+  const review = matterReviewConf().on;
+  const all_ = openAsks(14, 40), doubtful = review ? all_.filter((e) => isStaleImportAsk(e)) : [];
+  const asks = all_.filter((e) => !doubtful.includes(e)).slice(0, 15);
+  // everything said about a 主线 or its 子事 reads as one line
+  const groups = new Map<number, Record<string, any>[]>();
+  for (const e of all("SELECT * FROM events WHERE ts>=? AND matter_id IS NOT NULL ORDER BY ts DESC", since)) {
+    const r = rootId(e.matter_id);
+    if (r) groups.set(r, [...(groups.get(r) ?? []), e]);
+  }
+  const rank = (e: Record<string, any>) => (["reply", "decide", "watch"].includes(e.level) ? 0 : 1);
+  const byMatter = [...groups].sort((a, b) => b[1].length - a[1].length).slice(0, 10).map(([id, es]) => ({
+    id, title: one("SELECT title FROM matters WHERE id=?", id)?.title, n: es.length, asks: es.filter((e) => needsHim(e.level)).length,
+    where_: [...new Set(es.map((e) => e.place).filter(Boolean))].join(","), latest: [...es].sort((a, b) => rank(a) - rank(b))[0],
+  }));
   const topics = all(`SELECT topic, COUNT(*) n, GROUP_CONCAT(DISTINCT place) where_ FROM events WHERE matter_id IS NULL AND topic IS NOT NULL AND ts>=?
     GROUP BY topic HAVING n>=2 ORDER BY n DESC LIMIT 8`, since);
-  const cands = topicCandidates();
+  const cands = review ? [] : topicCandidates();   // with the daily review on, these are asked there instead
   const places = (s: unknown) => String(s ?? "").split(",").filter(Boolean).slice(0, 3).join("、");
+  const shown = review ? Number(one("SELECT COUNT(*) n FROM matter_reviews WHERE status='shown'")!.n) : 0;
   return `## 等你回 / 拍板（${asks.length}）
-${list(asks.map((e) => `${eventLine(e, { tag: false })}（${localStamp(e.ts).slice(5, 10)}）`))}
+${list(asks.map((e) => `${eventLine(e, { tag: false })}（${localStamp(e.ts).slice(5, 10)}）`))}${doubtful.length ? `\n（另有 ${doubtful.length} 条是导入来的旧事项，可能已经过时，等他在整理里确认，不算在上面）` : ""}
 ## 按事：昨天以来
-${list([...byMatter.map((m) => { const e = latest(m.matter_id); return `#${m.matter_id} ${m.title}：${m.n} 条${m.asks ? `（要你回/拍板 ${m.asks}）` : ""}，在 ${places(m.where_)}${e ? `；${e.summary}` : ""}`; }),
+${list([...byMatter.map((m) => `#${m.id} ${m.title}：${m.n} 条${m.asks ? `（要你回/拍板 ${m.asks}）` : ""}，在 ${places(m.where_)}；${m.latest.summary}`),
   ...topics.map((t) => `话头「${t.topic}」：${t.n} 条，在 ${places(t.where_)}`)])}
-## 可能该起局的话头（一周里反复出现、跨好几处，还没有事）
-${list(cands.map((t) => `「${t.topic}」：${t.n} 条，${t.places} 处（${places(t.where_)}）${t.asks ? `，其中要他回 ${t.asks}` : ""}`))}`;
+${review ? `## 事的整理\n${shown ? `今天挑了 ${shown} 条要他确认（私聊里的卡片，或控制台 生活 › 事）` : "今天没有要确认的"}` : `## 可能该起局的话头（一周里反复出现、跨好几处，还没有事）
+${list(cands.map((t) => `「${t.topic}」：${t.n} 条，${t.places} 处（${places(t.where_)}）${t.asks ? `，其中要他回 ${t.asks}` : ""}`))}`}`;
 }

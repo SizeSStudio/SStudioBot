@@ -31,6 +31,7 @@ import { onCardAction, routeGroup } from "./routes.ts";
 import { syncPages, rebuildIndex, commitMemory } from "./wiki.ts";
 import { runDream, postDreamDiff } from "./dream.ts";
 import { morningText } from "./digest.ts";
+import { runMatterReview } from "./matter-review.ts";
 import { Sentinel } from "./sentinel.ts";
 import { startConsole } from "./console.ts";
 import { renderSelf } from "./life.ts";
@@ -69,7 +70,8 @@ const triage = new Triage(runner);
 const sources = new Sources();
 const scheduler = new Scheduler(() => dispatcher.kick(),
   { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_month: async () => { queueMonthReadings(); },
-    improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); } },
+    improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); },
+    matter_review: async () => { await runMatterReview(); } },
   { morning: () => morningText(), review_day: () => reviewDayText(), review_week: () => reviewWeekText(), review_month: () => reviewMonthText() });
 const sentinel = new Sentinel();
 const onCommand = makeCommandHandler(dispatcher, () => outbox.kick(), scheduler);

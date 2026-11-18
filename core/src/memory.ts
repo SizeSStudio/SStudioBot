@@ -21,6 +21,31 @@ export function localNow(ms = Date.now()) {
 const GIT_ENV = { ...process.env, GIT_AUTHOR_NAME: "SStudioBot", GIT_AUTHOR_EMAIL: "sbot@localhost", GIT_COMMITTER_NAME: "SStudioBot", GIT_COMMITTER_EMAIL: "sbot@localhost" };
 export const git = (dir: string, ...args: string[]) => execFileSync("git", ["-C", dir, ...args], { env: GIT_ENV, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
+// git spawns are synchronous and block the whole core (a 60-commit log with file names takes most of a second on the
+// server), so history reads are kept until the branch moves. Stat'ing the ref catches every kind of commit, including
+// dream's reverts and anything done by hand on the server, which hooking our own commit calls would miss.
+const fileStamp = (f: string) => { try { const s = statSync(f, { bigint: true }); return `${s.ino}:${s.mtimeNs}:${s.size}`; } catch { return "-"; } };
+function headStamp(dir: string) {
+  const head = readFileSync(join(dir, ".git", "HEAD"), "utf8").trim(), ref = /^ref: (.+)$/.exec(head)?.[1];
+  return [head, ref ? fileStamp(join(dir, ".git", ref)) : "", fileStamp(join(dir, ".git", "packed-refs"))].join("|");
+}
+const gitReads = new Map<string, { stamp: string; out: Map<string, string> }>();
+/** `git` for read-only commands whose output depends only on commits (log, not status). Failures are not cached. */
+export function gitRead(dir: string, ...args: string[]): string {
+  let stamp: string;
+  try { stamp = headStamp(dir); } catch { return git(dir, ...args); }
+  let c = gitReads.get(dir);
+  if (c?.stamp !== stamp) gitReads.set(dir, c = { stamp, out: new Map() });
+  const key = args.join("\0");
+  let v = c.out.get(key);
+  if (v === undefined) {
+    v = git(dir, ...args);
+    if (c.out.size >= 64) c.out.delete(c.out.keys().next().value!);
+    c.out.set(key, v);
+  }
+  return v;
+}
+
 export function commitIfDirty(dir: string, message: string): boolean {
   if (!git(dir, "status", "--porcelain").trim()) return false;
   git(dir, "add", "-A");

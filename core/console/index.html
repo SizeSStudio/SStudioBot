@@ -9,6 +9,11 @@
 <title>SStudioBot 控制台</title>
 <link rel="icon" href="data:,">
 <link rel="stylesheet" href="/app.css">
+<!-- the first screen's import chain, fetched in parallel instead of one level at a time -->
+<link rel="modulepreload" href="/lib/app.js">
+<link rel="modulepreload" href="/lib/core.js">
+<link rel="modulepreload" href="/pages/inbox.js">
+<link rel="modulepreload" href="/lib/items.js">
 </head>
 <body>
 <div class="shell">

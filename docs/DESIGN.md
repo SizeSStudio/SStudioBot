@@ -1022,6 +1022,16 @@ tailscale serve --https=8444                         nginx :443（Let's Encrypt�
 - **前端**：不加构建步骤，每页一个原生 ES module（`console/pages/*.js`），共用的组件和工具放 `console/lib/`；CSP 仍然只允许 self。
 - 分期：C1 骨架 + 待办 + 会话链路 + 请求留存；C2 生活；C3 它自己。
 
+### 10.5 响应性能（2026-11-18）
+
+都做在核心里（`console-http.ts`），两个入口同时受益，随 core 自动上线，不用改 nginx。客户端以后拆出去也照样有用。
+
+- **静态文件**：启动时读好、算内容 hash、在线程池里预压缩（br、gzip）。`Cache-Control: no-cache` 不变，每种编码一个强 ETag，`If-None-Match` 命中回 304。按 mtime 和大小发现文件变化，不用重启。鉴权在前，没通过的请求拿不到 304 或 ETag。
+- **`modulepreload`**：`index.html` 列出首屏的 import 链，并行取，不再一层层等。新增首屏依赖时要同步改这个列表，漏了只是慢一点。
+- **压缩**：1 KB 以上的 JSON 按 `Accept-Encoding` 现压（br 质量 4 或 gzip），在线程池里做，不占事件循环。SSE 不压。
+- **git 读缓存**（`gitRead`）：`git` 是同步子进程，会卡住整个核心。只依赖提交的读（记忆日志、配置历史、状态页的最新提交）缓存到分支移动为止，靠 stat ref 文件判断，所以回滚和手工提交也会失效，不用 TTL。配置的正文和 hash 每次都现读，乐观锁不受影响。
+- **SSE**：全局每 3 秒算一次 `status()`，广播给所有连接；没有连接时不算。
+
 ---
 
 ## 11. 数据模型（SQLite，草案）
@@ -1290,6 +1300,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 端口：控制台用 8444；客户端如果开了 TUN 类代理，要绕过 `*.ts.net`、`100.64.0.0/10`
 - [x] **公网入口**（v0.17）：两个入口各一个 socket、各信各的身份证明；`core/test/console-web-smoke.ts` 55 项全过（公网入口带伪造的 `Tailscale-User-Login`、没 cookie、mac 错、别的 key、过期、未来时间都被拒；登录要本站 Origin，按 IP 和总量限流；写操作要 cookie + Origin + CSRF 头；密码哈希和会话密钥不能从控制台写；没 `web.origin` 时 404；tailnet 入口行为不变）
 - [x] 公网入口上线（2026-11-18）：Cloudflare 加灰云 A 记录、`install.sh <host>`（Let's Encrypt、nginx、`/run/sbot-web`）、`console-passwd`、经控制台写 `web.origin`。从公网实测：HTTP/2、证书有效，没登录跳登录页 / 接口 401，伪造 `Tailscale-User-Login` 读写都是 401，外站提交登录 403。同一台 Mac 上 8 次请求：tailnet 1.1～5.3 s（中位约 2.7 s），公网 1.1～2.9 s（中位约 1.5 s）
+- [x] **响应性能**（§10.5）：`core/test/console-perf-smoke.ts`。同样的首屏 6 个请求，正文 64 KB → 18 KB，刷新 64 KB → 0（全 304）；5 条 SSE 连接 12 秒的核心 CPU 121 ms → 14 ms
 
 ### 13.5 M3c 进度（2026-11-17）
 

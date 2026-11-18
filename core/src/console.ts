@@ -20,7 +20,8 @@ import { parse as parseYaml } from "yaml";
 import { all, one, run, kvGet } from "./db.ts";
 import { P, feishuConf, jobsConf, models, quietConf, ownerName, log, TZ, writeSecret } from "./config.ts";
 import { webConf, validSession, handleAuthPaths, WEB_LOGIN, WEB_SECRETS } from "./console-web.ts";
-import { git, commitIfDirty, readPage, localStamp, editConfig } from "./memory.ts";
+import { git, gitRead, commitIfDirty, readPage, localStamp, editConfig } from "./memory.ts";
+import { sendJson, serveAsset, warmAssets } from "./console-http.ts";
 import { searchWiki } from "./wiki.ts";
 import { rollback } from "./dream.ts";
 import { sendText } from "./cards.ts";
@@ -81,7 +82,7 @@ async function status(d: ConsoleDeps) {
     name, spec: j, next: sched.find((r) => r.note === name)?.due_at ?? null, last: pj(kvGet(`job.${name}.last`)),
   }));
   const sentinel = pj(kvGet("sentinel.state")) ?? {};
-  const lastCommit = (() => { try { return git(P.agentHome, "log", "-1", "--format=%h\x1f%at\x1f%s").trim().split("\x1f"); } catch { return null; } })();
+  const lastCommit = (() => { try { return gitRead(P.agentHome, "log", "-1", "--format=%h\x1f%at\x1f%s").trim().split("\x1f"); } catch { return null; } })();
   const { cap, budget } = quietConf();
   return {
     now, tz: TZ, owner: ownerName(),
@@ -248,7 +249,7 @@ function configFile(file: string) {
   const text = existsSync(f) ? readFileSync(f, "utf8") : file !== "people.yaml" && file !== "models.yaml" && existsSync(seed) ? readFileSync(seed, "utf8") : "";
   let history: { sha: string; at: number; subject: string }[] = [];
   try {
-    history = git(P.config, "log", "-n", "12", "--format=%h\x1f%at\x1f%s", "--", file).trim().split("\n").filter(Boolean)
+    history = gitRead(P.config, "log", "-n", "12", "--format=%h\x1f%at\x1f%s", "--", file).trim().split("\n").filter(Boolean)
       .map((l) => { const [s, at, subject] = l.split("\x1f"); return { sha: s, at: Number(at) * 1000, subject }; });
   } catch { /* new file */ }
   return { file, text, hash: sha(text), exists: existsSync(f), history };
@@ -337,7 +338,7 @@ async function setSecret(name: string, value: string) {
 // ───────────── memory ─────────────
 
 function memoryLog(limit: number) {
-  const out = git(P.agentHome, "log", "-n", String(limit), "--format=\x1e%h\x1f%at\x1f%s", "--name-only");
+  const out = gitRead(P.agentHome, "log", "-n", String(limit), "--format=\x1e%h\x1f%at\x1f%s", "--name-only");
   return out.split("\x1e").filter((s) => s.trim()).map((block) => {
     const [head, ...files] = block.trim().split("\n");
     const [s, at, subject] = head.split("\x1f");
@@ -363,7 +364,6 @@ function body(req: http.IncomingMessage): Promise<any> {
   });
 }
 
-const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".json": "application/json" };
 const SEC_HEADERS = {
   "X-Frame-Options": "DENY", "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer",
   "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'",
@@ -372,7 +372,7 @@ const SEC_HEADERS = {
 // part of the gate; same-origin still never sends a Referer to another site
 const WEB_SEC_HEADERS = { ...SEC_HEADERS, "Referrer-Policy": "same-origin" };
 
-function serveStatic(path: string, res: http.ServerResponse, H: Record<string, string> = SEC_HEADERS) {
+function serveStatic(req: http.IncomingMessage, path: string, res: http.ServerResponse, H: Record<string, string> = SEC_HEADERS) {
   const rel = normalize(path === "/" ? "/index.html" : path).replace(/^(\.\.[/\\])+/, "");
   let f = join(STATIC, rel);
   if (!f.startsWith(STATIC) || !existsSync(f) || statSync(f).isDirectory()) {
@@ -380,15 +380,50 @@ function serveStatic(path: string, res: http.ServerResponse, H: Record<string, s
     if (extname(rel) && rel !== "/index.html") { res.writeHead(404, { "Content-Type": "text/plain; charset=utf-8", ...H }); res.end("not found"); return; }
     f = join(STATIC, "index.html");
   }
-  res.writeHead(200, { "Content-Type": TYPES[extname(f)] ?? "application/octet-stream", "Cache-Control": "no-cache", ...H });
-  res.end(readFileSync(f));
+  serveAsset(req, res, f, H);
+}
+
+/** The SSE feed: one status() per tick however many tabs are open, written to each. status() runs a dozen queries, and
+ *  nothing in it depends on who is asking. Runs only while someone is connected. */
+function eventHub(d: ConsoleDeps) {
+  const TICK = 3000;
+  const subs = new Map<http.ServerResponse, { status: string; flow: string }>();
+  let cur: { status: string; flow: string; at: number } | null = null;
+  let running: Promise<void> | null = null, timer: ReturnType<typeof setInterval> | null = null;
+  const compute = () => running ??= (async () => {
+    try { const s = JSON.stringify(await status(d)); cur = { status: s, flow: flowHead(), at: Date.now() }; }
+    catch (e: any) { cur = null; log("console", "sse push failed", { err: String(e?.message ?? e).slice(0, 200) }); }
+    finally { running = null; }
+  })();
+  const send = (res: http.ServerResponse) => {
+    const seen = subs.get(res);
+    if (!seen || !cur) return;
+    try {
+      if (cur.status !== seen.status) { seen.status = cur.status; res.write(`event: status\ndata: ${cur.status}\n\n`); }
+      if (cur.flow !== seen.flow) { seen.flow = cur.flow; res.write(`event: flow\ndata: ${JSON.stringify(cur.flow)}\n\n`); }
+      res.write(`: ping\n\n`);
+    } catch (e: any) { log("console", "sse write failed", { err: String(e?.message ?? e).slice(0, 200) }); }
+  };
+  const stop = () => { if (timer) clearInterval(timer); timer = null; };
+  return {
+    async add(res: http.ServerResponse) {
+      subs.set(res, { status: "", flow: "" });
+      res.on("close", () => { subs.delete(res); if (!subs.size) stop(); });
+      timer ??= setInterval(() => { void compute().then(() => { for (const r of subs.keys()) send(r); }); }, TICK);
+      if (!cur || Date.now() - cur.at > TICK) await compute();
+      send(res);
+    },
+    close() { stop(); for (const r of subs.keys()) r.end(); subs.clear(); },
+  };
 }
 
 export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.Server | null; close(): void } {
+  warmAssets(STATIC);
+  const hub = eventHub(d);
   const handler = (entry: Entry) => async (req: http.IncomingMessage, res: http.ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://console");
     const H = entry === "web" ? WEB_SEC_HEADERS : SEC_HEADERS;
-    const json = (status: number, data: unknown) => { res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store", ...H }); res.end(JSON.stringify(data)); };
+    const json = (status: number, data: unknown) => sendJson(req, res, status, H, data);
     try {
       let login: string;
       if (entry === "tailnet") {
@@ -415,7 +450,7 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
         }
         login = WEB_LOGIN;
       }
-      if (!url.pathname.startsWith("/api/")) return serveStatic(url.pathname, res, H);
+      if (!url.pathname.startsWith("/api/")) return serveStatic(req, url.pathname, res, H);
       const method = req.method ?? "GET";
       // access log for API calls (method, path, status, ms; never bodies). SSE and the 3 s status poll are skipped.
       if (url.pathname !== "/api/events") { const t0 = Date.now(); res.on("close", () => log("console", "api", { method, path: url.pathname, status: res.statusCode, ms: Date.now() - t0, done: res.writableFinished })); }
@@ -427,19 +462,7 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
       if (p === "/status") return json(200, await status(d));
       if (p === "/events") {
         res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-store", Connection: "keep-alive", "X-Accel-Buffering": "no" });
-        let lastStatus = "", lastFlow = "";
-        const push = async () => {
-          try {
-            const s = JSON.stringify(await status(d));
-            if (s !== lastStatus) { lastStatus = s; res.write(`event: status\ndata: ${s}\n\n`); }
-            const f = flowHead();
-            if (f !== lastFlow) { lastFlow = f; res.write(`event: flow\ndata: ${JSON.stringify(f)}\n\n`); }
-            res.write(`: ping\n\n`);
-          } catch (e: any) { log("console", "sse push failed", { err: String(e?.message ?? e).slice(0, 200) }); }
-        };
-        await push();
-        const t = setInterval(push, 3000);
-        req.on("close", () => clearInterval(t));
+        await hub.add(res);
         return;
       }
       if (p === "/flow") return json(200, flow(Number(url.searchParams.get("before")) || Date.now() + 1, Math.min(Number(url.searchParams.get("limit")) || 40, 200)));
@@ -594,5 +617,5 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
     web.on("error", (e) => log("console", "server error", { entry: "web", err: String(e?.message ?? e) }));
     listenSock(web, WEB_SOCK, 0o660, { entry: "web", on: !!webConf() });
   }
-  return { tailnet, web, close: () => { tailnet.close(); web?.close(); } };
+  return { tailnet, web, close: () => { hub.close(); tailnet.close(); web?.close(); } };
 }

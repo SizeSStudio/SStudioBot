@@ -12,12 +12,12 @@
 // says whether a name is set.
 
 import http from "node:http";
-import { existsSync, readFileSync, renameSync, unlinkSync, statSync, mkdirSync, chmodSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, unlinkSync, statSync, mkdirSync, chmodSync } from "node:fs";
 import { join, dirname, extname, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import { all, one, run, kvGet } from "./db.ts";
-import { P, jobsConf, models, quietConf, ownerName, log, TZ, writeSecret } from "./config.ts";
+import { P, feishuConf, jobsConf, models, quietConf, ownerName, log, TZ, writeSecret, reposConf, type JobSpec } from "./config.ts";
 import { webConf, validSession, handleAuthPaths, WEB_LOGIN, WEB_SECRETS } from "./console-web.ts";
 import { git, gitRead, readPage, localStamp, editConfig } from "./memory.ts";
 import { sendJson, serveAsset, warmAssets } from "./console-http.ts";
@@ -25,10 +25,14 @@ import { searchWiki } from "./wiki.ts";
 import { rollback } from "./dream.ts";
 import { activationOf, userIdentityReady } from "./observer.ts";
 import { proactiveToday } from "./digest.ts";
-import { CONFIG_FILES } from "./schemas.ts";
+import { CONFIG_FILES, widening } from "./schemas.ts";
 import { ConfigError, configFile as readConfigFile, notifyAdmin, saveConfigText } from "./config-write.ts";
 import { profileView, rollbackProfile, saveProfile } from "./self-profile.ts";
-import { runSourceNow, sourcesView } from "./sources.ts";
+import { sendText } from "./cards.ts";
+import { PLUGINS, runSourceNow, sourcesView } from "./sources.ts";
+import { evaluateForm, formSpec, formWidening, unknownFields, type FormResult } from "./config-form.ts";
+import { nextDue } from "./timers.ts";
+import type { FormContext, FormPayload, FormPreview } from "../protocol/config-form.ts";
 import { applyImport, exampleText, importsList, previewImport, promptText, undoImport } from "./importer.ts";
 import { sourcesConf } from "./config.ts";
 import type { FeishuAdapter } from "./feishu.ts";
@@ -248,6 +252,108 @@ async function saveConfig(file: string, text: string, hash: string) {
 }
 /** config-write and self-profile know nothing about HTTP; their refusals become the same 4xx the console always gave */
 const httpErr = (e: unknown) => e instanceof ConfigError ? bad(e.message, e.status) : e;
+
+// ───────── config forms (§10.6) ─────────
+// A form submission becomes new file text (config-form.ts) and goes through saveConfig above like any other edit.
+
+const chatName = (id: string): string | undefined => one("SELECT name FROM chats WHERE chat_id=?", id)?.name || undefined;
+const formCtx = { chatName, activation: (chat: string, conf: any) => activationOf(chat, undefined, conf).act };
+const ACT_ZH: Record<string, string> = { always: "全部", when_mentioned: "只看 @我", digest: "摘要", disabled: "关闭" };
+
+function formContext(file: string): FormContext {
+  const ctx: FormContext = { options: {}, usage: {} };
+  const o = ctx.options;
+  const quiet = <T,>(f: () => T, d: T) => { try { return f(); } catch { return d; } };   // a broken neighbour file must not take this form down
+  const chats = () => groups().map((g) => ({ value: g.id, label: g.name || g.id,
+    help: [g.external ? "外部群" : "", g.n7 ? `7 天 ${g.n7} 条` : "", `现在：${ACT_ZH[g.act]}（${g.why}）`].filter(Boolean).join(" · ") }));
+  if (file === "groups.yaml" || file === "feishu.yaml") o.chats = chats();
+  if (file === "gate.yaml") {
+    o.places = [{ value: "feishu_dm", label: "别人发给我的私聊" },
+      ...quiet(() => sourcesConf().sources.map((s) => ({ value: s.id, label: `信息源 ${s.id}` })), []), ...chats()];
+    const day = localStamp().slice(0, 10);
+    ctx.usage.proactive_today = proactiveToday();
+    ctx.usage.expert_today = Number(kvGet(`expert.used.${day}`) ?? 0);
+  }
+  if (file === "gate.yaml" || file === "models.yaml") ctx.usage.cost_today = one("SELECT COALESCE(SUM(cost),0) c FROM usage WHERE ts>=?", startOfDay())!.c;
+  if (file === "models.yaml") o.secrets = secretNames().filter((s) => !WEB_SECRETS.includes(s.name)).map((s) => ({ value: s.name, label: s.set ? s.name : `${s.name}（还没设置）`, warn: !s.set }));
+  if (file === "people.yaml") o.persons = all("SELECT a.alias value, p.name label FROM person_aliases a JOIN persons p ON p.id=a.person_id WHERE a.kind='feishu' AND p.status='active' ORDER BY p.last_seen DESC LIMIT 500");
+  if (file === "sources.yaml") {
+    o.repos = quiet(() => Object.keys(reposConf() ?? {}).map((r) => ({ value: r, label: r })), []);
+    const dir = join(PLUGINS, "sources");
+    o.plugins = quiet(() => readdirSync(dir).filter((n) => existsSync(join(dir, n, "run"))).sort().map((n) => ({ value: n, label: n })), []);
+    // the same names the poller refuses to hand a plugin (sources.ts)
+    const own = new Set(["FEISHU_APP_SECRET", ...WEB_SECRETS, ...quiet(() => Object.values(models().endpoints ?? {}).map((e) => String(e.key_ref)), [])]);
+    o.plugin_secrets = secretNames().filter((s) => !own.has(s.name)).map((s) => ({ value: s.name, label: s.set ? s.name : `${s.name}（还没设置）`, warn: !s.set }));
+    ctx.sources = Object.fromEntries(quiet(() => sourcesView().sources.map((s) => [s.id, s.last ?? null]), []));
+  }
+  if (file === "jobs.yaml") {
+    const sched = all("SELECT note, due_at FROM timers WHERE kind='schedule' AND status='pending'");
+    // a job the scheduler hasn't picked up yet still has a next time worth showing
+    ctx.jobs = Object.fromEntries(quiet(() => Object.entries<any>(parseYaml(configFile(file).text) ?? {}), []).map(([name, j]) => [name,
+      { next: j?.enabled === false ? null : sched.find((r) => r.note === name)?.due_at ?? quiet(() => nextDue(j) ?? null, null), last: pj(kvGet(`job.${name}.last`)) }]));
+  }
+  return ctx;
+}
+
+function needForm(file: string) {
+  if (!CONFIG_FILES.includes(file)) throw bad("unknown config file", 404);
+  const spec = formSpec(file);
+  if (!spec) throw bad("这个文件没有表单", 404);
+  return spec;
+}
+
+function configForm(file: string): FormPayload {
+  const spec = needForm(file), cur = configFile(file);
+  let values: unknown = {}, broken: string | undefined;
+  try { values = parseYaml(cur.text) ?? {}; } catch (e: any) { broken = String(e?.message ?? e).split("\n")[0]; }
+  return { file, hash: cur.hash, exists: cur.exists, history: cur.history, spec, values, unknown: broken ? [] : unknownFields(spec, values), context: formContext(file), ...(broken ? { broken } : {}) };
+}
+
+function evalForm(file: string, text: string, draft: unknown): FormResult {
+  try { return evaluateForm(file, text, draft, formCtx); }
+  catch (e: any) { throw bad(`现在的文件读不了：${String(e?.message ?? e).split("\n")[0]}。要在服务器上修好文件才能再用表单。`); }
+}
+
+/** what widening() says plus what only the form layer can see, without repeats */
+function formWidened(file: string, r: FormResult) {
+  const base = widening(file, r.before ?? {}, r.after);
+  return { base, extra: formWidening(file, r.before, r.after, formCtx).filter((w) => !base.includes(w)) };
+}
+
+function previewForm(file: string, b: any): FormPreview {
+  needForm(file);
+  const cur = configFile(file), r = evalForm(file, cur.text, b.values);
+  // a value the schema refused can't be compared safely, and the errors come first anyway
+  let widened: string[] = [];
+  if (r.changed && !r.errors.length) { const w = formWidened(file, r); widened = [...w.base, ...w.extra]; }
+  const out: FormPreview = { stale: cur.hash !== String(b.hash ?? ""), changed: r.changed, errors: r.errors, widened, notes: r.notes, diff: r.diff };
+  if (file === "jobs.yaml") out.computed = { next: Object.fromEntries(Object.entries(r.after).map(([k, j]) => {
+    const spec = j as JobSpec & { enabled?: boolean };
+    return [k, spec?.enabled === false ? null : nextDue(spec) ?? null];
+  })) };
+  return out;
+}
+
+async function saveForm(file: string, b: any): Promise<{ status: number; body: unknown }> {
+  needForm(file);
+  const cur = configFile(file), hash = String(b.hash ?? "");
+  if (cur.hash !== hash) await saveConfig(file, cur.text, hash);   // refuses with the usual "changed since you opened it"
+  const r = evalForm(file, cur.text, b.values);
+  if (r.errors.length) return { status: 422, body: { error: "有几项要改一下才能保存。", errors: r.errors } };
+  if (!r.changed) return { status: 200, body: { ...configForm(file), changed: false, widened: [] } };
+  const { base, extra } = formWidened(file, r), wide = [...base, ...extra];
+  // the owner saw exactly these on the confirmation; anything new since then goes back to him
+  const ack = new Set(Array.isArray(b.ack) ? b.ack.map(String) : []);
+  if (wide.some((w) => !ack.has(w))) return { status: 409, body: { error: "这次改动放宽了限制，要先确认。", need_ack: wide } };
+  const oldAdmin = feishuConf().admin_chat;
+  await saveConfig(file, r.text, hash);
+  if (extra.length) void notifyAdmin(`⚠️ **放宽了限制**（控制台表单，${file}）\n${extra.map((w) => `- ${w}`).join("\n")}`);
+  // the group that is being replaced would otherwise never hear about it
+  const newAdmin = (r.after as any).admin_chat;
+  if (file === "feishu.yaml" && oldAdmin && oldAdmin !== newAdmin)
+    sendText(oldAdmin, `⚠️ 控制台把管理群换到了 ${newAdmin ? chatName(newAdmin) || newAdmin : "（没有）"}，这个群以后不再收到审批和通知。`).catch((e: any) => log("console", "admin notice failed", { err: String(e?.message ?? e).slice(0, 200) }));
+  return { status: 200, body: { ...configForm(file), changed: true, widened: wide } };
+}
 
 function setTierModel(tier: string, model: string) {
   if (!/^[\w./:@-]{2,120}$/.test(model)) throw bad("模型名不对");
@@ -543,7 +649,12 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
         try { return json(200, await runSourceNow(m[1])); } catch (e: any) { throw bad(String(e?.message ?? e)); }
       }
       if ((m = /^\/groups\/(oc_\w+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, await setGroup(m[1], b.activation)); }
-      if (p === "/config") return json(200, CONFIG_FILES.map((f) => { const c = configFile(f); return { file: f, exists: c.exists, last: c.history[0] ?? null }; }));
+      if (p === "/config") return json(200, CONFIG_FILES.map((f) => { const c = configFile(f), s = formSpec(f); return { file: f, exists: c.exists, last: c.history[0] ?? null, title: s?.title ?? null, summary: s?.summary ?? null }; }));
+      if ((m = /^\/config\/([\w.]+\.yaml)\/form$/.exec(p))) {
+        if (method === "GET") return json(200, configForm(m[1]));
+        if (method === "PUT") { const r = await saveForm(m[1], await body(req)); return json(r.status, r.body); }
+      }
+      if ((m = /^\/config\/([\w.]+\.yaml)\/form\/preview$/.exec(p)) && method === "POST") return json(200, previewForm(m[1], await body(req)));
       if ((m = /^\/config\/([\w.]+\.yaml)$/.exec(p))) {
         if (method === "GET") return json(200, configFile(m[1]));
         if (method === "PUT") { const b = await body(req); return json(200, await saveConfig(m[1], String(b.text ?? ""), String(b.hash ?? ""))); }

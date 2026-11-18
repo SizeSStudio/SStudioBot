@@ -190,11 +190,16 @@ for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["o
   ["runs", "input_ref TEXT"], ["runs", "versions_json TEXT"], ["runs", "task_id TEXT"], ["tasks", "next_prompt TEXT"], ["tasks", "approval_id INTEGER"],
   ["messages", "event_id INTEGER"], ["matters", "keys TEXT"], ["tasks", "mode TEXT"],
   ["messages", "attn TEXT"], ["messages", "wait_until INTEGER"],
-  ["matters", "parent_id INTEGER"], ["matters", "merged_into INTEGER"]]) {
+  ["matters", "parent_id INTEGER"], ["matters", "merged_into INTEGER"],
+  ["inbox", "not_before INTEGER"], ["readings", "not_before INTEGER"], ["readings", "retries INTEGER"], ["reviews", "delivery TEXT"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
 // §4.3 attention window. attn: waiting (in its window) | answered (he responded, nothing sent) | read (not an ask, he has read it) | held (over the cap, for the morning report)
 db.exec("CREATE INDEX IF NOT EXISTS messages_attn ON messages(attn, wait_until)");
+// §9.4 inbox.not_before: a scheduled event waiting out an upstream failure. §15.5 reviews.delivery, on rows code wrote:
+// sent (he didn't answer) | replied (he answered, nothing was filed) | not_sent. review_open: went out or is going out, not filed yet.
+db.exec(`CREATE TABLE IF NOT EXISTS review_open(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, period TEXT NOT NULL, facts TEXT,
+  fired_at INTEGER, deadline INTEGER NOT NULL, inbox_key TEXT, run_id TEXT, UNIQUE(kind, period))`);
 // §15.3 主线 and 子事: parent_id is one level deep; merged_into points at the matter a duplicate became (status 'merged')
 db.exec("CREATE INDEX IF NOT EXISTS matters_parent ON matters(parent_id)");
 

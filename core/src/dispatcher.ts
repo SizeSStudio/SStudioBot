@@ -9,9 +9,9 @@
 //   - resume fallback: session file gone → new session with summary + recent messages
 
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
-import { all, one, run, tx, kvGet } from "./db.ts";
-import { log, tierConf, P, ownerName, type Tier } from "./config.ts";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { all, one, run, tx, kvGet, kvSet } from "./db.ts";
+import { jobsConf, log, tierConf, P, ownerName, type Tier } from "./config.ts";
 import { complete, issueToken, revokeToken, tokenStatus } from "./proxy.ts";
 import { appendJournal, localNow, localStamp, promptFiles } from "./memory.ts";
 import { commitMemory } from "./wiki.ts";
@@ -20,6 +20,9 @@ import { queueReply, toolsFor, type RunCtx, type TurnContext } from "./tools.ts"
 import type { Runner } from "./runner.ts";
 import { CardStream, toolStatus } from "./card.ts";
 import { tunedSection, tuningVersions } from "./tuning.ts";
+import { adminNotice, classifyUpstream, failureText, nextAttempt, READ_ONLY_TOOLS, retryDeadline, type UpstreamFailure } from "./retry.ts";
+import { nextDue } from "./timers.ts";
+import { noteReviewRun } from "./reflect.ts";
 
 const MAX_CONCURRENT = 2;
 const BATCH = 20;
@@ -40,6 +43,33 @@ function turnOf(rows: Record<string, any>[]): TurnContext {
 }
 
 type Running = { runId: string; abort?: () => Promise<void> };
+
+const payloadOf = (r: Record<string, any>) => JSON.parse(r.payload_json ?? "{}");
+const SCHEDULED_LABEL: Record<string, string> = { timer: "到点提醒", matter: "事收复盘", lens: "镜头结果" };
+
+/**
+ * §9.4: a scheduled event whose run hit an upstream failure goes back to the inbox with a not_before, or, once its
+ * window is over, is marked failed with one line to the admin group. Nobody is told in the DM: nobody asked.
+ */
+function requeueScheduled(rows: Record<string, any>[], f: UpstreamFailure, err: string | undefined) {
+  const now = Date.now();
+  for (const r of rows) {
+    const p = payloadOf(r), job = p.job ? jobsConf()[p.job] : undefined;
+    const deadline: number = p.retry?.deadline ?? retryDeadline(r.ts, job ? nextDue(job, r.ts) : undefined, job?.retry_hours);
+    const n = (p.retry?.n ?? 0) + 1, at = nextAttempt(f, n, deadline, now);
+    const last = (outcome: string) => { if (p.job) kvSet(`job.${p.job}.last`, JSON.stringify({ at: now, due: r.ts, outcome })); };
+    if (at) {
+      run("UPDATE inbox SET status='received', run_id=NULL, not_before=?, payload_json=? WHERE id=?", at, JSON.stringify({ ...p, retry: { n, deadline } }), r.id);
+      last(`retrying (${n})`);
+      log("dispatch", "scheduled run will retry", { inbox: r.id, job: p.job, attempt: n, kind: f.kind, at: localStamp(at) });
+    } else {
+      run("UPDATE inbox SET status='failed' WHERE id=?", r.id);
+      last("gave_up");
+      adminNotice(`**定时任务没跑成**：${p.job ?? SCHEDULED_LABEL[r.source] ?? r.source}（${localStamp(r.ts).slice(5, 16)}）试了 ${n} 次，到 ${localStamp(deadline).slice(5, 16)} 还不行，这一轮放弃，不再补。\n${failureText(f, err, (t) => localStamp(t).slice(5, 16))}`);
+      log("dispatch", "scheduled run gave up", { inbox: r.id, job: p.job, attempts: n, kind: f.kind });
+    }
+  }
+}
 
 export class Dispatcher {
   private running = new Map<string, Running>();
@@ -77,7 +107,7 @@ export class Dispatcher {
 
   kick() {
     if (this.stopping) return;
-    const lanes = all("SELECT lane, MIN(id) first FROM inbox WHERE status='received' GROUP BY lane ORDER BY first");
+    const lanes = all("SELECT lane, MIN(id) first FROM inbox WHERE status='received' AND COALESCE(not_before,0)<=? GROUP BY lane ORDER BY first", Date.now());
     for (const { lane } of lanes) {
       if (this.running.size >= MAX_CONCURRENT) break;
       if (this.running.has(lane)) continue;
@@ -105,7 +135,7 @@ export class Dispatcher {
     const runId = `r_${Date.now().toString(36)}_${randomUUID().slice(0, 6)}`;
     const tier: Tier = "chat";
     const rows = tx(() => {
-      const rows = all("SELECT * FROM inbox WHERE lane=? AND status='received' ORDER BY id LIMIT ?", lane, BATCH);
+      const rows = all("SELECT * FROM inbox WHERE lane=? AND status='received' AND COALESCE(not_before,0)<=? ORDER BY id LIMIT ?", lane, Date.now(), BATCH);
       if (!rows.length) return rows;
       if (holdIfOverCap(rows)) return [];    // §9.3: over today's proactive cap → parked for the morning report
       const ids = rows.map((r) => r.id);
@@ -139,16 +169,20 @@ export class Dispatcher {
     const sess = await this.session(lane, tier);
     const token = issueToken({ runId, tier, requester: "owner" });
     const ctx: RunCtx = { runId, lane, principal: "owner", turn, src: `owner@${turn.surface}`, token, replies: 0, ownerTyped: rows.every((r) => r.kind === "user") };
-    const text = (sess.carry ? sess.carry + "\n\n" : "") + this.turnText(rows, turn);
+    const scheduled = rows.filter((r) => r.kind === "timer"), onlyScheduled = scheduled.length === rows.length;
+    // the carry-over of a rolled session has to survive a failed attempt: the old session is already gone
+    const carry: string | undefined = sess.carry ?? rows.map((r) => payloadOf(r).carry).find(Boolean);
+    const text = (carry ? carry + "\n\n" : "") + this.turnText(rows, turn);
+    const before = onlyScheduled && sess.ref && existsSync(sess.ref) ? readFileSync(sess.ref) : undefined;
     log("dispatch", "run start", { run: runId, lane, events: rows.length, new_session: !sess.ref });
     const t0 = Date.now();
-    const card = STREAM_CARDS && turn.channel === "feishu" ? new CardStream(ctx) : undefined;
+    const card = STREAM_CARDS && turn.channel === "feishu" ? new CardStream(ctx, { thinking: !onlyScheduled }) : undefined;
     let res;
     try {
       res = await this.runner.run({
         tier, sessionRef: sess.ref, systemPrompt: systemPrompt(turn, !!card), text, tools: toolsFor("owner"), ctx,
         onAbortable: (abort) => { entry.abort = abort; },
-        onStream: card ? (s) => card.update(s.text, toolStatus(s.tool)) : undefined,
+        onStream: card ? (s) => { if (!onlyScheduled || s.text.trim()) card.update(s.text, toolStatus(s.tool)); } : undefined,
       });
     } catch (e) {
       card?.dispose();
@@ -158,6 +192,22 @@ export class Dispatcher {
     }
     const tok = tokenStatus(runId);
     const why = tok?.status === "budget_exhausted" ? "这一轮的 token 预算用完了，先停在这里" : `模型调用出错：${(res.error ?? "").slice(0, 200)}`;
+    // §9.4: safe to run again only if this attempt said nothing and changed nothing
+    const failure = res.stop === "error" && tok?.status !== "budget_exhausted" && scheduled.length ? classifyUpstream(res.error) : undefined;
+    const retry = failure && !res.fullText.trim() && ctx.replies === 0 && res.toolCalls.every((t) => READ_ONLY_TOOLS.has(t)) ? failure : undefined;
+    if (retry && onlyScheduled) {
+      card?.dispose();
+      // the attempt never happened as far as the conversation goes: otherwise each retry stacks the whole event text again
+      try { if (before) writeFileSync(sess.ref!, before); else if (!sess.ref && res.sessionRef) rmSync(res.sessionRef, { force: true }); }
+      catch (e: any) { log("dispatch", "could not undo the failed attempt's session", { err: String(e?.message ?? e) }); }
+      tx(() => {
+        if (sess.carry) run("UPDATE inbox SET payload_json=? WHERE id=?", JSON.stringify({ ...payloadOf(rows[0]), carry: sess.carry }), rows[0].id);
+        requeueScheduled(all(`SELECT * FROM inbox WHERE id IN (${rows.map(() => "?").join(",")})`, ...rows.map((r) => r.id)), retry, res.error);
+        run("UPDATE runs SET status='failed', stop_reason='upstream_retry', error=?, ended=? WHERE id=?", res.error ?? null, Date.now(), runId);
+      });
+      log("dispatch", "run end", { run: runId, stop: "upstream_retry", ms: Date.now() - t0 });
+      return;
+    }
     let carded = false;
     if (card) {
       const shown = res.fullText || res.text;
@@ -184,7 +234,10 @@ export class Dispatcher {
       run("UPDATE runs SET status=?, stop_reason=?, error=?, ended=? WHERE id=?",
         res.stop === "done" ? "done" : res.stop === "aborted" ? "aborted" : "failed",
         tok?.status === "budget_exhausted" ? "budget_exhausted" : res.stop, res.error ?? null, Date.now(), runId);
+      if (retry) requeueScheduled(scheduled, retry, res.error);   // his own message in the same batch fails as usual, the timer event waits
       run("UPDATE inbox SET status=? WHERE run_id=? AND status='processing'", res.stop === "error" ? "failed" : "done", runId);
+      noteReviewRun(rows.map(payloadOf), runId);
+      if (res.stop === "done") for (const p of rows.map(payloadOf)) if (p.job && p.retry) kvSet(`job.${p.job}.last`, JSON.stringify({ at: Date.now(), outcome: `done after ${p.retry.n} retries` }));
     });
     if (isQuotaRun(rows) && one("SELECT COUNT(*) n FROM outbox WHERE run_id=?", runId)!.n > 0) countProactive();
     log("dispatch", "run end", { run: runId, stop: res.stop, ms: Date.now() - t0, tools: res.toolCalls, out_tokens: res.usage.output });
@@ -195,7 +248,8 @@ export class Dispatcher {
     const lines = rows.map((r) => {
       const p = JSON.parse(r.payload_json ?? "{}");
       const kind = KIND[r.kind] ?? (p.message_type && p.message_type !== "text" && p.message_type !== "post" ? `（${p.message_type}）` : "");
-      return `[${localStamp(p.ts ?? r.ts).slice(11)}] ${kind}${p.text ?? ""}`;
+      const late = p.retry ? "（上游出错，推迟到现在才送达）" : "";
+      return `[${localStamp(p.ts ?? r.ts).slice(11)}] ${kind}${late}${p.text ?? ""}`;
     });
     return `（${where} · 现在 ${localNow()}）\n${lines.join("\n")}`;
   }

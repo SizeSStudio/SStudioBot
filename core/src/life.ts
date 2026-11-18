@@ -40,7 +40,7 @@ CREATE VIEW timeline AS
     CASE domain WHEN 'work' THEN 'work' ELSE NULL END, matter_id FROM events WHERE matter_id IS NOT NULL OR level IN ('reply','decide')
   UNION ALL SELECT ts, 'outlook', 'outlook:'||id, horizon||' '||period||'：'||text, NULL, matter_id FROM outlooks
   UNION ALL SELECT ts, 'revisit', 'outlook:'||outlook_id, '回看：'||text, NULL, NULL FROM outlook_revisits
-  UNION ALL SELECT ts, 'review', 'review:'||id, kind||' '||period||' 复盘'||CASE status WHEN 'unchatted' THEN '（未聊）' ELSE '' END, NULL, matter_id FROM reviews;
+  UNION ALL SELECT ts, 'review', 'review:'||id, kind||' '||period||' 复盘'||CASE WHEN status!='unchatted' THEN '' WHEN delivery='not_sent' THEN '（没发出）' WHEN delivery='replied' THEN '（他回过，没落档）' ELSE '（未聊）' END, NULL, matter_id FROM reviews;
 `);
 
 // ───────────── time helpers ─────────────
@@ -223,6 +223,8 @@ export interface QuestionFeedback { q: string; response: "talked" | "short" | "d
 export function submitReview(o: {
   kind: "day" | "week" | "month" | "matter"; period: string; matterId?: number; facts: string; ownerWords: string[]; agentNotes?: string;
   noticings: Noticing[]; questions: QuestionFeedback[]; runId: string;
+  /** only when code files it (§15.5): how the round ended, and a line saying so in place of his words */
+  delivery?: "sent" | "replied" | "not_sent"; deliveryNote?: string;
 }): { id: number; rel: string; hints: string[] } {
   const words = o.ownerWords.map((w) => w.trim()).filter(Boolean);
   const chatted = words.length > 0;
@@ -232,8 +234,12 @@ export function submitReview(o: {
       throw new Error(`noticing「${n.item_text}」记成主人先看见，需要 quote 是他在这次复盘里的原话（owner_words 里的一句）`);
     if (n.item_id && !one("SELECT 1 FROM self_items WHERE id=?", n.item_id)) throw new Error(`no self item #${n.item_id}`);
   }
+  // code's 未聊 is a placeholder: a real conversation filed later replaces the row, and an empty filing adds nothing
+  const placeholder = o.kind === "matter" ? undefined : one("SELECT id, file_path FROM reviews WHERE kind=? AND period=? AND delivery IS NOT NULL", o.kind, o.period);
+  if (placeholder && !chatted) return { id: placeholder.id, rel: placeholder.file_path, hints: [] };
+  if (placeholder) run("DELETE FROM reviews WHERE id=?", placeholder.id);
   const notes = chatted ? (o.agentNotes?.trim() || "") : "";
-  const md = `## 事实\n${o.facts.trim()}\n\n## 我说的（原话）\n${chatted ? words.map((w) => `- ${w}`).join("\n") : "未聊"}\n\n## 对照（agent 从记录里注意到的，不是结论）\n${notes || (chatted ? "（无）" : "未聊时不写")}\n`;
+  const md = `## 事实\n${o.facts.trim()}\n\n## 我说的（原话）\n${chatted ? words.map((w) => `- ${w}`).join("\n") : `未聊${o.deliveryNote ? `（${o.deliveryNote}）` : ""}`}\n\n## 对照（agent 从记录里注意到的，不是结论）\n${notes || (chatted ? "（无）" : "未聊时不写")}\n`;
   let rel: string;
   if (o.kind === "matter") {
     if (!o.matterId) throw new Error("matter review needs matter_id");
@@ -251,8 +257,8 @@ export function submitReview(o: {
     const cur = existsSync(f) ? readFileSync(f, "utf8").trimEnd() + "\n\n---\n\n" : `---\nvisibility: owner\n---\n# ${{ day: "日", week: "周", month: "月" }[o.kind]}复盘 ${o.period}\n\n`;
     writeFileSync(f, `${cur}${md}`);
   }
-  const id = Number(run("INSERT INTO reviews(kind, period, matter_id, facts, owner_words, agent_notes, status, file_path, run_id, ts) VALUES(?,?,?,?,?,?,?,?,?,?)",
-    o.kind, o.period, o.matterId ?? null, o.facts, JSON.stringify(words), notes || null, chatted ? "chatted" : "unchatted", rel, o.runId, Date.now()).lastInsertRowid);
+  const id = Number(run("INSERT INTO reviews(kind, period, matter_id, facts, owner_words, agent_notes, status, file_path, run_id, ts, delivery) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+    o.kind, o.period, o.matterId ?? null, o.facts, JSON.stringify(words), notes || null, chatted ? "chatted" : "unchatted", rel, o.runId, Date.now(), o.delivery ?? null).lastInsertRowid);
   for (const w of words) appendJournal(`复盘 #${id}（${o.kind} ${o.period}）他说：${w}`, `review@${o.kind}`);
   for (const q of o.questions) signal("review_question", { role: "reflect", run_id: o.runId, value: { review: id, kind: o.kind, ...q } });   // §16.2 陪伴
   const hints: string[] = [];

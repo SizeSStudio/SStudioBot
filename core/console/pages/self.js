@@ -6,7 +6,7 @@ import { $, $$, S, esc, api, toast, pill, tierDot, row, tile, rel, mdhm, isoDay,
   busy, ACTS, openDrawer, closeDrawer, TIER, ROLE, jobWhen } from "/lib/core.js";
 import { approvalCard } from "/lib/items.js";
 import { stackedBars, CAT } from "/lib/charts.js";
-import { mountEditor } from "/lib/editor.js";
+import { mountConfigForm } from "/lib/form.js";
 
 const TABS = { status: "状态", health: "健康", proposals: "提案", memory: "记忆", usage: "用量", models: "模型与密钥", config: "配置", groups: "群", sources: "信息源" };
 const st = { tab: "", arg: "", usageDays: 14, g: { filter: "all", q: "", limit: 80, list: [] }, editor: null };
@@ -65,7 +65,7 @@ PAGES.status = (body) => {
     </div>
     <section><h2>正在跑</h2><div class="list">${running || `<div class="empty">现在没有在跑的对话或任务。</div>`}</div></section>
     <section><h2>连接与健康</h2><div class="list">${conn}</div></section>
-    <section><h2>定时任务 <a class="sub" href="#/self/config/jobs.yaml">改 jobs.yaml</a></h2><div class="list">${jobs || `<div class="empty">没有定时任务。</div>`}</div></section>
+    <section><h2>定时任务 <a class="sub" href="#/self/config/jobs.yaml">设置</a></h2><div class="list">${jobs || `<div class="empty">没有定时任务。</div>`}</div></section>
     <section><h2>记忆</h2><div class="list">
       ${row(`${s.memory.pages} 个页面`, s.memory.lastCommit ? `最近一次提交 ${rel(Number(s.memory.lastCommit[1]) * 1000)}：${s.memory.lastCommit[2]}` : "", "›", `data-href="#/self/memory/pages"`)}
       ${row("夜间整理", d.lastAt ? `上次 ${mdhm(d.lastAt)}${rep ? ` · ${rep.commits.length} 处修改、${rep.notes.length} 条留言${rep.sent ? "，已发管理群" : "，还没发"}` : ""}` : "还没跑过", "›", `data-href="#/self/memory"`)}
@@ -222,7 +222,7 @@ PAGES.models = async (body) => {
   const [m, sec] = await Promise.all([api("/models"), api("/secrets")]);
   const b = m.budgets ?? {};
   body.innerHTML = `
-    <section><h2>四档模型 <a class="sub" href="#/self/config/models.yaml">改 models.yaml</a></h2>
+    <section><h2>四档模型 <a class="sub" href="#/self/config/models.yaml">端点、价格和预算</a></h2>
       ${m.tiers.map((t) => `<div class="card">
         <div class="inline wrap">${tierDot(t.name)}<b>${esc(TIER[t.name] ?? t.name)}</b><span class="sub">${esc(t.name)} · 端点 ${esc(t.endpoint)}</span>
           <span class="sub push">${t.today ? `今天 ${t.today.calls} 次 · ${money(t.today.cost)}${t.today.ms ? ` · 平均 ${(t.today.ms / 1000).toFixed(1)}s` : ""}${t.today.errors ? ` · 失败 ${t.today.errors}` : ""}` : "今天没用"}</span></div>
@@ -263,23 +263,18 @@ async function setSecret(form, btn) {
 }
 
 // ───────── 配置 ─────────
-const FILE_NOTE = {
-  "models.yaml": "端点、四档模型、价格、预算", "people.yaml": "认人：你和其他人的 ID", "groups.yaml": "群观察开关（「群」页改得更快）",
-  "gate.yaml": "敏感词、审批有效期、专家次数、主动消息上限、提醒等待窗口、巡检预算线", "jobs.yaml": "定时任务：早报、夜间整理、例行镜头……",
-  "feishu.yaml": "管理群、工作台群", "repos.yaml": "worker 能拿到、批准后能推送的仓库", "console.yaml": "能登录控制台的 Tailscale 账号；公网入口的地址（web.origin）",
-  "self.yaml": "出生信息、镜头设置、节律（私人：在「生活 › 出生信息」改，或在私聊里说）",
-  "sources.yaml": "信息源：飞书私聊开关、仓库、网页、插件（「信息源」页看状态）",
-};
+// every other file describes itself in its form (GET /config); self.yaml has its own page
+const SELF_FILE = { title: "出生信息与节律", summary: "私人内容：在「生活 › 出生信息」改，或在私聊里说" };
 const SOURCE = { console: "控制台", chat: "主对话", upgrade: "升级", card: "卡片", command: "命令", proposal: "提案", manual: "手改" };
 PAGES.config = async (body, file) => {
   if (file === "self.yaml") { location.hash = "#/life/birth"; return; }
   if (file) {
-    st.editor = await mountEditor(body, file, { back: "#/self/config", note: `${esc(FILE_NOTE[file] ?? "")}。保存时先校验格式，再写文件、git 提交、热加载，并在管理群通知；放宽限制的改动会单独提醒。` });
+    st.editor = await mountConfigForm(body, file, { back: "#/self/config" });
     return;
   }
   const [files, changes] = await Promise.all([api("/config"), api("/config-changes")]);
   body.innerHTML = `
-    <section><h2>配置文件</h2><div class="list">${files.map((f) => row(f.file, `${FILE_NOTE[f.file] ?? ""}${f.exists ? (f.last ? ` · 上次改动 ${rel(f.last.at)}` : "") : " · 还没有（用默认值）"}`, "›",
+    <section><h2>配置</h2><div class="list">${files.map((f) => row(f.title ?? (f.file === "self.yaml" ? SELF_FILE.title : f.file), `${f.summary ?? (f.file === "self.yaml" ? SELF_FILE.summary : "")}${f.exists ? (f.last ? ` · 上次改动 ${rel(f.last.at)}` : "") : " · 现在用默认值"}`, "›",
       `data-href="${f.file === "self.yaml" ? "#/life/birth" : `#/self/config/${f.file}`}"`)).join("")}</div></section>
     <section><h2>最近的改动</h2><div class="list">${changes.map((c) => `<div class="row"><div class="main"><div>${esc(c.file)} <span class="tag">${esc(SOURCE[c.source] ?? c.source)}</span></div>
       ${c.diff && c.file !== "self.yaml" ? `<details><summary>${esc(c.diff.split("\n")[0].slice(0, 80))}</summary>${diffHtml(c.diff)}</details>` : c.file === "self.yaml" ? `<div class="sub">私人内容，去「出生信息」看</div>` : ""}</div><div class="side sub">${rel(c.ts)}</div></div>`).join("") || empty("（无）")}</div></section>`;
@@ -295,7 +290,7 @@ PAGES.groups = async (body) => {
   body.innerHTML = `
     <label class="sr" for="gq">搜群名</label><input type="search" id="gq" placeholder="搜群名（${st.g.list.length} 个群）" value="${esc(st.g.q)}" data-keep="0">
     <div id="gchips"></div>
-    <div class="sub">按最近 7 天的消息数排。切换立即写进 groups.yaml；放宽（比如从关闭到全部）会在管理群单独提醒。</div>
+    <div class="sub">按最近 7 天的消息数排。切换立即生效；放宽（比如从关闭到全部）会在管理群单独提醒。新群的默认档位在<a href="#/self/config/groups.yaml">群设置</a>里改。</div>
     <div id="glist" class="list"></div>
     <div class="more"><button type="button" class="btn" data-act="gmore" id="gmore" hidden>显示更多</button></div>`;
   $("#gq").addEventListener("input", (e) => { st.g.q = e.target.value; st.g.limit = 80; drawGroups(); });
@@ -325,14 +320,14 @@ PAGES.sources = async (body) => {
   const d = await api("/sources");
   const last = (x) => !x.last ? "还没拉过" : `上次 ${rel(x.last.at)}${x.last.ok ? `，新 ${x.last.n} 条` : `，出错：${x.last.err ?? ""}`}`;
   body.innerHTML = `
-    <div class="card note"><b>它从哪些地方看事</b><div class="sub">群消息之外的来源，都在 sources.yaml 里配：飞书私聊（默认关）、飞书邮箱、仓库提交、网页变化，以及放在服务器 ${esc(d.plugins)}/sources/ 下的插件（Jira……）。拉到的东西和群消息一样进分拣、记成事件，挂到事上。插件只拿到 env 里点名的密钥。</div>
-      <div class="actions"><a class="btn small" href="#/self/config/sources.yaml">编辑 sources.yaml</a></div></div>
+    <div class="card note"><b>它从哪些地方看事</b><div class="sub">群消息之外的来源：飞书私聊（默认关）、飞书邮箱、仓库提交、网页变化，以及放在服务器 ${esc(d.plugins)}/sources/ 下的插件（Jira……）。拉到的东西和群消息一样进分拣、记成事件，挂到事上。插件只拿到你点名给它的密钥。</div>
+      <div class="actions"><a class="btn small" href="#/self/config/sources.yaml">添加或修改信息源</a></div></div>
     <div class="list">
-      ${row("飞书私聊", d.dm ? "别人发给你的私聊进分拣（只记事件、不起草）；和它自己的私聊不算" : "关着。打开：sources.yaml 里 feishu.dm: true", d.dm ? pill("ok", "开") : pill("skipped", "关"))}
+      ${row("飞书私聊", d.dm ? "别人发给你的私聊进分拣（只记事件、不起草）；和它自己的私聊不算" : "关着。在「添加或修改信息源」里打开", d.dm ? pill("ok", "开") : pill("skipped", "关"))}
       ${d.sources.map((x) => row(`${x.id} · ${x.zh}`, `${x.what ?? ""} · 每 ${x.every} · ${x.domain}${x.env.length ? ` · 密钥 ${x.env.join("、")}` : ""} · ${last(x)}`,
         `${!x.enabled ? pill("skipped", "停用") : !x.last ? pill("pending", "等第一次") : x.last.ok ? pill("ok", "正常") : pill("failed", "出错")}${x.enabled ? ` <button type="button" class="btn small" data-act="srcrun" data-id="${esc(x.id)}">现在拉</button>` : ""}`)).join("")}
     </div>
-    ${d.sources.length ? "" : `<div class="sub">还没有别的来源。sources.yaml 里有示例。</div>`}`;
+    ${d.sources.length ? "" : `<div class="sub">还没有别的来源。</div>`}`;
 };
 ACTS.srcrun = (el) => busy(el, "在拉…", async () => {
   const r = await api(`/sources/${el.dataset.id}/run`, { method: "POST" });

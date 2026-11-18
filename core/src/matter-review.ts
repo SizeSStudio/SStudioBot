@@ -428,15 +428,15 @@ export async function runMatterReview() {
   const seen = new Set<string>();
   collectAsks(seen, conf.ask_days); collectStale(seen, conf.stale_days); collectGroups(seen); collectTopics(seen);
   sweep(seen);
-  let suggested = 0;
+  let suggested = 0, modelError: string | undefined;
   if (!resting) {
     try { suggested = await modelPass(conf.tier ?? (first ? "work" : "light")); sweep(seen); }
-    catch (e: any) { log("matter_review", "model pass failed, code's findings only", { err: String(e?.message ?? e).slice(0, 200) }); }
+    catch (e: any) { modelError = String(e?.message ?? e).slice(0, 300); log("matter_review", "model pass failed, code's findings only", { err: modelError.slice(0, 200) }); }
   }
 
   const prev = await rollOver(day);
   const c: CardState = prev ?? { day, ids: [] };
-  if (resting) { saveCard(c); return { day, resting: true, ignored, ids: c.ids.length }; }
+  if (resting) { saveCard(c); return { day, resting: true, ignored, ids: c.ids.length, modelError }; }
   const limit = first ? conf.first_limit : conf.limit;
   const fresh = pick(limit - c.ids.length, first, c.ids);
   for (const r of fresh) run("UPDATE matter_reviews SET status='shown' WHERE id=?", r.id);
@@ -464,7 +464,7 @@ export async function runMatterReview() {
   };
   let card_: string;
   try { card_ = await deliver(); } catch (e: any) { card_ = "send failed"; log("matter_review", "card failed", { err: String(e?.message ?? e).slice(0, 200) }); }
-  const out = { day, first, suggested, picked: fresh.length, today: c.ids.length, card: card_ };
+  const out = { day, first, suggested, picked: fresh.length, today: c.ids.length, card: card_, modelError };
   log("matter_review", "done", out);
   return out;
 }

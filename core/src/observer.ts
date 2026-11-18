@@ -10,7 +10,7 @@
 //   - his own message in any observed chat closes the asks it answers there (events.ts markReplied)
 
 import { all, one, run, kvGet, kvSet } from "./db.ts";
-import { feishuConf, gateConf, groupsConf, log, ownerFeishu, sourcesConf, type Activation } from "./config.ts";
+import { feishuConf, gateConf, groupsConf, log, ownerFeishu, sourcesConf, type Activation, type GroupsConfig } from "./config.ts";
 import { markReplied } from "./events.ts";
 import { lark } from "./feishu.ts";
 import { card, md, button, buttons, sendCard, patchCard, type Card } from "./cards.ts";
@@ -31,8 +31,7 @@ export async function userIdentityReady(): Promise<boolean> {
 }
 
 /** Default rules (§3.5); `why` says which rule applied. */
-export function activationOf(chatId: string, name?: string): { act: Activation; why: string } {
-  const g = groupsConf();
+export function activationOf(chatId: string, name?: string, g: GroupsConfig = groupsConf()): { act: Activation; why: string } {
   const o = g.groups?.[chatId]?.activation;
   if (o) return { act: o, why: "手动设置" };
   const c = one("SELECT * FROM chats WHERE chat_id=?", chatId);

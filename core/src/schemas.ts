@@ -35,7 +35,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   }).passthrough(),
   "jobs.yaml": z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), z.object({
     every: z.enum(["day", "week", "month"]), at: hhmm, weekday: z.number().int().min(0).max(6).optional(), day: z.number().int().min(1).max(31).optional(),
-    do: z.string().min(1), lane: z.string().optional(), text: z.string().optional(), quota: z.boolean().optional(), enabled: z.boolean().optional(),
+    do: z.string().min(1), lane: z.string().optional(), text: z.string().optional(), quota: z.boolean().optional(),
   }).passthrough()).nullable(),
   "feishu.yaml": z.object({ admin_chat: z.string().regex(/^oc_/).optional(), workbench_chat: z.string().regex(/^oc_/).optional() }).passthrough(),
   "repos.yaml": z.record(z.string(), z.object({ url: z.string().min(1), branch: z.string().optional() }).passthrough()).nullable(),

@@ -6,12 +6,15 @@
 //   4. metering: usage from the SSE / JSON response × price → `usage` table
 //   5. hard limits: run budget (output tokens) and global daily cost → 403 permission_error (not 429: the CLI would
 //      retry for ~3 min, P0). Why a run ended is read from run_tokens.status, not from the client's error text.
+//   6. optional per-tier fallback (§5.3): the tier's model reports a usage limit → the same request goes to the fallback.
+//      Without one configured the response is passed through untouched.
 
 import http from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { models, secret, tierConf, log, PROXY_PORT, TIERS, type Tier, type Price } from "./config.ts";
 import { one, run, tx } from "./db.ts";
 import { gzipSync } from "node:zlib";
+import { classifyUpstream } from "./retry.ts";
 
 /** §10.4: runs whose exact model requests the console keeps (7 days, owner-only, no agent tool reads them) */
 const CAPTURE_ROLES = ["main", "draft"];
@@ -101,6 +104,29 @@ const readBody = (req: http.IncomingMessage) => new Promise<Buffer>((ok, bad) =>
   req.on("data", (c) => parts.push(c)).on("end", () => ok(Buffer.concat(parts))).on("error", bad);
 });
 
+/**
+ * Did the upstream say "usage limit"? It can do so as an HTTP error or as the first event of a 200 stream (seen in
+ * production), so read just enough to tell and hand back chunks that replay what was read.
+ */
+async function peekLimit(up: Response): Promise<{ limited: boolean; chunks: AsyncIterable<Uint8Array> | null; drop: () => void }> {
+  const sse = (up.headers.get("content-type") ?? "").includes("event-stream");
+  if (!up.body || (up.ok && !sse)) return { limited: false, chunks: up.body as any, drop: () => {} };
+  const reader = up.body.getReader(), head: Uint8Array[] = [], dec = new TextDecoder();
+  let text = "", ended = false;
+  while (text.length < 64_000 && (!up.ok || !/data:[^\n]*\n\r?\n/.test(text))) {
+    let r;
+    try { r = await reader.read(); } catch { break; }   // the replay below hits the same error while streaming, as it would have
+    if (r.done) { ended = true; break; }
+    head.push(r.value);
+    text += dec.decode(r.value, { stream: true });
+  }
+  const limited = (!up.ok || /"type"\s*:\s*"error"/.test(text)) && classifyUpstream(text)?.kind === "limit";
+  return { limited, drop: () => { void reader.cancel().catch(() => {}); }, chunks: (async function* () {
+    yield* head;
+    while (!ended) { const { value, done } = await reader.read(); if (done) return; yield value; }
+  })() };
+}
+
 async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = req.url ?? "/";
   if (!url.startsWith("/llm/")) return deny(res, 404, "not_found_error", "not found");
@@ -122,9 +148,8 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const raw = await readBody(req);
   let body: Buffer | undefined = req.method === "GET" || req.method === "HEAD" ? undefined : raw;
   // a run may use its own tier and light (Claude Code's small calls); anything else is refused
-  let tier = t.tier as Tier;
+  let tier = t.tier as Tier, j: any;
   if (raw.length && req.method === "POST") {
-    let j: any;
     try { j = JSON.parse(raw.toString("utf8")); } catch { return deny(res, 400, "invalid_request_error", "body is not JSON"); }
     const asked = typeof j.model === "string" ? j.model : "";
     const m = /^sbot-(chat|work|light|expert)$/.exec(asked);
@@ -139,26 +164,58 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
     body = Buffer.from(JSON.stringify(j));
   }
   const tc = tierConf(tier);
-  const ep = cfg.endpoints[tc.endpoint];
-  const key = ep && secret(ep.key_ref);
-  // base_url may be "secret:NAME" when the endpoint itself shouldn't sit in the (agent-readable) config repo
-  const base = ep && (ep.base_url.startsWith("secret:") ? secret(ep.base_url.slice(7)) : ep.base_url);
-  if (!ep || !key || !base) return deny(res, 500, "api_error", `endpoint for tier ${tier} not configured`);
+  const target = (name: string) => {
+    const ep = cfg.endpoints[name];
+    const key = ep && secret(ep.key_ref);
+    // base_url may be "secret:NAME" when the endpoint itself shouldn't sit in the (agent-readable) config repo
+    const base = ep && (ep.base_url.startsWith("secret:") ? secret(ep.base_url.slice(7)) : ep.base_url);
+    if (!ep || !key || !base) return undefined;
+    const headers: Record<string, string> = {};
+    for (const [k, v] of Object.entries(req.headers)) {
+      if (typeof v !== "string" || ["host", "authorization", "x-api-key", "content-length", "connection"].includes(k)) continue;
+      headers[k] = v;
+    }
+    if (ep.auth === "x-api-key") headers["x-api-key"] = key; else headers["authorization"] = `Bearer ${key}`;
+    return { url: base.replace(/\/$/, "") + url.slice("/llm".length), headers };
+  };
+  const primary = target(tc.endpoint);
+  if (!primary) return deny(res, 500, "api_error", `endpoint for tier ${tier} not configured`);
+  const send = (to: NonNullable<ReturnType<typeof target>>, b: Buffer | undefined) => fetch(to.url, { method: req.method, headers: to.headers, body: b });
+  const book = (status: number, endpoint: string, model: string, u: Usage, cost: number, ms: number) =>
+    run(`INSERT INTO usage(ts, run_id, tier, endpoint, model, requester_id, input_tokens, output_tokens, cache_read, cache_write, cost, status, ms)
+         VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, Date.now(), t.run_id, tier, endpoint, model, t.requester_id,
+      u.input, u.output, u.cache_read, u.cache_write, cost, status, ms);
 
-  const headers: Record<string, string> = {};
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (typeof v !== "string" || ["host", "authorization", "x-api-key", "content-length", "connection"].includes(k)) continue;
-    headers[k] = v;
-  }
-  if (ep.auth === "x-api-key") headers["x-api-key"] = key; else headers["authorization"] = `Bearer ${key}`;
-
-  const t0 = Date.now();
+  let t0 = Date.now();
   let up: Response;
   try {
-    up = await fetch(base.replace(/\/$/, "") + url.slice("/llm".length), { method: req.method, headers, body });
+    up = await send(primary, body);
   } catch (e: any) {
     log("proxy", "upstream error", { err: String(e?.message ?? e), run: t.run_id });
     return deny(res, 502, "api_error", "upstream unreachable");
+  }
+  let used = { endpoint: tc.endpoint, model: tc.model, price: tc.price };
+  let chunks = up.body as any as AsyncIterable<Uint8Array> | null;
+  const fb = tc.fallback;
+  if (fb?.model && j) {
+    const seen = await peekLimit(up);
+    chunks = seen.chunks;
+    if (seen.limited) {
+      const endpoint = fb.endpoint ?? tc.endpoint, to = target(endpoint), b2 = Buffer.from(JSON.stringify({ ...j, model: fb.model }));
+      let alt: Response | undefined;
+      try {
+        alt = to ? await send(to, b2) : undefined;
+        if (alt && !alt.ok) { log("proxy", "fallback refused too", { tier, status: alt.status }); await alt.body?.cancel(); alt = undefined; }
+        if (!to) log("proxy", "fallback endpoint not configured", { tier, endpoint });
+      } catch (e: any) { alt = undefined; log("proxy", "fallback unreachable", { tier, err: String(e?.message ?? e) }); }
+      if (alt) {   // otherwise he gets the original limit error, and the caller's own retry rules apply
+        book(up.ok ? 429 : up.status, tc.endpoint, tc.model, { input: 0, output: 0, cache_read: 0, cache_write: 0 }, 0, Date.now() - t0);
+        log("proxy", "usage limit, using the tier's fallback", { tier, run: t.run_id });
+        seen.drop();
+        t0 = Date.now(); up = alt; chunks = alt.body as any; body = b2;
+        used = { endpoint, model: fb.model, price: fb.price ?? tc.price };
+      }
+    }
   }
   const out: Record<string, string> = {};
   up.headers.forEach((v, k) => { if (!["content-encoding", "content-length", "transfer-encoding"].includes(k)) out[k] = v; });
@@ -168,7 +225,7 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   const dec = new TextDecoder();
   let text = "";
   try {
-    if (up.body) for await (const c of up.body as any as AsyncIterable<Uint8Array>) {
+    if (chunks) for await (const c of chunks) {
       res.write(c);
       const s = dec.decode(c, { stream: true });
       if (sse) m.feed(s); else text += s;
@@ -176,16 +233,14 @@ async function handle(req: http.IncomingMessage, res: http.ServerResponse) {
   } finally {
     res.end();
     if (!sse) m.json(text);
-    const cost = costOf(tc.price, m.u);
+    const cost = costOf(used.price, m.u);
     const keep = body && body.length && (t.requester_id === "draft" || CAPTURE_ROLES.includes(one("SELECT role FROM runs WHERE id=?", t.run_id)?.role));
     const gz = keep ? gzipSync(body!) : undefined;
     tx(() => {
-      const r = run(`INSERT INTO usage(ts, run_id, tier, endpoint, model, requester_id, input_tokens, output_tokens, cache_read, cache_write, cost, status, ms)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, Date.now(), t.run_id, tier, tc.endpoint, tc.model, t.requester_id,
-        m.u.input, m.u.output, m.u.cache_read, m.u.cache_write, cost, up.status, Date.now() - t0);
+      const r = book(up.status, used.endpoint, used.model, m.u, cost, Date.now() - t0);
       run("UPDATE run_tokens SET spent_output = spent_output + ? WHERE hash=?", m.u.output, t.hash);
       if (gz) {
-        run("INSERT INTO requests(ts, run_id, usage_id, tier, model, bytes, body) VALUES(?,?,?,?,?,?,?)", t0, t.run_id, Number(r.lastInsertRowid), tier, tc.model, body!.length, gz);
+        run("INSERT INTO requests(ts, run_id, usage_id, tier, model, bytes, body) VALUES(?,?,?,?,?,?,?)", t0, t.run_id, Number(r.lastInsertRowid), tier, used.model, body!.length, gz);
         run("DELETE FROM requests WHERE ts < ?", Date.now() - 7 * 86400_000);
       }
     });

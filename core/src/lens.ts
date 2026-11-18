@@ -27,12 +27,14 @@ import { openEgress } from "./egress.ts";
 import { appendJournal, localNow, localStamp } from "./memory.ts";
 import { hooks } from "./approvals.ts";
 import { OWNER_DM_LANE } from "./feishu.ts";
+import { adminNotice, classifyUpstream, failureText, nextAttempt, retryDeadline } from "./retry.ts";
 
 const CLI = process.env.SBOT_CLAUDE_CLI ?? "/opt/sbot/claude-code/current/claude";
 const WRAPPER = "/usr/local/lib/sbot/worker-exec";
 const MKDIR = "/usr/local/lib/sbot/task-mkdir";
 const PLUGIN = process.env.SBOT_LENS_PLUGIN ?? "/opt/sbot/plugins/sbot-lens";
 const TIMEOUT_MS = 15 * 60_000, BUDGET = 60_000, MAX_TURNS = 60;
+const JOB_RETRY_HOURS = 12;
 
 interface LensDef { zh: string; skills: string[]; methods: Record<string, { zh: string; birth: boolean; horizon?: string }> }
 export const LENSES: Record<string, LensDef> = {
@@ -180,7 +182,7 @@ export class LensEngine {
 
   kick() {
     if (this.busy) return;
-    const r = one("SELECT * FROM readings WHERE status='queued' ORDER BY id LIMIT 1");
+    const r = one("SELECT * FROM readings WHERE status='queued' AND COALESCE(not_before,0)<=? ORDER BY id LIMIT 1", Date.now());
     if (!r) return;
     this.busy = true;
     run("UPDATE readings SET status='running' WHERE id=?", r.id);
@@ -189,6 +191,13 @@ export class LensEngine {
 
   private fail(r: Record<string, any>, err: string) {
     log("lens", "failed", { id: r.id, err: err.slice(0, 300) });
+    // §9.4: the month view is written before the day's month review, so it may wait most of the day for the upstream
+    const f = r.requested_by === "job" ? classifyUpstream(err) : undefined;
+    if (f) {
+      const n = (r.retries ?? 0) + 1, deadline = retryDeadline(r.ts, undefined, JOB_RETRY_HOURS), at = nextAttempt(f, n, deadline);
+      if (at) { run("UPDATE readings SET status='queued', not_before=?, retries=?, error=? WHERE id=?", at, n, err.slice(0, 500), r.id); return; }
+      adminNotice(`**定时任务没跑成**：镜头 ${LENSES[r.lens]?.zh ?? r.lens} ${r.method}（${localStamp(r.ts).slice(5, 16)}）试了 ${n} 次，这一轮放弃，不再补。\n${failureText(f, err, (t) => localStamp(t).slice(5, 16))}`);
+    }
     run("UPDATE readings SET status='failed', error=?, done_at=? WHERE id=?", err.slice(0, 500), Date.now(), r.id);
     if (r.requested_by !== "job") notify(r, `【镜头没看成：解读 #${r.id}】${LENSES[r.lens]?.zh} ${r.method}：${err.slice(0, 200)}\n简单告诉他一声就好。`);
   }
@@ -281,7 +290,9 @@ export class LensEngine {
     finally { clearTimeout(dog); eg.close(); revokeToken(token); this.ac = undefined; }
     if (eg.log.length) log("lens", "network attempts blocked", { id: r.id, n: eg.log.length });
     run("UPDATE runs SET status=?, ended=?, stop_reason=? WHERE id=?", submitted ? "done" : "failed", Date.now(), result?.subtype ?? err?.slice(0, 200) ?? null, runId);
-    if (!submitted) throw new Error(err ? err.slice(0, 300) : ac.signal.aborted ? "超时" : "没有交回结果");
+    // the CLI reports an API failure as an error result, not a throw; keep its words so §9.4 can tell what it was
+    const said = result?.is_error ? String(result.result ?? result.subtype ?? "") : "";
+    if (!submitted) throw new Error(err ? err.slice(0, 300) : ac.signal.aborted ? "超时" : said ? said.slice(0, 300) : "没有交回结果");
 
     // frozen chart for this profile_version: only the first time, only plain files inside the task dir
     let chartRef: string | null = existsSync(charts) ? `self/charts/${r.lens}/${r.profile_version}` : null;

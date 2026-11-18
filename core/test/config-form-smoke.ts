@@ -8,7 +8,7 @@
 //   keys the form doesn't know survive and are listed; secrets never appear; only owners can write
 
 import http from "node:http";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
@@ -378,6 +378,20 @@ for (const [file, edit, path, msg] of BAD) {
   writeFileSync(join(P.config, "repos.yaml"), "demo:\n  url: https://example.test/team/demo.git\n");
   commitIfDirty(P.config, "repaired by hand");
   ok(!(await form("repos.yaml")).broken, "the form is back once the file is repaired");
+}
+
+// ── a file that doesn't exist yet: its defaults show, the first save creates it ──
+{
+  rmSync(join(P.config, "gate.yaml"));
+  commitIfDirty(P.config, "gate.yaml removed");
+  const f = await form("gate.yaml");
+  ok(f.exists === false && !f.broken && Object.keys(f.values).length === 0, "a missing file opens as an empty form");
+  const words = f.spec.sections.flatMap((s: any) => s.fields).find((x: any) => x.key === "sensitive_words").default;
+  const p = await preview("gate.yaml", { sensitive_words: words.slice(1) }, f.hash);
+  ok(p.widened.some((w: string) => w.includes(words[0])), "dropping a default sensitive word counts as widening even with no file");
+  const r = await put("gate.yaml", { proactive_daily_cap: 3 }, f.hash);
+  ok(r.status === 200 && r.j.changed === true && r.j.exists === true && parsed("gate.yaml").proactive_daily_cap === 3, "the first save creates the file");
+  ok(Object.keys(parsed("gate.yaml")).length === 1 && subject() === "gate.yaml: edit (via console)", "with only what was set, committed the usual way");
 }
 
 ok(all("SELECT file FROM config_changes WHERE source<>'console'").length === 0, "every recorded change came through the console path");

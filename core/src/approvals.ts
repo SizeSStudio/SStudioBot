@@ -118,9 +118,20 @@ export async function onApprovalClick(v: { id: number; v: number; d: string }, o
     const notes = (JSON.parse(a.revise_notes) as { note: string }[]).map((n) => n.note).join(" / ");
     appendJournal(`审批 #${a.id}（${a.title}）改稿意见：${notes.slice(0, 600)}；最终发出：${String(a.final_text ?? a.draft).slice(0, 600)}`, "owner@approval");
   }
-  await refreshCard(a.id, decision === "approved" && a.kind === "send" ? "sending" : undefined);
-  if (a.kind === "send") hooks.kickOutbox();
-  if (a.kind === "plan") hooks.kickDispatcher();
+  // the card goes first: the outbox patches it to "sent" when done, and that must not be overwritten by "sending"
+  const followUp = async () => {
+    await refreshCard(a.id, decision === "approved" && a.kind === "send" ? "sending" : undefined);
+    if (a.kind === "send") hooks.kickOutbox();
+    if (a.kind === "plan") hooks.kickDispatcher();
+  };
+  // Console: the decision is committed above, so the page needn't wait ~1.5 s for Feishu. If we die before the kick, the
+  // outbox row / inbox event are already durable and get picked up at startup. Code kinds stay inline: what they did is
+  // part of the answer (`result`).
+  if (via && !CODE_KINDS.includes(a.kind)) {
+    void followUp().catch((e) => log("approval", "follow-up failed", { id: a.id, err: String(e?.message ?? e).slice(0, 200) }));
+    return getApproval(a.id);
+  }
+  await followUp();
   if (CODE_KINDS.includes(a.kind)) await runDeferred(a);
   return getApproval(a.id);
 }

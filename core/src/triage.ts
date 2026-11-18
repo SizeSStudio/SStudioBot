@@ -24,7 +24,8 @@ import { lark } from "./feishu.ts";
 import { toolsFor, type RunCtx } from "./tools.ts";
 import type { Runner } from "./runner.ts";
 import { tunedRaw, tunedSection, tuningVersion } from "./tuning.ts";
-import { LEVEL_ZH, closeAnswered, isOpenAsk, maxLevel, needsHim, recordEvent, requeueVoidedDrafts, responseTo, settleFromApprovals, triageMatterContext } from "./events.ts";
+import { rootId } from "./matters.ts";
+import { LEVEL_ZH, closeAnswered, isOpenAsk, maxLevel, needsHim, recordEvent, requeueVoidedDrafts, resolveEventMatter, responseTo, settleFromApprovals, triageMatterContext } from "./events.ts";
 
 const TICK_MS = 45_000, NOTIFY_MS = 10 * 60_000;
 const MAX_DRAFTS_PER_PASS = 3;   // drafts held by the window can come due together; the rest wait for the next tick
@@ -262,7 +263,6 @@ export class Triage {
    */
   private events(chat: string, surface: string, todo: Msg[], actions: string[], whys: string[], out: any[]) {
     const raw = (r: Msg) => rawOf(r);
-    const openMatters = new Set(all("SELECT id FROM matters WHERE status IN ('open','active','closing')").map((m) => Number(m.id)));
     const source = surface.startsWith("source:") ? surface.slice(7) : "feishu";
     const used = new Set<number>(), firsts = new Map<string, number>();
     const res: (Parameters<typeof recordEvent>[0])[] = [];
@@ -283,7 +283,7 @@ export class Triage {
         source, ref: k > 1 ? `${first}#${k}` : first, ts, kind, level, summary: sum || whys[idx[0]] || String(rows[0].text).slice(0, 120),
         place: raw(last).chat_name ?? null, place_id: chat, actor: actors.slice(0, 3).join("、") || null,
         link: [...rows].reverse().map((r) => raw(r).link).find(Boolean) ?? null, domain: domainOf(surface),
-        matter_id: openMatters.has(Number(matter)) ? Number(matter) : null, topic: typeof topic === "string" ? topic : null,
+        matter_id: resolveEventMatter(matter, topic), topic: typeof topic === "string" ? topic : null,
         msg_ids: rows.map((r) => r.id),
       });
       for (const i of idx) used.add(i);
@@ -409,7 +409,8 @@ export function noticeText(rows: Msg[]): string {
   const evLine = (e: Msg) => `- ${localStamp(e.ts).slice(11)} 「${e.place ?? "?"}」${e.actor ? `${e.actor}：` : ""}${e.summary}${e.level !== "fyi" ? `〔${LEVEL_ZH[e.level]}〕` : ""}${e.state === "done" ? "（你已回）" : ""}${e.link ? ` [打开](${e.link})` : ""}`;
   const groups = new Map<string, Msg[]>();
   for (const e of evs.sort((a, b) => Number(open(b.level)) - Number(open(a.level)) || a.ts - b.ts)) {
-    const k = e.matter_id ? `**事 #${e.matter_id} ${e.title ?? ""}**` : e.topic ? `**${e.topic}**` : "";
+    const root = e.matter_id ? rootId(e.matter_id) ?? e.matter_id : null;   // 子事 read under their 主线
+    const k = root ? `**事 #${root} ${one("SELECT title FROM matters WHERE id=?", root)?.title ?? e.title ?? ""}**` : e.topic ? `**${e.topic}**` : "";
     groups.set(k, [...(groups.get(k) ?? []), e]);
   }
   const blocks: string[] = [];

@@ -16,6 +16,8 @@ import { PLAYBOOK, SECTIONS, listMatters, noteMatter, openMatter, setMatterStatu
 import { cancelTask, listTasks, replyTask, startTask } from "./tasks.ts";
 import { DOMAINS, addNote, markSelfItem, periodOk, revisitOutlook, selfItemsText, submitOutlook, submitReview, timelineText } from "./life.ts";
 import { queueMatterReview } from "./reflect.ts";
+import { attachMatters, createMainline, detachMatter, listOps, mergeMatters, undoOp } from "./matter-ops.ts";
+import { actOnReview, reviewQueue, undoReview } from "./matter-review.ts";
 import { personCard, resolveForTool, pathBetween, addRelation, REL_PRESETS } from "./graph.ts";
 import { LENSES, readingsQuery, requestReading, revisitReading } from "./lens.ts";
 import { LEVELS, STATES, addMatterKeys, eventLine, eventsQuery, linkEvents, matterKeys, setEventLevel, setEventState, topicCandidates } from "./events.ts";
@@ -242,6 +244,41 @@ export const TOOLS: ToolDef[] = [
   }),
   def({ name: "matter_list", level: "L0", for: ["owner"], description: "List matters (open ones by default).", schema: z.object({ all: z.boolean().default(false) }),
     async exec({ all }) { return listMatters(!all); } }),
+  def({
+    name: "matter_regroup", level: "L1", for: ["owner"],
+    description: "Regroup matters, only when he has just said so in this conversation; never on your own initiative (the daily review suggests, he decides). attach: ids become 子事 under target (a 主线; their events add up to it). merge: ids are true duplicates of target and fold into it. main: a new 主线 named title over ids. detach: ids[0] comes back out as its own 主线. undo: take back op. log: recent changes. Every change is logged and can be undone.",
+    schema: z.object({ action: z.enum(["attach", "merge", "main", "detach", "undo", "log"]), ids: z.array(z.number()).max(20).optional(), target: z.number().optional(), title: z.string().max(40).optional(), op: z.number().optional(), why: z.string().max(300).optional() }),
+    async exec(a) {
+      const x = { by: "owner@chat", why: a.why }, ids = a.ids ?? [];
+      try {
+        if (a.action === "log") return listOps({ limit: 15 }).map((o) => `操作 #${o.id} ${localStamp(o.ts).slice(5, 16)} ${o.summary}${o.undone_at ? "（已撤销）" : ""}`).join("\n") || "（还没有）";
+        if (a.action === "undo") { if (!a.op) return "error: op required"; undoOp(a.op, "owner@chat"); return `操作 #${a.op} 撤销了`; }
+        if (a.action === "detach") { if (!ids[0]) return "error: ids required"; return `拆出来了（操作 #${detachMatter(ids[0], x)}，可撤销）`; }
+        if (!ids.length) return "error: ids required";
+        if (a.action === "main") { if (!a.title) return "error: title required"; const r = createMainline(a.title, ids, x); return `主线 #${r.id} 起好了（操作 #${r.op}，可撤销）`; }
+        if (!a.target) return "error: target required";
+        return `${a.action === "merge" ? "合并" : "挂"}好了（操作 #${a.action === "merge" ? mergeMatters(ids, a.target, x) : attachMatters(ids, a.target, x)}，可撤销）`;
+      } catch (e: any) { return `error: ${e.message}`; }
+    },
+  }),
+  def({
+    name: "matter_review", level: "L1", for: ["owner"],
+    description: "The daily review's suggestions about matters (§15.14). list: today's and the queue. act: apply the option he just chose for suggestion id (option = one of the listed codes, e.g. attach / merge / close / drop / ok). undo: take back his decision on id. Only act on what he said; never choose for him.",
+    schema: z.object({ action: z.enum(["list", "act", "undo"]).default("list"), id: z.number().optional(), option: z.string().max(20).optional() }),
+    async exec(a) {
+      try {
+        if (a.action === "list") {
+          const q = reviewQueue(10), line = (r: ReturnType<typeof reviewQueue>["queue"][number]) => `#${r.id} [${r.kind_zh}] ${r.text}${r.why ? `（${r.why}）` : ""}${r.options.length ? ` 选项：${r.options.map((o) => `${o.a}=${o.label}`).join("、")}` : ` → ${r.done_zh ?? r.status}`}`;
+          return `今天：\n${q.today.map(line).join("\n") || "（没有）"}\n\n排队 ${q.waiting} 条，歇着 ${q.resting} 条：\n${q.queue.map(line).join("\n") || "（没有）"}`;
+        }
+        if (!a.id) return "error: id required";
+        if (a.action === "undo") { undoReview(a.id, "owner@chat"); return `撤销了，这条一个月内不再问`; }
+        if (!a.option) return "error: option required";
+        const r = actOnReview(a.id, a.option, "owner@chat");
+        return "already" in r ? `这条已经处理过了（${r.already}）` : `好了${r.op ? `（操作 #${r.op}，可撤销）` : "，不再问"}`;
+      } catch (e: any) { return `error: ${e.message}`; }
+    },
+  }),
   def({
     name: "matter_close", level: "L1", for: ["owner"], description: "Mark a matter as closing (its close condition was met; 复盘 comes later) or dropped.",
     schema: z.object({ id: z.number(), status: z.enum(["closing", "dropped"]), note: z.string().max(1000).optional() }),

@@ -6,11 +6,12 @@
 // jobs with quota:false (the morning report itself, reviews and outlooks later) never count.
 
 import { all, one, run, kvGet, kvSet } from "./db.ts";
-import { quietConf, log } from "./config.ts";
+import { matterReviewConf, quietConf, log } from "./config.ts";
 import { localNow, localStamp } from "./memory.ts";
 import { dreamDiffText } from "./dream.ts";
 import { morningOutlookText } from "./reflect.ts";
 import { eventsMorningText, takeHeldNotices } from "./events.ts";
+import { MAIN_OPEN, OPEN_MATTER } from "./matters.ts";
 
 const day = () => localStamp().slice(0, 10);
 export const proactiveToday = () => Number(kvGet(`proactive.${day()}`) ?? 0);
@@ -45,7 +46,7 @@ export function morningText(): string {
   const tasks = all("SELECT id, status, goal, question FROM tasks WHERE status NOT IN ('done','failed','cancelled') ORDER BY ts");
   const done = all("SELECT id, status, goal FROM tasks WHERE ended>=? AND status IN ('done','failed') ORDER BY ended", now - 86400_000);
   const fus = all("SELECT id, due_at, note FROM timers WHERE kind='followup' AND status='pending' AND due_at < ? ORDER BY due_at", startOfDay + 86400_000);
-  const matters = all("SELECT id, title, status FROM matters WHERE status IN ('open','active','closing') ORDER BY id");
+  const matters = all(`SELECT id, title, status, (SELECT COUNT(*) FROM matters k WHERE k.parent_id=matters.id AND k.${OPEN_MATTER}) kids FROM matters WHERE ${MAIN_OPEN} ORDER BY id`);
   const held: { ts: number; text: string }[] = [...JSON.parse(kvGet("quiet.held") ?? "[]"), ...takeHeldNotices()].slice(-30);
   kvSet("quiet.held", "[]");
   const y = localStamp(now - 86400_000).slice(0, 10);
@@ -64,7 +65,7 @@ ${list(done.map((t) => `#${t.id} ${t.status === "done" ? "完成" : "失败"}：
 ## 今天到点的提醒
 ${list(fus.map((f) => `${localStamp(f.due_at).slice(11)} ${f.note}`))}
 ## 进行中的事
-${list(matters.map((m) => `#${m.id} ${m.title}（${m.status}）`))}
+${list(matters.map((m) => `#${m.id} ${m.title}（${m.status}${m.kids ? `，下面 ${m.kids} 件子事` : ""}）`))}
 ${eventsMorningText(now - 86400_000)}
 ## 昨晚记忆整理
 ${dream ? "有改动，明细已发管理群（可以在那里回滚）" : "没有改动"}
@@ -75,5 +76,5 @@ $${cost.toFixed(2)}
 
 ${morningOutlookText()}
 
-写法：简短，先说要紧的（要主人拍板的、等他回的、今天到点的）；按事说，不按群说；没有就一两句问候带过，不要硬凑。反复出现的话头只提一句「要不要起个局」，他说要再 matter_open(topic=…)。只用上面的事实，不编造。压下来的消息挑仍然要紧的说。今日留意放最后，最多 1 条，没有就不写。`;
+写法：简短，先说要紧的（要主人拍板的、等他回的、今天到点的）；按事说，不按群说；没有就一两句问候带过，不要硬凑。${matterReviewConf().on ? "「事的整理」最多提一句，不要复述内容，也不要替他决定。" : "反复出现的话头只提一句「要不要起个局」，他说要再 matter_open(topic=…)。"}只用上面的事实，不编造。压下来的消息挑仍然要紧的说。今日留意放最后，最多 1 条，没有就不写。`;
 }

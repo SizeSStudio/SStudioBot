@@ -78,6 +78,14 @@ export const gateConf = (): GateConfig => ({ ...GATE_DEFAULTS, ...cached(join(P.
 export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean }
 export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"), (t) => parse(t) ?? {}, {});
 
+/** the 每日整理 job (§15.14), whatever it is called in jobs.yaml; its knobs live on the job line */
+export const matterReviewConf = () => {
+  const j = Object.values(jobsConf()).find((x) => x?.do === "matter_review") as (JobSpec & Record<string, unknown>) | undefined;
+  const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : d);
+  return { on: !!j, limit: n(j?.limit, 5), first_limit: n(j?.first_limit, 12), stale_days: n(j?.stale_days, 30), ask_days: n(j?.ask_days, 7),
+    tier: (TIERS as string[]).includes(String(j?.tier)) ? (j!.tier as Tier) : undefined };
+};
+
 /** knobs in gate.yaml: proactive_daily_cap (§9.3), daily_budget_usd (§9.2; falls back to models.yaml budgets.daily_cost) */
 export const quietConf = () => {
   const g = cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {} as any);

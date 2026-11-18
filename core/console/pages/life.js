@@ -99,33 +99,70 @@ const EV_LEVEL = { fyi: "知道就行", watch: "要盯", reply: "要你回", dec
 const EV_KIND = { ask: "找他", decision: "定了", commitment: "答应", progress: "进展", risk: "风险", deadline: "时间点", info: "信息" };
 const EV_DONE = { done: "处理了", dropped: "不用了" };
 PAGES.matters = async (body) => {
-  const [ms, tps] = await Promise.all([api("/life/matters"), api("/life/topics")]);
+  const [ms, tps, rv] = await Promise.all([api("/life/matters"), api("/life/topics"), api("/life/review")]);
   st.openMatters = ms.filter((m) => OPEN_M.includes(m.status));
-  const card = (m) => row(`#${m.id} ${m.title ?? "（没标题）"}`, [st.meta.domains[m.domain] ?? m.domain, m.opened_at && `${mdhm(m.opened_at)} 开始`, m.closed_at && `${mdhm(m.closed_at)} 收`, m.close_condition && `收的条件：${m.close_condition}`,
+  const openIds = new Set(st.openMatters.map((m) => m.id));
+  // 主线 are what he follows; 子事 fold under them, and one whose 主线 has closed stands on its own
+  st.mains = st.openMatters.filter((m) => !m.parent_id || !openIds.has(m.parent_id));
+  const kidsOf = (id) => st.openMatters.filter((m) => m.parent_id === id);
+  const card = (m) => row(`#${m.id} ${m.title ?? "（没标题）"}`, [st.meta.domains[m.domain] ?? m.domain, m.merged_into && `并进了 #${m.merged_into}`, m.opened_at && `${mdhm(m.opened_at)} 开始`, m.closed_at && `${mdhm(m.closed_at)} 收`, m.close_condition && `收的条件：${m.close_condition}`,
     m.asks && `${m.asks} 条等你`, m.events && `${m.events} 条事件`, m.last_event && `最近 ${rel(m.last_event)}`, m.keys?.length && `又叫 ${m.keys.slice(0, 3).join("、")}`,
     m.tasks && `${m.tasks} 个任务`, m.followups && `${m.followups} 个待跟进`, m.readings && `${m.readings} 次解读`].filter(Boolean).join(" · "), pill(m.status), `data-act="matter" data-id="${m.id}"`);
   const topic = (t) => row(t.topic, [`${t.n} 条`, t.where.length && `在 ${t.where.join("、")}`, t.open && `${t.open} 条等你`, `最近 ${rel(t.last)}`].filter(Boolean).join(" · "), "", `data-act="topic" data-t="${esc(t.topic)}"`);
-  const open = st.openMatters, closed = ms.filter((m) => !OPEN_M.includes(m.status));
-  body.innerHTML = (open.length ? `<section><h2>在办 <span class="sub">${open.length}</span></h2><div class="list">${open.map(card).join("")}</div></section>` : "") +
+  const main = (m) => { const k = kidsOf(m.id); return card(m) + (k.length ? `<details class="kids"><summary class="sub">下面 ${k.length} 件子事</summary><div class="list">${k.map(card).join("")}</div></details>` : ""); };
+  const open = st.mains, subs = st.openMatters.length - open.length, closed = ms.filter((m) => !OPEN_M.includes(m.status));
+  body.innerHTML = reviewHtml(rv) + (open.length ? `<section><h2>在办 <span class="sub">${open.length} 条主线${subs ? `，${subs} 件子事` : ""}</span></h2><div class="list">${open.map(main).join("")}</div></section>` : "") +
     (tps.length ? `<section><h2>话头 <span class="sub">近两周反复说到、还没挂到事上的</span></h2><div class="list">${tps.map(topic).join("")}</div></section>` : "") +
-    (closed.length ? `<section><h2>收了的</h2><div class="list">${closed.map(card).join("")}</div></section>` : "") || empty("还没有「事」。对话里说「开一件事」，或它觉得一件事要跟一阵时会提议；也可以从「导入」把以前的事搬进来。");
+    (closed.length ? `<section><h2>收了的</h2><div class="list">${closed.map(card).join("")}</div></section>` : "") + opsHtml(rv.ops) || empty("还没有「事」。对话里说「开一件事」，或它觉得一件事要跟一阵时会提议；也可以从「导入」把以前的事搬进来。");
 };
+// 每日整理 (§15.14): suggestions only; a button here is the same as the one on the card
+const reviewItem = (r) => `<div class="card"><div class="inline wrap"><span class="tag">${esc(r.kind_zh)}</span><span>${esc(r.text)}</span></div>${r.why ? `<div class="sub">${esc(r.why)}</div>` : ""}
+  <div class="actions">${r.options.length ? r.options.map((o, i) => `<button type="button" class="btn small${i ? "" : " primary"}" data-act="mrdo" data-id="${r.id}" data-a="${esc(o.a)}">${esc(o.label)}</button>`).join("")
+    : r.status === "acted" || r.status === "ok" ? `<span class="sub">✓ ${esc(r.done_zh ?? "好")}</span><button type="button" class="btn small" data-act="mrdo" data-id="${r.id}" data-a="undo">撤销</button>` : ""}</div></div>`;
+function reviewHtml(rv) {
+  if (!rv.today.length && !rv.queue.length) return "";
+  const rest = rv.queue.filter((r) => !rv.today.some((t) => t.id === r.id));
+  return `<section><h2>今天的整理 <span class="sub">点了才改，改的都能撤销</span></h2>${rv.today.map(reviewItem).join("") || `<div class="sub">今天没有挑出来的。</div>`}
+    ${rest.length ? `<details class="kids"><summary class="sub">还有 ${rv.waiting} 条在排队${rv.resting ? `，${rv.resting} 条先放着` : ""}</summary>${rest.map(reviewItem).join("")}</details>` : ""}</section>`;
+}
+const opLine = (o) => `<li class="tl-item"><time class="sub tabular">${mdhm(o.ts)}</time><div class="main"><div class="text">${esc(o.summary ?? o.kind)}</div>
+  <div class="inline wrap"><span class="sub">${esc([o.by, o.why].filter(Boolean).join(" · "))}${o.undone_at ? " · 已撤销" : ""}</span>${o.undone_at ? "" : `<button type="button" class="btn small" data-act="opundo" data-id="${o.id}">撤销</button>`}</div></div></li>`;
+const opsHtml = (ops) => ops.length ? `<section><details class="kids"><summary><b>改动记录</b> <span class="sub">${ops.length}</span></summary><ol class="tl">${ops.map(opLine).join("")}</ol></details></section>` : "";
+const refreshMatters = () => { if (st.tab === "matters") return PAGES.matters($("#lifebody")); };
+ACTS.mrdo = (el) => busy(el, "…", async () => { await api(`/life/review/${el.dataset.id}`, { method: "POST", body: { a: el.dataset.a } }); toast(el.dataset.a === "undo" ? "撤销了，一个月内不再问这条" : "好了"); await refreshMatters(); });
+ACTS.opundo = (el) => busy(el, "…", async () => { await api(`/life/op/${el.dataset.id}/undo`, { method: "POST", body: {} }); toast("撤销了"); await refreshMatters(); });
+ACTS.regroup = (el) => busy(el, "…", async () => {
+  const id = el.dataset.id, action = el.dataset.how, target = action === "detach" ? undefined : Number($("#mrtarget")?.value);
+  if (action !== "detach" && !target) return toast("先选一条主线");
+  if (action === "merge" && !confirm("合并是把它当成重复的事并进去，事件和关键词都会搬过去。可以撤销。继续？")) return;
+  await api(`/life/matter/${id}/regroup`, { method: "POST", body: { action, target } });
+  toast("好了，可以在改动记录里撤销"); await refreshMatters(); await ACTS.matter({ dataset: { id: action === "merge" ? target : id } });
+});
 const evItem = (e) => `<li class="tl-item"><time class="sub tabular">${mdhm(e.ts)}</time><div class="main"><div class="inline wrap"><span class="tag">${esc(EV_LEVEL[e.level] ?? e.level)}</span><span class="tag">${esc(EV_KIND[e.kind] ?? e.kind)}</span>
   <span class="sub">${esc([e.place, e.actor].filter(Boolean).join(" · "))}${EV_DONE[e.state] ? ` · ${EV_DONE[e.state]}` : ""}</span>${e.link ? `<a class="tag link" href="${esc(e.link)}" target="_blank" rel="noopener">原处</a>` : ""}</div><div class="text">${esc(e.summary)}</div></div></li>`;
 ACTS.matter = async (el) => {
   const box = openDrawer(`事 #${el.dataset.id}`);
   const m = await api(`/life/matter/${el.dataset.id}`);
   const asks = m.events.filter((e) => e.state === "open"), rest = m.events.filter((e) => e.state !== "open");
+  st.mains ??= (await api("/life/matters")).filter((x) => OPEN_M.includes(x.status) && !x.parent_id);
+  const targets = OPEN_M.includes(m.status) ? st.mains.filter((x) => x.id !== m.id && x.domain === m.domain) : [];
+  const shape = `${m.merged_into ? `<div class="sub">并进了 <button type="button" class="tag link" data-act="matter" data-id="${m.merged_into}">事 #${m.merged_into}</button>，要拆回来在改动记录里撤销。</div>` : ""}
+    ${m.parent ? `<div class="inline wrap"><span class="sub">属于主线</span><button type="button" class="tag link" data-act="matter" data-id="${m.parent.id}">#${m.parent.id} ${esc(m.parent.title ?? "")}</button><button type="button" class="btn small" data-act="regroup" data-how="detach" data-id="${m.id}">拆出来</button></div>` : ""}
+    ${m.children.length ? `<div class="inline wrap"><span class="sub">子事</span>${m.children.map((k) => `<button type="button" class="tag link" data-act="matter" data-id="${k.id}">#${k.id} ${esc(k.title ?? "")}</button>`).join("")}</div>` : ""}
+    ${m.merged.length ? `<div class="sub">并进来的：${m.merged.map((k) => `#${k.id} ${esc(k.title ?? "")}`).join("、")}</div>` : ""}
+    ${targets.length ? `<div class="inline wrap"><label class="sr" for="mrtarget">主线</label><select id="mrtarget"><option value="">选一条主线…</option>${targets.map((x) => `<option value="${x.id}">#${x.id} ${esc(x.title ?? "")}</option>`).join("")}</select>
+      <button type="button" class="btn small" data-act="regroup" data-how="attach" data-id="${m.id}">挂到它下面</button><button type="button" class="btn small" data-act="regroup" data-how="merge" data-id="${m.id}">是重复的，合并进去</button></div>` : ""}`;
   box.innerHTML = `
     <div class="card"><div class="inline wrap">${pill(m.status)}<b>${esc(m.title ?? "")}</b>${domainTag(m.domain)}</div>
       <div class="sub">${m.opened_at ? `${mdhm(m.opened_at)} 开始` : ""}${m.closed_at ? ` · ${mdhm(m.closed_at)} 收` : ""}${m.close_condition ? ` · 收的条件：${esc(m.close_condition)}` : ""}</div>
-      ${m.keys.length ? `<div class="sub">又叫：${esc(m.keys.join("、"))}（群里、私聊、信息源说到这些词的，会挂到这件事上）</div>` : ""}</div>
+      ${m.keys.length ? `<div class="sub">又叫：${esc(m.keys.join("、"))}（群里、私聊、信息源说到这些词的，会挂到这件事上）</div>` : ""}${shape}</div>
     ${asks.length ? `<section data-matter><h3>等你 <span class="sub">${asks.length}</span></h3>${asks.map((e) => eventCard(e, { inMatter: true })).join("")}</section>` : ""}
     ${m.text ? `<section><h3>这件事的页面</h3><div class="card">${mdText(m.text)}</div></section>` : ""}
     ${m.tasks.length ? `<section><h3>任务</h3><div class="list">${m.tasks.map((t) => row(`#${t.id} ${t.goal}`, mdhm(t.ts), pill(t.status), `data-act="task" data-id="${esc(t.id)}"`)).join("")}</div></section>` : ""}
     ${m.followups.length ? `<section><h3>跟进</h3><div class="list">${m.followups.map((t) => row(t.note ?? "（跟进）", mdhm(t.due_at), pill(t.status))).join("")}</div></section>` : ""}
     <section><h3>事件 <span class="sub">${rest.length}</span></h3>${rest.length ? `<ol class="tl">${rest.slice().reverse().map(evItem).join("")}</ol>` : empty("（还没有。群里、私聊、信息源里说到这件事时会挂上来。）")}</section>
-    <section><h3>时间线</h3>${m.timeline.length ? `<ol class="tl">${m.timeline.slice().reverse().map((r) => `<li class="tl-item"><time class="sub tabular">${mdhm(r.ts)}</time><div class="main"><span class="tag">${esc(KIND_ZH[r.kind] ?? r.kind)}</span><div class="text">${esc(r.text)}</div></div></li>`).join("")}</ol>` : empty("（还没有）")}</section>`;
+    <section><h3>时间线</h3>${m.timeline.length ? `<ol class="tl">${m.timeline.slice().reverse().map((r) => `<li class="tl-item"><time class="sub tabular">${mdhm(r.ts)}</time><div class="main"><span class="tag">${esc(KIND_ZH[r.kind] ?? r.kind)}</span><div class="text">${esc(r.text)}</div></div></li>`).join("")}</ol>` : empty("（还没有）")}</section>
+    ${opsHtml(m.ops)}`;
 };
 ACTS.topic = async (el) => {
   const t = el.dataset.t;
@@ -196,14 +233,14 @@ const impRow = (r) => {
     `<span class="pill ${st_[0]}">${st_[1]}</span>${r.status === "applied" ? ` <button type="button" class="btn small" data-act="impundo" data-id="${r.id}">撤销</button>` : ""}`);
 };
 function planHtml(p) {
-  const { plan, doc } = p;
+  const { plan, doc } = p, shape = plan.shape;
   const people = plan.people.map((x) => `<li>${x.exists ? "补充" : "新建"} <b>${esc(x.name)}</b>${x.relation ? ` <span class="sub">${esc(x.relation)}</span>` : ""}</li>`).join("");
-  const matters = plan.matters.map((m) => `<li>${m.merge ? `并入 #${m.merge.id} ${esc(m.merge.title ?? "")}` : "新建"}：<b>${esc(m.title)}</b> <span class="sub">${esc(st.meta.domains[m.domain] ?? m.domain ?? "")} · ${esc(m.status)} · ${m.events} 条事件</span></li>`).join("");
+  const matters = plan.matters.map((m) => `<li>${m.merge ? `并入 #${m.merge.id} ${esc(m.merge.title ?? "")}` : m.parent ? "新建子事" : "新建"}：<b>${esc(m.title)}</b> <span class="sub">${esc(st.meta.domains[m.domain] ?? m.domain ?? "")} · ${esc(m.status)} · ${m.events} 条事件</span></li>`).join("");
   const evs = doc.events.slice(0, 40).map((e) => `<li><span class="sub tabular">${esc(new Date(e.ts).toISOString().slice(0, 10))}</span> <span class="tag">${esc(EV_LEVEL[e.level] ?? e.level)}</span> ${esc(e.text)}${e.state === "open" ? " <span class=\"sub\">（还在等你）</span>" : ""}</li>`).join("");
   return `<section class="card" id="impplancard"><h3>预览 <span class="sub">${p.kind === "json" ? "按导入格式读的" : "从原始材料整理出来的，看一眼对不对"} · 来自「${esc(p.from)}」</span></h3>
     ${p.already ? `<div class="err">这份材料已经导入过（#${p.already}）。要重来先撤销那次。</div>` : ""}
     <h4>人 <span class="sub">${plan.people.length}</span></h4>${people ? `<ul class="notes">${people}</ul>` : `<div class="sub">（无）</div>`}
-    <h4>事 <span class="sub">${plan.matters.length}</span></h4>${matters ? `<ul class="notes">${matters}</ul>` : `<div class="sub">（无）</div>`}
+    <h4>事 <span class="sub">会有 ${shape.mains} 条在办的主线${shape.subs ? `、${shape.subs} 件子事` : ""}，一共 ${shape.total} 件${shape.closed ? `（${shape.closed} 件已收）` : ""}</span></h4>${shape.warn.map((w) => `<div class="err">${esc(w)}</div>`).join("")}${matters ? `<ul class="notes">${matters}</ul>` : `<div class="sub">（无）</div>`}
     <h4>事件 <span class="sub">${plan.events.n} 条，还在等你的 ${plan.events.open} 条${plan.events.loose ? `，没挂到事上的 ${plan.events.loose} 条` : ""}</span></h4>${evs ? `<ul class="notes">${evs}</ul>${doc.events.length > 40 ? `<div class="sub">……只列前 40 条</div>` : ""}` : ""}
     <div class="actions">${p.already ? "" : `<button type="button" class="btn primary" data-act="impapply" data-sha="${esc(p.sha)}">导入</button>`}<button type="button" class="btn" data-act="impcancel">算了</button></div></section>`;
 }

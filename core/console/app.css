@@ -387,3 +387,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); overflow: hidden; overscroll-beh
 .graph svg.dim .gn.lit text { fill: var(--ink); }
 .linkish { background: none; border: 0; padding: 0 0 0 4px; color: var(--accent); font: inherit; cursor: pointer; }
 @media (forced-colors: active) { .graph .gn { fill: CanvasText; } .graph .ge { stroke: CanvasText; } }
+
+/* 生活 › 事: 子事 and the queue fold under what he follows (§15.3) */
+details.kids { margin: 2px 0 8px 12px; }
+details.kids > .list, details.kids > .card { margin-top: 6px; }

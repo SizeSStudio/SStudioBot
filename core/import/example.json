@@ -35,6 +35,16 @@
       "next": ["2026-11-20 前拿到性能报告"]
     },
     {
+      "key": "m1a",
+      "title": "灰度放量",
+      "parent": "m1",
+      "domain": "work",
+      "status": "active",
+      "facts": ["由王一的小组单独跟，每天看一次指标"],
+      "keys": ["灰度"],
+      "opened": "2026-11-10"
+    },
+    {
       "key": "m2",
       "title": "搬家",
       "domain": "personal",
@@ -47,6 +57,8 @@
   "events": [
     { "matter": "m1", "ts": "2026-11-10 15:20", "kind": "decision", "level": "fyi", "who": "王一", "where": "发布评审群", "text": "王一：定了先灰度一周", "state": "done" },
     { "matter": "m1", "ts": "2026-11-16 10:05", "kind": "ask", "level": "decide", "who": "李二", "where": "李二 私聊", "text": "李二问能不能把发布推到下个月，要他拍板", "state": "open" },
+    { "matter": "m1", "ts": "2026-11-05", "kind": "progress", "level": "fyi", "who": "王一", "where": "发布评审群", "text": "里程碑：测试环境全部通过", "state": "done" },
+    { "matter": "m1a", "ts": "2026-11-12", "kind": "progress", "level": "watch", "who": "王一", "where": "发布评审群", "text": "灰度放到 5%，错误率正常", "state": "done" },
     { "matter": "m2", "ts": "2026-10-30", "kind": "progress", "level": "fyi", "text": "搬完了", "state": "done" }
   ]
 }

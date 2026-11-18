@@ -476,6 +476,10 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
       if (p === "/life/note" && method === "POST") { const b = await body(req); return json(200, V.lifeNote(String(b.text ?? ""), b.domain ? String(b.domain) : undefined)); }
       if (p === "/life/matters") return json(200, V.matters());
       if ((m = /^\/life\/matter\/(\d+)$/.exec(p))) return json(200, V.matter(Number(m[1])));
+      if ((m = /^\/life\/matter\/(\d+)\/regroup$/.exec(p)) && method === "POST") return json(200, V.matterRegroup(Number(m[1]), await body(req)));
+      if (p === "/life/review") return json(200, V.matterReview());
+      if ((m = /^\/life\/review\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.reviewAct(Number(m[1]), String(b.a ?? ""))); }
+      if ((m = /^\/life\/op\/(\d+)\/undo$/.exec(p)) && method === "POST") return json(200, V.opUndo(Number(m[1])));
       if (p === "/life/topics") return json(200, V.topics());
       if (p === "/life/topic") return json(200, V.topicEvents(String(url.searchParams.get("t") ?? "")));
       if (p === "/life/topic/link" && method === "POST") { const b = await body(req); return json(200, V.topicLink(String(b.topic ?? ""), Number(b.matter_id))); }

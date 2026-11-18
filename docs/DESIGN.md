@@ -1,8 +1,12 @@
-# SStudioBot 设计文档（v0.16 草案）
+# SStudioBot 设计文档（v0.17 草案）
 
 > 状态：M0–M8 已在作者自己的实例上跑起来，处于打磨期。进度见 §13。
 > 一句话：**一个常驻的主 agent，就是"另一个我"。飞书既是工作入口，也是所有审批和管理的控制台；微信用一个专属号负责私人场景。记忆打通，所有对外出口都要我批准。红尘就是道场：月、周、日有前瞻，事有起收，回头能顺着时间线回看，看法越用越贴。**
 
+### v0.17 变更（控制台公网入口，2026-11-18 主人定）
+- **控制台加第二个入口（§10.1）**：tailscale serve 在主人的网络下经常卡，加一个公网 443 入口，防护照主人另一个管理面的做法：nginx + Let's Encrypt，Cloudflare 只做 DNS（灰云），一个密码（PBKDF2 哈希存在 `secrets.env`），登录后发 12 小时的 HMAC 签名会话 cookie（`__Host-`、Secure、HttpOnly、SameSite=Strict），登录要本站 Origin，按 IP 和总量限速，登录和限流都通知管理群。地址写在 `config/console.yaml` 的 `web.origin`，不写就是关的。tailscale 入口保留，行为不变。
+- **两个入口互不相信对方的身份证明**：各听各的 unix socket。tailnet 的只认 `Tailscale-User-Login`，nginx 连不上它；公网的只认会话 cookie，`Tailscale-User-Login` 在这里一律不看。
+- **公网入口上写操作多一道 Origin 校验**；密码和会话密钥不能从控制台改，只能在服务器上跑 `console-passwd`。
 ### v0.16 变更（注意力窗口，2026-11-18）
 - **分拣判定要提醒的，先等一个窗口**（默认 30 分钟，`gate.yaml attention`，可按地方调，0 = 不等）。窗口内我自己回应了，这条安静结束；到点还没回应才提醒（§4.3）。
 - **「我回应了」收成一条规则**（§17.2）：直接回复、同一话题里说话算；群里一句没指向的话只算紧跟在问题后面的那一件；拿不准就不关，宁可多提醒。
@@ -221,7 +225,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
   - 每个放在一个 systemd scope 里，`MemoryMax=1G`，超了只杀这个 worker。
   - 核心设 `OOMScoreAdjust=-500`。
 - **重构建不在 VPS 上跑**：比如 gradle，单次就要 2～4 GB。交给 Mac，或者提 PR 让 CI 跑。
-- **控制台**：走 `tailscale serve`，不对公网开端口。
+- **控制台**：`tailscale serve`，加一个公网 443 入口（和机器上已有的 nginx 共用，密码 + 会话 cookie，§10.1）。
 - **目标**：空闲约 300 MB（核心约 150～250 MB）；2 个对话 run 加 1 个 worker 构建时，峰值 ≤ 2.3 GB。
 
 **放在哪**（全部在 4T 数据盘 `/srv/data`，xfs）
@@ -809,7 +813,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
   - 残余风险：允许的域名可以被用来外传（domain fronting），所以白名单按任务给、默认空；给 worker 的上下文只放任务需要的东西。
 - **worker 的内存**：每个 worker 一个 systemd scope，`MemoryMax=1G`、`MemorySwapMax=256M`、`TasksMax=256`、`OOMPolicy=continue`。CLI 的 `oom_score_adj` 是 -900，sandbox 里的命令经 `/usr/local/lib/sbot/bin/bwrap` 垫片设成 +800。实测 1.5G 的分配只杀掉那个命令，CLI 正常收尾。
 - **Ubuntu 的 AppArmor**：系统自带的 `bwrap-userns-restrict` 不允许 bwrap 里再建 user namespace，而 Claude Code 的 `apply-seccomp` 需要它，报错 `write /proc/self/setgroups … Permission denied`。处理办法：停用这个 profile，换成官方文档给的 `bwrap` profile（`flags=(unconfined) { userns, }`）。这会让本机所有用户的 bwrap 都能建 userns，在这台机器上可以接受。
-- **控制台**：监听 unix socket（属主 `sbot`，目录 700），由 `tailscale serve --https=8444` 代理进来（P0 已验证），并且仍然校验 `Tailscale-User-Login`。
+- **控制台**：两个 unix socket。`/run/sbot/console.sock`（目录 700，属主 `sbot`）由 `tailscale serve --https=8444` 代理进来（P0 已验证），校验 `Tailscale-User-Login`；`/run/sbot-web/console.sock`（目录 2750 `sbot:sbot-web`，只有 nginx 的 www-data 在组里）由公网 nginx 代理进来，只认密码登录后的会话 cookie（§10.1）。
 - **主 agent / Triage / expert** 跑在 `sbot` 用户下，但它们没有 shell，也没有读写文件的工具，只能调用我们的 MCP 工具，而这些工具在核心代码里做了校验。
 
 ---
@@ -942,16 +946,25 @@ M0～M2 不做控制台，用飞书的 `/model`、`/group` 卡片，加上直接
 
 ### 10.1 形态与访问
 ```
-手机 / 电脑（装了 Tailscale）
-   │  https://<host>.<tailnet>.ts.net:8444
-   ▼
-tailscale serve --https=8444（HTTPS + 反向代理 + 注入身份头 Tailscale-User-Login）
-   ▼
-核心进程：控制台监听 unix socket /run/sbot/console.sock（目录 700、属主 sbot）
-   ├─ /api/*   配置读写、探针、状态（SSE）
-   └─ /*       前端静态文件
+手机 / 电脑（装了 Tailscale）                       任何浏览器
+   │  https://<host>.<tailnet>.ts.net:8444            │  https://<console.web.origin>（Cloudflare 只做 DNS，灰云）
+   ▼                                                   ▼
+tailscale serve --https=8444                         nginx :443（Let's Encrypt、HTTP/2、登录限速）
+（注入身份头 Tailscale-User-Login）                   （去掉 Tailscale-* / Authorization，补 X-Real-IP）
+   ▼                                                   ▼
+/run/sbot/console.sock（目录 700 sbot）              /run/sbot-web/console.sock（目录 2750 sbot:sbot-web）
+   只认 Tailscale-User-Login ∈ owners                   只认会话 cookie（密码登录发的）
+   └──────────────── 同一个核心进程、同一套 /api/* 和前端 ────────────────┘
 ```
-- 后端校验 `Tailscale-User-Login` 等于 owner，不是就返回 403。
+- **tailnet 入口**：后端校验 `Tailscale-User-Login` 在 `console.yaml owners` 里，不是就返回 403。
+- **公网入口**（2026-11-18 加，因为 tailscale serve 在主人那边常卡；防护照主人另一个管理面）：
+  - 地址在 `config/console.yaml` 的 `web: { origin: https://… }`，主机名是实例数据，不进仓库。没写 origin、或者服务器上没设密码，这个入口对什么请求都回 404。
+  - 一个密码，`secrets.env` 里只存 `CONSOLE_WEB_PASSWORD_HASH`（PBKDF2-SHA256，30 万轮）和会话密钥 `CONSOLE_WEB_SESSION_KEY`。只能在服务器上用 `console-passwd` 设；重设密码或 `--logout-all` 会换会话密钥，所有会话立刻失效。控制台的密钥页拒绝写这两个名字。
+  - 登录（`POST /_auth`）要本站 `Origin`、表单提交；失败按 IP 每 10 分钟 10 次、总共 30 次限流（nginx 也按 IP 每分钟 10 次）。成功和触发限流都在管理群通知（IP 打码）。
+  - 会话 cookie `__Host-sbot_console`：`时间戳.随机数.HMAC`，12 小时，Secure、HttpOnly、SameSite=Strict、不带 Domain。
+  - 写操作除了原有的 `x-sbot-console: 1`，还要 `Origin` 等于 `web.origin`。为此这个入口的 `Referrer-Policy` 是 `same-origin`（`no-referrer` 下浏览器同源写请求会带 `Origin: null`）；tailnet 入口仍是 `no-referrer`。
+- **为什么两个 socket**：tailscaled 会换掉客户端伪造的 `Tailscale-User-Login`，nginx 不会。两个入口如果共用一个 socket，从公网进来的人自己塞这个头就能过。所以 nginx（www-data）连不上 tailnet 的 socket（目录 700），公网 socket 上完全不看这个头；反过来公网的 cookie 在 tailnet 入口也不算数。www-data 下别的进程能连公网 socket，但那里除了 cookie 什么都不信，所以没用；X-Real-IP 它可以伪造，因此限流另有一个总量上限。
+- **部署**：`deploy/console-web/`（tmpfiles 建 `/run/sbot-web`、sbot-core 的 drop-in 放开这个目录的写权限、nginx 站点模板、`install.sh <host>` 申请证书并启用）。核心启动时这个目录存在才开公网 socket。
 - P0 实测（2026-11-16，tailscale 1.104.5）：
   - 控制台**单独用一个端口**（实例里是 8444），不和本机已有的 serve 配置抢路径，也不改它们。
   - 经 serve 进来的请求带 `Tailscale-User-Login` / `Tailscale-User-Name` / `X-Forwarded-For`；客户端自己塞的同名头会被换掉，伪造不了。
@@ -1249,7 +1262,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 13.4 M3b 进度（2026-11-17）
 
-控制台：`https://<host>.<tailnet>.ts.net:8444`（只在 tailnet 内可达）。`tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`。
+控制台：`https://<host>.<tailnet>.ts.net:8444`（只在 tailnet 内可达）。`tailscale serve --bg --https=8444 unix:/run/sbot/console.sock`。2026-11-18 加公网入口（§10.1）：`web.origin` 指向的 443，经 nginx 到 `/run/sbot-web/console.sock`，密码 + 会话 cookie。
 
 - [x] **入口与鉴权**：`node:http` 听 `/run/sbot/console.sock`（目录 0700 sbot，由 systemd `RuntimeDirectory` 建，只有 root/tailscaled 能连）。每个请求必须带 `Tailscale-User-Login`，并且在 `config/console.yaml owners` 里，否则 403。非 GET 还要带 `x-sbot-console: 1`（防 CSRF）。CSP `default-src 'self'`，不用内联脚本。本地开发用 `SBOT_CONSOLE_PORT` 听 127.0.0.1
 - [x] **页面**：状态（今日花费/预算、审批、在跑的、连接与健康、定时任务可「现在跑」、记忆）· 流转（按天分组：对话 run、群消息、任务、审批、事件，点开看每一步）· 用量（7/14/30/90 天，按档堆叠日花费 + 预算线、按小时、按请求方、按模型，可切表格）· 模型（三档换模型、预算、端点、密钥）· 群（搜索、筛选，always / @我 / 摘要 / 关闭 四档切换）· 记忆（改动 diff + 撤销、页面浏览、搜索）· 配置（8 个 yaml 在线编辑 + 历史）
@@ -1259,6 +1272,8 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 顺手修：observer 的 `+messages-search` 时间不能带毫秒（99992402），改成整秒 `+00:00`
 - [x] 主人 在「模型 → 密钥」填 `FEISHU_APP_SECRET`
 - [x] 端口：控制台用 8444；客户端如果开了 TUN 类代理，要绕过 `*.ts.net`、`100.64.0.0/10`
+- [x] **公网入口**（v0.17）：两个入口各一个 socket、各信各的身份证明；`core/test/console-web-smoke.ts` 55 项全过（公网入口带伪造的 `Tailscale-User-Login`、没 cookie、mac 错、别的 key、过期、未来时间都被拒；登录要本站 Origin，按 IP 和总量限流；写操作要 cookie + Origin + CSRF 头；密码哈希和会话密钥不能从控制台写；没 `web.origin` 时 404；tailnet 入口行为不变）
+- [ ] 公网入口上线：等主人合并后在服务器上跑 `deploy/console-web/install.sh`、设密码、写 `web.origin`
 
 ### 13.5 M3c 进度（2026-11-17）
 

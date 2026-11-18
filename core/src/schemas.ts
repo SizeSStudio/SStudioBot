@@ -38,7 +38,11 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   }).passthrough()).nullable(),
   "feishu.yaml": z.object({ admin_chat: z.string().regex(/^oc_/).optional(), workbench_chat: z.string().regex(/^oc_/).optional() }).passthrough(),
   "repos.yaml": z.record(z.string(), z.object({ url: z.string().min(1), branch: z.string().optional() }).passthrough()).nullable(),
-  "console.yaml": z.object({ owners: z.array(z.string().min(3)).min(1) }).passthrough(),
+  // web.origin turns on the public entrance (§10.1); the host itself is instance data, so it lives only in this file
+  "console.yaml": z.object({
+    owners: z.array(z.string().min(3)).min(1),
+    web: z.object({ origin: z.string().regex(/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/, "https://主机名，不带路径和结尾的 /") }).passthrough().optional(),
+  }).passthrough(),
   // §15.9, §15.13: birth data for the lenses (M6) and the 送一程 thresholds; only the owner edits this file
   "self.yaml": z.object({
     month: z.enum(["gregorian", "solar_term"]).optional(),
@@ -133,6 +137,7 @@ export function widening(file: string, before: any, after: any): string[] {
   if (file === "console.yaml") {
     const added = (after.owners ?? []).filter((o: string) => !(before.owners ?? []).includes(o));
     if (added.length) out.push(`控制台新增可登录账号：${added.join("、")}`);
+    if (after.web?.origin && after.web.origin !== before.web?.origin) out.push(`控制台公网入口${before.web?.origin ? "换了地址" : "打开了"}：${after.web.origin}`);
   }
   return out;
 }

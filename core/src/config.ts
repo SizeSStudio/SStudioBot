@@ -3,7 +3,7 @@
 // The config repo (/srv/sbot/config, git) is the source of truth; files are re-read when their mtime changes, so an
 // edit takes effect on the next request without a restart. secrets.env is never handed to any agent.
 
-import { readFileSync, statSync, existsSync } from "node:fs";
+import { readFileSync, statSync, existsSync, writeFileSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { parse } from "yaml";
 
@@ -161,6 +161,20 @@ export function secret(name: string): string | undefined {
     return out;
   }, {} as Record<string, string>);
   return all[name];
+}
+
+/** Set one KEY=value line in secrets.env (atomic, 0600). Returns whether the name was already there. Callers log the
+ *  name only, never the value. */
+export function writeSecret(name: string, value: string): boolean {
+  const text = existsSync(P.secrets) ? readFileSync(P.secrets, "utf8") : "";
+  const lines = text.split("\n");
+  const i = lines.findIndex((l) => new RegExp(`^\\s*${name}\\s*=`).test(l));
+  const had = i >= 0;
+  if (had) lines[i] = `${name}=${value}`; else { if (lines.length && lines[lines.length - 1] === "") lines.pop(); lines.push(`${name}=${value}`, ""); }
+  const tmp = `${P.secrets}.tmp-${process.pid}`;
+  writeFileSync(tmp, lines.join("\n"), { mode: 0o600 });
+  renameSync(tmp, P.secrets);
+  return had;
 }
 
 export const log = (scope: string, msg: string, extra?: Record<string, unknown>) =>

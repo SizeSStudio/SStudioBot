@@ -61,6 +61,8 @@ export async function api(path, o = {}) {
     if (method === "GET") { try { r = await go(); } catch { /* fall through */ } }
     if (!r) throw new Error(`请求没送到服务器（${e.message}）。看下 Tailscale 是否连着、浏览器有没有走代理，然后再试。`);
   }
+  // public entrance: the session cookie ran out → back to its login page (the tailnet entrance never answers 401)
+  if (r.status === 401) { location.assign("/_login"); throw new Error("登录过期了"); }
   const j = await r.json().catch(() => ({ error: `${r.status} ${r.statusText}` }));
   if (!r.ok) { const e = new Error(j.error ?? r.status); e.status = r.status; throw e; }
   return j;

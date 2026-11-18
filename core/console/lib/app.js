@@ -50,11 +50,19 @@ function connect() {
   });
   es.addEventListener("flow", () => cur.mod?.onFlow?.());
   es.onopen = () => live(true);
-  es.onerror = () => live(false);
+  // an expired public-entrance session makes the stream fail forever; one /me call finds out and goes to the login page
+  es.onerror = () => { live(false); api("/me").catch(() => {}); };
 }
 // a write from this page (approve, answer a task…): let the page catch up without waiting for the next SSE tick
 document.addEventListener("sbot:changed", () => setTimeout(() => cur.mod?.onFlow?.(), 300));
 
-api("/me").then((m) => { S.me = m; $("#who").textContent = m.login; }).catch(() => {});
+api("/me").then((m) => {
+  S.me = m; $("#who").textContent = m.login;
+  if (m.entry !== "web") return;
+  const b = document.createElement("button");
+  b.className = "btn small"; b.textContent = "退出";
+  b.addEventListener("click", () => fetch("/_logout", { method: "POST" }).finally(() => location.assign("/_login")));
+  $("#who").append(" ", b);
+}).catch(() => {});
 connect();
 go();

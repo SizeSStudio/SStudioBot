@@ -168,7 +168,7 @@ function facts() {
   const shown = lines.slice(0, kept).join("\n");
   for (const id of [...matters.keys()]) if (!shown.includes(`#${id} `)) matters.delete(id);
   for (const id of [...events.keys()]) if (!shown.includes(`e${id} `)) events.delete(id);
-  return { text: text.replace(/<\/?untrusted/gi, "‹untrusted"), matters, events };
+  return { text: text.replace(/<\s*\/?\s*untrusted/gi, "‹untrusted"), matters, events };
 }
 
 async function modelPass(tier: "work" | "light" | "chat" | "expert") {

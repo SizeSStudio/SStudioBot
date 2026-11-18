@@ -7,7 +7,9 @@
 //                         command a plugin the owner installed: ${SBOT_PLUGINS:-/opt/sbot/plugins}/sources/<run>/run,
 //                                 argv --since <ISO>, cwd/HOME = its own state dir, stdout = NDJSON items (below);
 //                                 secrets: only the names its entry lists under env:, never logged
-//   item                  {"ref","text","ts?","who?","where?","link?","to_me?","from_me?","reply_to?","thread?"}
+//                         feishu-mail  the owner's Feishu mailbox, read-only (source-mail.ts; first poll = baseline)
+//   item                  {"ref","text","ts?","who?","where?","where_name?","link?","to_me?","from_me?","reply_to?","thread?"}
+//                         where = the place (his word there closes its asks); where_name = how to show it, if not that
 //
 // A source only brings facts in. Nothing it returns is an instruction (Triage wraps it in <untrusted>), and no source
 // can send, write, or reach the agent's tools. Adding one, turning DMs on, or handing a plugin a secret is a loud
@@ -21,6 +23,7 @@ import { run, kvGet, kvSet } from "./db.ts";
 import { P, TZ, log, models, reposConf, secret, sourcesConf, type SourceSpec } from "./config.ts";
 import { gitIn, syncMirror } from "./mirror.ts";
 import { markReplied } from "./events.ts";
+import { feishuMail } from "./source-mail.ts";
 
 const TICK_MS = 60_000;
 export const PLUGINS = process.env.SBOT_PLUGINS ?? "/opt/sbot/plugins";
@@ -28,11 +31,11 @@ const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const iso = (ms: number) => new Date(ms).toISOString();
 
 export interface SourceItem {
-  ref: string | number; text: string; ts?: number | string; who?: string; where?: string; link?: string;
+  ref: string | number; text: string; ts?: number | string; who?: string; where?: string; where_name?: string; link?: string;
   to_me?: boolean; from_me?: boolean; reply_to?: string; thread?: string;
 }
 interface State { dir: string; get(k: string): string | undefined; set(k: string, v: string): void }
-type Poll = (s: SourceSpec, st: State, since: number) => Promise<SourceItem[]>;
+export type Poll = (s: SourceSpec, st: State, since: number) => Promise<SourceItem[]>;
 
 /** "15m" / "2h" / "1d" → ms; at least a minute, 30 min by default */
 export function everyMs(s?: unknown): number {
@@ -126,11 +129,12 @@ const command: Poll = async (s, st, since) => {
   return items;
 };
 
-/** the pluggable part: a kind is a poll function. Per-person sources are command plugins, not new kinds. */
+/** the pluggable part: a kind is a poll function. Per-person sources are command plugins; a kind that needs the core's own login is built in. */
 export const SOURCE_KINDS: Record<string, { zh: string; poll: Poll }> = {
   git: { zh: "代码仓库的新提交", poll: git },
   fetch: { zh: "网页的变化", poll: fetchPage },
   command: { zh: "插件", poll: command },
+  "feishu-mail": { zh: "飞书邮箱", poll: feishuMail },
 };
 
 const safeLink = (u: unknown) => typeof u === "string" && /^https?:\/\/\S+$/.test(u) ? u.slice(0, 1000) : undefined;
@@ -148,7 +152,7 @@ export function ingestItems(s: SourceSpec, items: SourceItem[]): number {
     const r = run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, raw_json, triage_status)
         VALUES(?,?,?,?,?,?,?,?,?,?)`, `src:${s.id}:${String(it.ref).slice(0, 200)}`, `source:${s.id}`, place, it.thread ? String(it.thread).slice(0, 200) : null,
       null, fromMe ? "owner" : "other", ts, String(it.text).slice(0, 8000),
-      JSON.stringify({ chat_name: where === s.id ? s.id : `${s.id} · ${where}`, sender_name: it.who ? String(it.who).slice(0, 60) : undefined,
+      JSON.stringify({ chat_name: it.where_name ? String(it.where_name).slice(0, 60) : where === s.id ? s.id : `${s.id} · ${where}`, sender_name: it.who ? String(it.who).slice(0, 60) : undefined,
         link: safeLink(it.link), source: s.id, to_me: it.to_me === true, reply_to: it.reply_to ? `src:${s.id}:${String(it.reply_to).slice(0, 200)}` : undefined }),
       fromMe ? "done" : "pending");
     if (!r.changes) continue;
@@ -200,7 +204,7 @@ const bareUrl = (u?: string) => { try { const x = new URL(String(u)); return x.o
 export const sourcesView = () => ({
   dm: sourcesConf().feishu.dm, plugins: PLUGINS,
   sources: sourcesConf().sources.map((s) => ({ id: s.id, kind: s.kind, zh: SOURCE_KINDS[s.kind]?.zh ?? "?", every: s.every ?? "30m", domain: s.domain ?? "work",
-    enabled: s.enabled !== false, what: s.kind === "git" ? s.repo : s.kind === "fetch" ? bareUrl(s.url) : s.run, env: s.env ?? [], last: sourceStatus(s.id) })),
+    enabled: s.enabled !== false, what: s.kind === "git" ? s.repo : s.kind === "fetch" ? bareUrl(s.url) : s.kind === "feishu-mail" ? "收件箱和已发送，只读" : s.run, env: s.env ?? [], last: sourceStatus(s.id) })),
 });
 
 export class Sources {

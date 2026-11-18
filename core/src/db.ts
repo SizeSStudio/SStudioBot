@@ -172,11 +172,11 @@ CREATE TABLE IF NOT EXISTS graph_edges(a TEXT NOT NULL, b TEXT NOT NULL, rel TEX
   first_ts INTEGER, last_ts INTEGER, evidence TEXT, PRIMARY KEY(a, b, rel));
 CREATE INDEX IF NOT EXISTS graph_edges_b ON graph_edges(b);
 CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, ts INTEGER);
--- v0.18 §15.3: every regrouping or correction of matters / events, with what it takes to put it back.
+-- v0.19 §15.3: every regrouping or correction of matters / events, with what it takes to put it back.
 -- kind: merge|attach|main|detach|status|event|move|topic|rename · touches (JSON): m<id> / e<id> it changed
 CREATE TABLE IF NOT EXISTS matter_ops(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, summary TEXT, why TEXT, by TEXT NOT NULL,
   review_id INTEGER, touches TEXT NOT NULL DEFAULT '[]', undo_json TEXT, undone_at INTEGER, undone_by TEXT);
--- v0.18 §15.14 每日整理: suggestions only; nothing changes until he acts on one. fp identifies the question, so a settled one is not asked again.
+-- v0.19 §15.14 每日整理: suggestions only; nothing changes until he acts on one. fp identifies the question, so a settled one is not asked again.
 -- kind: group|stale|old_ask|suspect|topic · status: pending|shown|acted|ok|void
 CREATE TABLE IF NOT EXISTS matter_reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, fp TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, prio INTEGER NOT NULL DEFAULT 0,
   why TEXT, data_json TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'code', status TEXT NOT NULL DEFAULT 'pending', shown_n INTEGER NOT NULL DEFAULT 0, last_shown INTEGER,

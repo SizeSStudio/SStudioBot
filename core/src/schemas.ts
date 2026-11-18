@@ -59,14 +59,14 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   "sources.yaml": z.object({
     feishu: z.object({ dm: z.boolean().optional() }).passthrough().nullable().optional(),
     sources: z.array(z.object({
-      id: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, "小写字母开头，字母数字 _ -，2～32 个字符"), kind: z.enum(["git", "fetch", "command"]),
+      id: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, "小写字母开头，字母数字 _ -，2～32 个字符"), kind: z.enum(["git", "fetch", "command", "feishu-mail"]),
       every: z.string().regex(/^\d+[mhd]$/, "像 15m、2h、1d").optional(), domain: z.enum(["work", "personal"]).optional(), enabled: z.boolean().optional(),
       repo: z.string().optional(), url: z.string().regex(/^https?:\/\//, "http(s) 地址").optional(),
       run: z.string().regex(/^[a-z0-9][a-z0-9_-]*$/, "插件目录名：小写字母数字 _ -").optional(),
       env: z.array(z.string().regex(/^[A-Z][A-Z0-9_]*$/)).max(8).optional(), args: z.record(z.string(), z.any()).optional(),
     }).passthrough().superRefine((s, ctx) => {
       const need: Record<string, string> = { git: "repo", fetch: "url", command: "run" };
-      if (!(s as any)[need[s.kind]]) ctx.addIssue({ code: "custom", path: [need[s.kind]], message: `${s.kind} 要写 ${need[s.kind]}` });
+      if (need[s.kind] && !(s as any)[need[s.kind]]) ctx.addIssue({ code: "custom", path: [need[s.kind]], message: `${s.kind} 要写 ${need[s.kind]}` });
     })).nullable().optional(),
   }).passthrough().nullable().superRefine((c, ctx) => {
     const ids = (c?.sources ?? []).map((s: any) => s.id);
@@ -127,7 +127,7 @@ export function widening(file: string, before: any, after: any): string[] {
     for (const s of (after.sources ?? []) as any[]) {
       if (s?.enabled === false) continue;
       const o: any = old.get(s.id);
-      const what = s.kind === "git" ? `仓库 ${s.repo}` : s.kind === "fetch" ? s.url : `插件 ${s.run}`;
+      const what = s.kind === "git" ? `仓库 ${s.repo}` : s.kind === "fetch" ? s.url : s.kind === "feishu-mail" ? "你的飞书邮箱，新邮件正文会送去模型分拣" : `插件 ${s.run}`;
       if (!o || o.enabled === false) out.push(`新信息源 ${s.id}（${s.kind}：${what}）`);
       else if (o.kind !== s.kind || o.url !== s.url || o.run !== s.run || o.repo !== s.repo) out.push(`信息源 ${s.id} 换了来源 → ${s.kind}：${what}`);
       const added = (s.env ?? []).filter((n: string) => !(o?.env ?? []).includes(n));

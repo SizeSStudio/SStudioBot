@@ -325,7 +325,7 @@ PAGES.sources = async (body) => {
   const d = await api("/sources");
   const last = (x) => !x.last ? "还没拉过" : `上次 ${rel(x.last.at)}${x.last.ok ? `，新 ${x.last.n} 条` : `，出错：${x.last.err ?? ""}`}`;
   body.innerHTML = `
-    <div class="card note"><b>它从哪些地方看事</b><div class="sub">群消息之外的来源，都在 sources.yaml 里配：飞书私聊（默认关）、仓库提交、网页变化，以及放在服务器 ${esc(d.plugins)}/sources/ 下的插件（Jira、邮件……）。拉到的东西和群消息一样进分拣、记成事件，挂到事上。插件只拿到 env 里点名的密钥。</div>
+    <div class="card note"><b>它从哪些地方看事</b><div class="sub">群消息之外的来源，都在 sources.yaml 里配：飞书私聊（默认关）、飞书邮箱、仓库提交、网页变化，以及放在服务器 ${esc(d.plugins)}/sources/ 下的插件（Jira……）。拉到的东西和群消息一样进分拣、记成事件，挂到事上。插件只拿到 env 里点名的密钥。</div>
       <div class="actions"><a class="btn small" href="#/self/config/sources.yaml">编辑 sources.yaml</a></div></div>
     <div class="list">
       ${row("飞书私聊", d.dm ? "别人发给你的私聊进分拣（只记事件、不起草）；和它自己的私聊不算" : "关着。打开：sources.yaml 里 feishu.dm: true", d.dm ? pill("ok", "开") : pill("skipped", "关"))}

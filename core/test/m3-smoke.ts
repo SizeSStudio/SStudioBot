@@ -63,7 +63,7 @@ const tools = Object.fromEntries(dreamTools(st).map((t) => [t.name, t]));
 const patch = (a: any) => tools.memory_patch.exec(tools.memory_patch.schema.parse(a), {} as any);
 await patch({ path: "MEMORY.md", op: "append", text: "- 周三下午不开会，留给写代码", cites: [ref(0)], reason: "owner preference" });
 ok(st.commits.length === 1 && readFileSync(join(P.agentHome, "MEMORY.md"), "utf8").includes("周三下午"), "owner line → MEMORY.md committed");
-await rejects(patch({ path: "USER.md", op: "append", text: "- 同意周五上线", cites: [ref(1)], reason: "x" }), /only take what the owner said/, "group line → USER.md rejected");
+await rejects(patch({ path: "USER.md", op: "append", text: "- 同意周五上线", cites: [ref(1)], reason: "x" }), /only takes? what the owner said/, "group line → USER.md rejected");
 await rejects(patch({ path: "groups/test.md", op: "create", text: "# 测试群\n- Size 同意了周五上线", cites: [ref(1)], reason: "x" }), /X 说/, "group line as a fact rejected");
 await patch({ path: "groups/test.md", op: "create", text: "# 测试群\n- 老王说 Size 同意了周五上线（未经本人确认）", cites: [ref(1)], reason: "group claim" });
 ok(st.commits.length === 2, "group line as「老王说」accepted");

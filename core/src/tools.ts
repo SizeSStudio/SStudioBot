@@ -436,14 +436,14 @@ export const TOOLS: ToolDef[] = [
   }),
   def({
     name: "self_list", level: "L0", for: ["owner"],
-    description: "List habit (习气) and rhythm (节律) observations with ids and status (candidate 候选 / endorsed 认可 / seeing_off 送一程 / dropped). Only endorsed ones may be cited in outlooks, 起局 and reviews; seeing_off ones only when he asks.",
-    schema: z.object({ kind: z.enum(["habit", "rhythm"]).optional(), status: z.array(z.enum(["candidate", "endorsed", "seeing_off", "dropped"])).optional() }),
+    description: "List habit (习气) and rhythm (节律) observations with ids and status (candidate 候选 / endorsed 认可 / seeing_off 送一程 / faded 淡了 / let_go 放下 / dropped 不认). Only endorsed ones may be cited in outlooks, 起局 and reviews; seeing_off ones only when he asks; faded ones are no longer cited (no new evidence for a long time); let_go ones never come up unless he brings them up himself.",
+    schema: z.object({ kind: z.enum(["habit", "rhythm"]).optional(), status: z.array(z.enum(["candidate", "endorsed", "seeing_off", "dropped", "faded", "let_go"])).optional() }),
     async exec(a) { return selfItemsText({ kind: a.kind, statuses: a.status }); },
   }),
   def({
     name: "self_mark", level: "L1", for: ["owner"],
-    description: "Change a habit / rhythm's status, ONLY when the owner himself says so in this conversation (\"这条我认\" → endorsed, \"这条不对\" → dropped, \"先放着\" → candidate; after 送一程, \"还是提醒我吧\" → endorsed).",
-    schema: z.object({ id: z.number(), status: z.enum(["endorsed", "dropped", "candidate"]), owner_quote: z.string().min(1).max(500).describe("his words that ask for this"), note: z.string().max(300).optional() }),
+    description: "Change a habit / rhythm's status, ONLY when the owner himself says so in this conversation (\"这条我认\" → endorsed, \"这条不对\" → dropped 不认, \"这条放下\" / \"不用再背着了\" → let_go 放下, \"先放着\" → candidate; after 送一程, \"还是提醒我吧\" → endorsed; for a faded 淡了 one \"还在\" → endorsed; for a let_go one only \"恢复\" brings it back, to endorsed). 不认 means the observation is wrong; 放下 means it may be right but he chooses to stop carrying it.",
+    schema: z.object({ id: z.number(), status: z.enum(["endorsed", "dropped", "candidate", "let_go"]), owner_quote: z.string().min(1).max(500).describe("his words that ask for this"), note: z.string().max(300).optional() }),
     async exec(a, ctx) {
       if (!ctx.src.startsWith("owner@")) return "error: only in a conversation with the owner";
       return markSelfItem(a.id, a.status, a.note ? `${a.note}；他说：${a.owner_quote}` : `他说：${a.owner_quote}`);

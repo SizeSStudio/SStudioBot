@@ -280,7 +280,7 @@ PAGES.self = async (body) => {
   const d = await api("/life/self");
   const n = d.noticings30, o = n.owner ?? 0, a = n.agent ?? 0;
   const groups = { habit: "习气", rhythm: "节律" };
-  const order = { candidate: 0, endorsed: 1, seeing_off: 2, dropped: 3 };
+  const order = { candidate: 0, endorsed: 1, seeing_off: 2, faded: 3, let_go: 4, dropped: 5 };
   body.innerHTML = `
     <div class="card"><b>谁先看见</b> <span class="sub">近 30 天</span>
       <div class="sub">你自己先说出来 ${o} 次，它先指出来 ${a} 次。${o + a ? (o >= a ? "多数是你自己先看见的。" : "它先指出来的多一些。") : "还没有记录。"}</div></div>
@@ -292,10 +292,10 @@ PAGES.self = async (body) => {
 function selfCard(x) {
   const btn = (status, label, cls = "") => x.status === status ? "" : `<button type="button" class="btn small ${cls}" data-act="selfmark" data-id="${x.id}" data-s="${status}">${label}</button>`;
   return `<article class="card selfitem" id="self-${x.id}">
-    <div class="inline wrap">${pill(x.status)}<span class="text grow">${esc(x.text)}</span></div>
+    <div class="inline wrap">${pill(x.status, x.status === "dropped" ? "不认" : undefined)}<span class="text grow">${esc(x.text)}</span></div>
     <div class="sub">${x.first_seen ? `${mdhm(x.first_seen)} 第一次看到` : ""}${x.last_seen ? ` · 最近 ${rel(x.last_seen)}` : ""}${x.owner_said ? " · 你说过" : ""}${x.noticed.owner || x.noticed.agent ? ` · 你先看见 ${x.noticed.owner ?? 0} 次、它先 ${x.noticed.agent ?? 0} 次` : ""}${x.note ? ` · ${esc(x.note)}` : ""}</div>
     ${x.evidence.length ? `<details><summary>证据 ${x.evidence.length} 条</summary><ul class="notes">${x.evidence.map((e) => `<li>${esc(typeof e === "string" ? e : JSON.stringify(e))}</li>`).join("")}</ul></details>` : ""}
-    <div class="actions">${btn("endorsed", "认可", "primary")}${btn("seeing_off", "送一程")}${btn("dropped", "放下", "danger")}${x.status !== "candidate" ? btn("candidate", "回到候选") : ""}</div>
+    <div class="actions">${btn("endorsed", x.status === "let_go" ? "恢复" : x.status === "faded" ? "还在" : "认可", "primary")}${btn("seeing_off", "送一程")}${btn("let_go", "放下")}${btn("dropped", "不认", "danger")}${x.status !== "candidate" ? btn("candidate", "回到候选") : ""}</div>
   </article>`;
 }
 ACTS.selfmark = async (el) => {

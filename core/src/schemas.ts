@@ -44,10 +44,12 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
     owners: z.array(z.string().min(3)).min(1),
     web: z.object({ origin: z.string().regex(/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/, "https://主机名，不带路径和结尾的 /") }).passthrough().optional(),
   }).passthrough(),
-  // §15.9, §15.13: birth data for the lenses and the 送一程 thresholds. The form and self_profile write it too.
+  // §15.9, §15.13, §15.15: birth data for the lenses, the 送一程 thresholds and fade_days. The form and self_profile write it too
+  // (self_profile only birth and lenses: the thresholds are his to change by hand).
   "self.yaml": z.object({
     month: z.enum(["gregorian", "solar_term"]).optional(),
     see_off_after: z.number().int().min(2).max(10).optional(), restore_after: z.number().int().min(1).max(10).optional(),
+    fade_days: z.number().int().min(30).max(3650).optional(),
     // the lenses' raw input; birthIssues is what makes it good enough to build a chart from
     birth: z.object({}).passthrough().superRefine((b, ctx) => {
       for (const i of birthIssues(b)) ctx.addIssue({ code: "custom", path: [i.path], message: i.message });

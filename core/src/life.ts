@@ -5,11 +5,12 @@
 //   - a review without the owner's own words is stored as 未聊; the agent's 对照 is dropped then (§15.5)
 //   - a noticing credited to the owner must quote words he actually said in that review (§15.13)
 //   - habit / rhythm candidates need evidence; only the owner endorses or drops them; 送一程 is decided by code
+//   - 淡了 is decided by code (no new evidence for fade_days); 放下 only by the owner, and dream stops adding to it (§15.15)
 // self/habits.md and self/rhythms.md are rendered from self_items, like index.md: nobody edits them by hand.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { db, all, one, run, tx, signal } from "./db.ts";
+import { db, all, one, run, tx, signal, kvGet, kvSet } from "./db.ts";
 import { P, selfConf, log } from "./config.ts";
 import { appendJournal, localStamp } from "./memory.ts";
 import { parseLocal } from "./timers.ts";
@@ -159,7 +160,20 @@ export function outlooksText(horizon: string, period: string): string {
 
 // ───────────── 习气 / 节律 (§15.10, §15.13) ─────────────
 
-const STATUS_ZH: Record<string, string> = { candidate: "候选", endorsed: "我认可", seeing_off: "送一程", dropped: "不认" };
+const STATUS_ZH: Record<string, string> = { candidate: "候选", endorsed: "我认可", seeing_off: "送一程", dropped: "不认", faded: "淡了", let_go: "放下" };
+export type SelfStatus = "candidate" | "endorsed" | "seeing_off" | "dropped" | "faded" | "let_go";
+
+/** §15.15: status changes the morning diff counts (counts only: the content of self/ stays out of the admin group) */
+function noteSelfChange(kind: "seeing_off" | "faded" | "let_go" | "back") {
+  const c = JSON.parse(kvGet("self.changes") ?? "{}");
+  c[kind] = (c[kind] ?? 0) + 1;
+  kvSet("self.changes", JSON.stringify(c));
+}
+export function takeSelfChanges(peek = false): Record<string, number> {
+  const c = JSON.parse(kvGet("self.changes") ?? "{}");
+  if (!peek) kvSet("self.changes", "{}");
+  return c;
+}
 
 export function listSelfItems(o: { kind?: string; statuses?: string[] } = {}) {
   const where: string[] = [], args: any[] = [];
@@ -180,8 +194,15 @@ export function upsertCandidate(o: { id?: number; kind: "habit" | "rhythm"; text
   if (o.id) {
     const cur = one("SELECT * FROM self_items WHERE id=?", o.id);
     if (!cur) throw new Error(`no self item #${o.id}`);
+    if (cur.status === "let_go") throw new Error(`#${o.id} 他放下了：不再为它攒证据，也不要换个说法重提`);
     const ev = [...new Set([...JSON.parse(cur.evidence_json ?? "[]"), ...o.evidence])];
-    run("UPDATE self_items SET evidence_json=?, owner_said=MAX(owner_said, ?), last_seen=?, updated_at=? WHERE id=?", JSON.stringify(ev), o.ownerSaid ? 1 : 0, now, now, o.id);
+    // §15.15: new evidence brings a faded item back only as a candidate; he has to endorse it again
+    const status = cur.status === "faded" ? "candidate" : cur.status;
+    run("UPDATE self_items SET evidence_json=?, owner_said=MAX(owner_said, ?), last_seen=?, updated_at=?, status=? WHERE id=?", JSON.stringify(ev), o.ownerSaid ? 1 : 0, now, now, status, o.id);
+    if (status !== cur.status) {
+      appendJournal(`${cur.kind === "habit" ? "习气" : "节律"} #${o.id}「${cur.text.slice(0, 40)}」淡了之后又有新证据 → 回到候选，要他再认一次`, "system");
+      noteSelfChange("back");
+    }
     renderSelf();
     return o.id;
   }
@@ -191,14 +212,33 @@ export function upsertCandidate(o: { id?: number; kind: "habit" | "rhythm"; text
   return id;
 }
 
-/** the owner's word only: endorse, drop, back to candidate, or (from 送一程) start reminding again */
-export function markSelfItem(id: number, status: "endorsed" | "dropped" | "candidate" | "seeing_off", note?: string) {
+/** the owner's word only: endorse, drop (不认: it's wrong), let go (放下: he stops carrying it), back to candidate,
+ *  or bring back something from 送一程 / 淡了 / 放下 */
+export function markSelfItem(id: number, status: Exclude<SelfStatus, "faded">, note?: string) {
   const cur = one("SELECT * FROM self_items WHERE id=?", id);
   if (!cur) throw new Error(`no self item #${id}`);
   run("UPDATE self_items SET status=?, note=?, updated_at=? WHERE id=?", status, note ?? cur.note, Date.now(), id);
   appendJournal(`${cur.kind === "habit" ? "习气" : "节律"} #${id}「${cur.text.slice(0, 40)}」：${STATUS_ZH[cur.status]} → ${STATUS_ZH[status]}${note ? `（${note}）` : ""}`, "owner@self");
+  if (status === "let_go" && cur.status !== "let_go") noteSelfChange("let_go");
   renderSelf();
   return `#${id} ${STATUS_ZH[cur.status]} → ${STATUS_ZH[status]}`;
+}
+
+/** §15.15 淡了: an endorsed (or 送一程) item with no new evidence, mention or word from him for fade_days stops being cited.
+ *  Nothing is deleted; new evidence brings it back as a candidate (upsertCandidate). Runs nightly before dream. */
+export function fadeSelfItems(now = Date.now()): number[] {
+  const { fade_days } = selfConf();
+  const cutoff = now - fade_days * 86400_000;
+  const stale = all(`SELECT s.id, s.kind, s.text FROM self_items s
+    WHERE s.status IN ('endorsed','seeing_off')
+      AND MAX(COALESCE(s.last_seen,0), COALESCE(s.updated_at,0), COALESCE((SELECT MAX(ts) FROM noticings n WHERE n.item_id=s.id),0)) < ?`, cutoff);
+  for (const s of stale) {
+    run("UPDATE self_items SET status='faded', updated_at=? WHERE id=?", now, s.id);
+    appendJournal(`${s.kind === "habit" ? "习气" : "节律"} #${s.id}「${String(s.text).slice(0, 40)}」→ 淡了（${fade_days} 天没有新证据；不再引用，条目留着）`, "system");
+    noteSelfChange("faded");
+  }
+  if (stale.length) renderSelf();
+  return stale.map((s) => s.id);
 }
 
 export function renderSelf() {
@@ -208,7 +248,7 @@ export function renderSelf() {
       const ev = JSON.parse(r.evidence_json ?? "[]") as string[];
       return `- **#${r.id}** ${r.text}\n  - 证据：${ev.join("、") || "—"}${r.owner_said ? "（含主人原话）" : ""}\n  - 首次 ${r.first_seen ? today(r.first_seen) : "—"}，最近 ${r.last_seen ? today(r.last_seen) : "—"}${r.note ? `\n  - 备注：${r.note}` : ""}`;
     }).join("\n") || "（无）";
-    const text = `---\nvisibility: owner\n---\n# ${title}\n\n由代码按 self_items 生成，不要手改：要认可、不认或改写，直接跟 agent 说。只描述行为，不下人格结论。\n\n## 我认可\n${sec("endorsed")}\n\n## 送一程（最近几次都是你自己先看见的；不再主动提）\n${sec("seeing_off")}\n\n## 候选\n${sec("candidate")}\n\n## 不认\n${sec("dropped")}\n`;
+    const text = `---\nvisibility: owner\n---\n# ${title}\n\n由代码按 self_items 生成，不要手改：要认可、不认、放下或改写，直接跟 agent 说。只描述行为，不下人格结论。\n\n## 我认可\n${sec("endorsed")}\n\n## 送一程（最近几次都是你自己先看见的；不再主动提）\n${sec("seeing_off")}\n\n## 候选\n${sec("candidate")}\n\n## 淡了（很久没有新证据；不再引用，再出现会回到候选）\n${sec("faded")}\n\n## 放下（你决定不再背着它；不再提，说「恢复」才回来）\n${sec("let_go")}\n\n## 不认\n${sec("dropped")}\n`;
     const f = join(P.agentHome, "self", file);
     mkdirSync(dirname(f), { recursive: true });
     if (!existsSync(f) || readFileSync(f, "utf8") !== text) writeFileSync(f, text);
@@ -281,6 +321,7 @@ export function seeOff(itemId: number): string | undefined {
     if (last.length === see_off_after && last.every((r) => r.who === "owner")) {
       run("UPDATE self_items SET status='seeing_off', updated_at=? WHERE id=?", Date.now(), itemId);
       appendJournal(`习气 #${itemId}「${item.text.slice(0, 40)}」→ 送一程（最近 ${see_off_after} 次都是他自己先看见的）`, "system");
+      noteSelfChange("seeing_off");
       renderSelf();
       return `#${itemId}「${item.text}」最近 ${see_off_after} 次都是他自己先看见的，转为「送一程」：以后起局、前瞻里不再主动提，他问才说。可以轻轻告诉他一声，不用夸。`;
     }

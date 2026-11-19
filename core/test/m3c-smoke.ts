@@ -4,7 +4,7 @@
 //     SBOT_LARK_CLI=/bin/false node test/m3c-smoke.ts
 //
 // Checks: timeline view + note, outlook caps / frozen / period format, review 未聊 vs chatted, owner-noticing quote,
-// 送一程 after N owner noticings and the restore hint, dream's self_candidate evidence rules, self files rendered,
+// 送一程 after N owner noticings and the restore hint, 淡了 / 放下 (§15.15), dream's self_candidate evidence rules, self files rendered,
 // memory_read blocked on Feishu for self/habits.md, self_mark only from the owner, reflect texts, health card text.
 
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
@@ -15,8 +15,9 @@ import { all, one, run } from "../src/db.ts";
 import { ensureAgentHome, appendJournal } from "../src/memory.ts";
 import {
   addNote, timelineText, ownerActivity, submitOutlook, revisitOutlook, outlooksText, submitReview, markSelfItem, listSelfItems, today, isoWeek, monthOf,
+  fadeSelfItems, takeSelfChanges,
 } from "../src/life.ts";
-import { dreamTools, newJournalLines, type DreamState } from "../src/dream.ts";
+import { dreamTools, dreamDiffText, newJournalLines, type DreamState } from "../src/dream.ts";
 import { TOOLS } from "../src/tools.ts";
 import { reviewDayText, reviewWeekText, reviewMonthText, morningOutlookText } from "../src/reflect.ts";
 import { healthText } from "../src/health.ts";
@@ -99,6 +100,28 @@ for (const d of ["06", "07"]) submitReview({ kind: "day", period: `2026-11-${d}`
 const last = submitReview({ kind: "day", period: "2026-11-08", facts: "f", ownerWords: ["嗯"], noticings: [{ item_id: hid, item_text: "拖", who: "agent" }], questions: [], runId: "t" });
 ok(last.hints.join("").includes("你觉得需要吗") && one("SELECT status FROM self_items WHERE id=?", hid)!.status === "seeing_off", "agent noticings after 送一程 → ask him, status unchanged");
 ok(all("SELECT * FROM signals WHERE kind='review_question'").length >= 1, "review question feedback signalled");
+
+// ── 5b. 淡了 / 放下 (§15.15) ──
+takeSelfChanges();
+markSelfItem(rid, "endorsed", "t");
+const old = Date.now() - 200 * 86400_000;
+run("UPDATE self_items SET last_seen=?, updated_at=? WHERE id=?", old, old, rid);
+const faded = fadeSelfItems();
+ok(faded.includes(rid) && !faded.includes(hid) && one("SELECT status FROM self_items WHERE id=?", rid)!.status === "faded", "endorsed item with no evidence for fade_days → 淡了; one with recent noticings stays");
+ok(readFileSync(join(P.agentHome, "self/rhythms.md"), "utf8").includes("## 淡了") && readFileSync(join(P.agentHome, "self/rhythms.md"), "utf8").includes("周三下午常被会议占满"), "rhythms.md shows the 淡了 section");
+const fdiff = dreamDiffText() ?? "";
+ok(fdiff.includes("淡了 1 条") && !fdiff.includes("周三下午常被会议占满"), "morning diff counts 淡了 without the content");
+ok(!reviewWeekText()!.includes("周三下午常被会议占满"), "faded item not cited in the week review");
+const st2: DreamState = { runId: "dream_t2", commits: [], notes: [] };
+const cand2 = dreamTools(st2).find((t) => t.name === "self_candidate")!;
+await cand2.exec({ id: rid, kind: "rhythm", text: "周三下午常被会议占满", evidence: [jSys], reason: "t" } as any, {} as any);
+ok(one("SELECT status FROM self_items WHERE id=?", rid)!.status === "candidate", "new evidence on a faded item → back to 候选, not 认可");
+await tool("self_mark").exec({ id: rid, status: "let_go", owner_quote: "这条放下吧" } as any, ctx("feishu", "owner@feishu:dm"));
+ok(one("SELECT status FROM self_items WHERE id=?", rid)!.status === "let_go", "self_mark by the owner → 放下");
+await rejects(cand2.exec({ id: rid, kind: "rhythm", text: "周三下午常被会议占满", evidence: [jSys2], reason: "t" } as any, {} as any), /放下/, "dream can't add evidence to a let-go item");
+ok(takeSelfChanges().let_go === 1 && Object.keys(takeSelfChanges()).length === 0, "self changes counted, then reset");
+await tool("self_mark").exec({ id: rid, status: "endorsed", owner_quote: "恢复这条" } as any, ctx("feishu", "owner@feishu:dm"));
+ok(one("SELECT status FROM self_items WHERE id=?", rid)!.status === "endorsed", "恢复 by the owner brings it back");
 
 // matter review
 run("INSERT INTO matters(id, title, lane, status, file_path, opened_at) VALUES(?,?,?,?,?,?)", 901, "测试的事", "feishu:dm:owner", "closing", "matters/901.md", now - 86400_000);

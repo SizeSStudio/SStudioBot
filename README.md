@@ -1,10 +1,11 @@
 # SStudioBot
 
-> A self-hosted, always-on personal agent: one main agent that is "another me", reached through Feishu (and later WeChat),
-> with background workers for heavy jobs, a permission gate in front of every outward action, and an owner-only web console.
-> Built for one person and run on one Linux VPS. The docs are in Chinese.
+> A self-hosted, always-on personal agent built as a companion for one person's inner growth: it gets work done, learns
+> who its owner is from that work, daily life and other lenses, cross-checks those views, and helps the owner notice and change.
+> Reached through Feishu (and later WeChat), with background workers for heavy jobs, a permission gate in front of every
+> outward action, and an owner-only web console. Run on one Linux VPS. The docs are in Chinese.
 
-一个常驻的个人 agent，“另一个我”。飞书既是工作入口，也是所有审批和管理的控制台；重活交给后台 worker；记忆打通；所有对外出口都要主人批准。生活这一面它也陪着：月、周、日有前瞻，事有起收，能顺着时间线回看，看法越用越贴。
+一个常驻的个人 agent，陪主人修自己、离苦得乐的伙伴。它替主人办事，也借办事、日常和镜头读懂主人，把几种看法放在一起互相参照，帮主人补齐视角、先看见问题，再陪着一点点改。飞书管工作和审批；重活交给后台 worker；记忆打通；所有对外出口都要主人批准。设计的出发点见 [DESIGN §0](docs/DESIGN.md#0-第一性原理v024-重写)。
 
 **状态**：作者自己的实例已经在跑（M0–M7），处于打磨期，改动频繁。这是一个**单用户**项目，没有做成可以直接拿来给别人用的产品；代码和设计公开，欢迎参考。
 

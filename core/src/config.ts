@@ -115,10 +115,11 @@ export function waitMinutes(chat: string, surface: string, action: string): numb
   return action === "escalate" ? Math.min(escalate, base) : base;
 }
 
-/** config/self.yaml (§15.9, §15.13): month rhythm and the 送一程 thresholds */
-export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number } => {
+/** config/self.yaml (§15.9, §15.13, §15.15): month rhythm, the 送一程 thresholds, and how long until an item 淡了 */
+export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number; fade_days: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
-  return { month: s.month === "solar_term" ? "solar_term" : "gregorian", see_off_after: Number(s.see_off_after ?? 3), restore_after: Number(s.restore_after ?? 2) };
+  return { month: s.month === "solar_term" ? "solar_term" : "gregorian", see_off_after: Number(s.see_off_after ?? 3), restore_after: Number(s.restore_after ?? 2),
+    fade_days: Number(s.fade_days ?? 180) };
 };
 
 /** the lens part of self.yaml. Goes to a network-less lens run, the console's form, and self_profile in his own DM. */

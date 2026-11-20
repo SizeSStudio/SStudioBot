@@ -173,7 +173,10 @@ ${["ziwei", "liuyao"].map((l) => `### ${l}\n${page(`self/lens-notes/${l}.md`, 15
 ## 怎么做
 1. 回看上个月：月前瞻逐条问感受（outlook_revisit）；最后问一句「这个月的建议，哪些用上了，哪些没用？」。review_submit(kind=month, period=${lastMonth})。
 2. 先问「这个月你想怎么过，最在意什么」，再给不超过 3 条，outlook_submit(horizon=month, period=${thisMonth})。
-${quarterly ? `3. 这是季度第一个月：问他要不要把 self/habits.md、self/rhythms.md、self/guidance-notes.md 和风格笔记（style/）过一遍，删掉他不认的（习气用 self_mark 标 dropped；笔记的删改记下来，dream 会处理）。他说不用就不用。\n` : ""}
+${quarterly ? `3. 这是季度第一个月：问他要不要把 self/habits.md、self/rhythms.md、self/guidance-notes.md 和风格笔记（style/）过一遍，删掉他不认的（习气用 self_mark 标 dropped；笔记的删改记下来，dream 会处理）。他说不用就不用。
+   现在「淡了」的习气 / 节律（很久没有新证据，已经不再引用）：
+${selfItemsText({ statuses: ["faded"] }).replace(/^/gm, "   ")}
+   有的话一并列给他：他说「还在」用 self_mark 改回 endorsed，说「放下」改成 let_go，不管就不动。（§15.15）\n` : ""}
 ## 复盘方法（skills/review/SKILL.md）
 ${skill("review")}
 

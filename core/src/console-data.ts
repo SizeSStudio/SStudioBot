@@ -286,7 +286,7 @@ export function selfItems() {
   return { items, noticings30: noticings };
 }
 export function markSelf(id: number, status: string, note?: string) {
-  if (!["endorsed", "dropped", "candidate", "seeing_off"].includes(status)) throw bad("bad status");
+  if (!["endorsed", "dropped", "candidate", "seeing_off", "let_go"].includes(status)) throw bad("bad status");
   return { result: markSelfItem(id, status as any, note ? `${note}（控制台）` : "控制台") };
 }
 export function readings(limit = 100) {

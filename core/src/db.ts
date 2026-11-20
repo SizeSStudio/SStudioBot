@@ -113,7 +113,7 @@ CREATE TABLE IF NOT EXISTS outlook_revisits(id INTEGER PRIMARY KEY AUTOINCREMENT
 -- 复盘 (§15.5). kind: day|week|month|matter; status: chatted|unchatted
 CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, period TEXT NOT NULL, matter_id INTEGER, facts TEXT,
   owner_words TEXT, agent_notes TEXT, status TEXT NOT NULL, file_path TEXT, run_id TEXT, ts INTEGER);
--- 习气 / 节律 (§15.10). status: candidate|endorsed|seeing_off|dropped. self/habits.md and rhythms.md are rendered from here.
+-- 习气 / 节律 (§15.10, §15.15). status: candidate|endorsed|seeing_off|faded|let_go|dropped. self/habits.md and rhythms.md are rendered from here.
 CREATE TABLE IF NOT EXISTS self_items(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'candidate',
   evidence_json TEXT, owner_said INTEGER NOT NULL DEFAULT 0, first_seen INTEGER, last_seen INTEGER, updated_at INTEGER, note TEXT);
 -- 谁先看见 (§15.13). who: owner|agent; prompted: the owner said it after an open question (still counts as owner)

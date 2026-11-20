@@ -1,7 +1,8 @@
 // Bot-side routing for the bot's own groups and card callbacks (DESIGN §3.1, §7.3).
 //
 //   admin group (feishu:console): owner's reply in a card's thread → revise / reject with reasons; `/group 关键词`;
-//     `回滚 <sha>` reverts one memory commit (the morning dream diff, §8.3)
+//     `回滚 <sha>` reverts one memory commit (the morning dream diff, §8.3); `更新 seed [名字…]` takes the new seed
+//     for the agent's instructions that wait for him (§8.6)
 //   workbench (feishu:workbench): owner's reply in a task's topic → that task; anything else → lane feishu:wb:<topic root>
 //   other groups: ignored here; the observer reads the owner's groups as the owner (§3.6)
 //   card.action.trigger: deduped by event_id (inbox, lane "card"), then routed by the button value's `k`
@@ -12,6 +13,8 @@ import { onApprovalClick, onCardThreadReply } from "./approvals.ts";
 import { onGroupClick, onReviewClick, sendGroupCard } from "./observer.ts";
 import { onWorkbenchReply } from "./tasks.ts";
 import { rollback } from "./dream.ts";
+import { applyWaitingSeed } from "./memory.ts";
+import { commitMemory, rebuildIndex, syncPages } from "./wiki.ts";
 import { sendText } from "./cards.ts";
 import { onMatterReviewClick } from "./matter-review.ts";
 import type { Incoming } from "./feishu.ts";
@@ -19,6 +22,13 @@ import type { TurnContext } from "./tools.ts";
 
 const stripMentions = (s: string) => s.replace(/^(\s*@\S+\s*)+/, "").trim();
 const err = (where: string) => (e: any) => log("routes", `${where} failed`, { err: String(e?.message ?? e).slice(0, 300) });
+
+/** 「更新 seed」: install, then reindex the same way a 回滚 does */
+export function takeSeed(arg: string): string {
+  const out = applyWaitingSeed(arg.split(/[\s,，、]+/).filter(Boolean));
+  try { syncPages(); if (rebuildIndex()) commitMemory("index"); } catch (e) { err("seed reindex")(e); }
+  return out;
+}
 
 /** A group message from the bot's event stream. Returns true when an inbox event was queued (kick the dispatcher). */
 export function routeGroup(m: Incoming): boolean {
@@ -40,6 +50,8 @@ export function routeGroup(m: Incoming): boolean {
     if (g) { void sendGroupCard(g[1].trim()).then((s) => sendText(admin_chat!, s, { replyTo: m.message_id })).catch(err("/group")); return false; }
     const rb = /^回滚\s+([0-9a-f]{6,40})\s*$/i.exec(text);
     if (rb) { void sendText(admin_chat!, rollback(rb[1].toLowerCase()), { replyTo: m.message_id }).catch(err("rollback")); return false; }
+    const us = /^更新\s*seed(?:\s+([\s\S]+))?$/i.exec(text);
+    if (us) { void sendText(admin_chat!, takeSeed(us[1] ?? ""), { replyTo: m.message_id }).catch(err("seed")); return false; }
     if (root) void onCardThreadReply(root, text).catch(err("card thread reply"));
     return false;
   }

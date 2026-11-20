@@ -16,7 +16,7 @@ import { P, feishuConf, gateConf, log, ownerName } from "./config.ts";
 import { complete, issueToken, revokeToken } from "./proxy.ts";
 import { git, localStamp, safePath, readPage } from "./memory.ts";
 import { one } from "./db.ts";
-import { selfItemsText, upsertCandidate } from "./life.ts";
+import { fadeSelfItems, selfItemsText, takeSelfChanges, upsertCandidate } from "./life.ts";
 import { classifyUpstream } from "./retry.ts";
 import { appendLog, commitMemory, rebuildIndex, searchWiki } from "./wiki.ts";
 import { sendText } from "./cards.ts";
@@ -186,6 +186,9 @@ function systemPrompt(owner: string) {
 
 # 陪伴相关（§15.8、§15.10、§16.3）
 - **习气 / 节律候选**：用 self_candidate 提，不能直接写 self/habits.md、rhythms.md（那两个文件由代码生成）。来源：审批里他怎么改草稿、拒绝的理由（src=owner@approval）；复盘里他说的话（src=review@…）；随手记的时间分布；日常对话里他自己说出来的观察（最重要）。只描述行为，写清楚是哪几次；他自己说出来的，原话一条就够；从记录里推断的至少 2 条证据。已有的条目（见下面的列表）再出现就带 id 加证据，不要重复建。最多 ${MAX_CANDIDATES} 处。
+  - 「淡了」的条目（很久没有新证据）真又出现了，可以带 id 加证据，代码会把它放回候选，要他再认一次。
+  - 「放下」的条目是他决定不再背着的：不加证据，也不要换个说法重新提成新候选（§15.15）。
+  - 「不认」的条目是他说不对的，别再拿同一个意思来提。
 - **风格笔记 style/**：只从他的改稿意见和他自己回的消息（src=owner@approval）提炼，按人、按群或按场景写，比如 style/general.md（通用）、style/<群名或人名>.md：「给 X 回要短，不用敬语」。写他的倾向，不抄草稿全文。
 - **建议心得 self/guidance-notes.md**：只从他在复盘和前瞻回看里说的话提炼：哪种建议对他有用、太泛、太多、来得太晚、真的用上了。每条带来源。
 - **镜头笔记 self/lens-notes/<镜头>.md**（ziwei、liuyao）：只从他回看镜头看法时说的话提炼（src=owner@… 或 review@…，记录里是「回看解读 #N」）：这门镜头在哪类事上对他有提醒作用、哪类没感觉、他自己怎么理解。不打分，不算命中率，不评判镜头对错。
@@ -196,6 +199,7 @@ function systemPrompt(owner: string) {
 export async function runDream(runner: Runner): Promise<DreamState | undefined> {
   const since = Number(kvGet("dream.last_at") ?? Date.now() - 86400_000);
   const lines = newJournalLines(since);
+  fadeSelfItems();   // §15.15: code, not the model, every night; after reading the journal so a fade alone doesn't start a dream run
   const startedAt = Date.now();
   if (!lines.length) { log("dream", "nothing new"); kvSet("dream.last_at", String(startedAt)); return; }
   const runId = `dream_${localStamp().slice(0, 10)}_${startedAt.toString(36)}`;
@@ -230,10 +234,16 @@ export async function runDream(runner: Runner): Promise<DreamState | undefined> 
 
 /** The morning diff for the admin group (§8.3): each change with a short diff, and how to undo it. */
 export function dreamDiffText(): string | undefined {
-  const rep = JSON.parse(kvGet("dream.report") ?? "null");
-  const cands: string[] = rep?.candidates ?? [];
-  if (!rep || rep.sent || (!rep.commits.length && !rep.notes.length && !cands.length)) return undefined;
+  const raw = JSON.parse(kvGet("dream.report") ?? "null");
+  const rep = raw && !raw.sent ? raw : { commits: [], notes: [], candidates: [] };
+  const cands: string[] = rep.candidates ?? [];
+  // §15.15: 送一程 / 淡了 / 放下 since the last diff, as counts (§15.9: what they are stays out of the group)
+  const ch = takeSelfChanges(true);
+  const zh: Record<string, string> = { seeing_off: "送一程", faded: "淡了", let_go: "放下", back: "淡了又回到候选" };
+  const changes = Object.entries(zh).filter(([k]) => ch[k]).map(([k, v]) => `${v} ${ch[k]} 条`);
+  if (!rep.commits.length && !rep.notes.length && !cands.length && !changes.length) return undefined;
   const parts = [`**昨晚的记忆整理**：${rep.commits.length} 处修改${cands.length ? `，${cands.length} 条习气 / 节律候选` : ""}${rep.notes.length ? `，${rep.notes.length} 条留言` : ""}`];
+  if (changes.length) parts.push(`**习气 / 节律状态**：${changes.join("，")}（内容不在群里贴；私聊问我，或者去控制台看）`);
   for (const c of rep.commits as DreamState["commits"]) {
     let diff = "";
     if (c.path.startsWith("self/")) { parts.push(`\`${c.sha}\` **${c.path}** · （私人内容，不在群里贴 diff；私聊里可以看）`); continue; }
@@ -255,8 +265,9 @@ export async function postDreamDiff() {
   const { admin_chat } = feishuConf();
   if (!text || !admin_chat) return;
   await sendText(admin_chat, text);
-  const rep = JSON.parse(kvGet("dream.report")!);
-  kvSet("dream.report", JSON.stringify({ ...rep, sent: true }));
+  const rep = JSON.parse(kvGet("dream.report") ?? "null");
+  if (rep) kvSet("dream.report", JSON.stringify({ ...rep, sent: true }));
+  takeSelfChanges();
 }
 
 /** "回滚 <sha>" from the owner in the admin group: revert one agent-home commit. */

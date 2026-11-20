@@ -36,7 +36,7 @@ export const ST = {
   aborted: ["serious", "中止"], interrupted: ["serious", "中断"], missed: ["serious", "错过"], conflict: ["serious", "冲突"],
   expired: ["plain", "过期"], superseded: ["plain", "被替换"], invalidated: ["plain", "作废"], cancelled: ["plain", "取消"],
   dropped: ["plain", "放下"], merged: ["plain", "并进别的事"], skipped: ["plain", "跳过"], digest: ["plain", "摘要"], rolled_back: ["plain", "已回滚"],
-  seeing_off: ["plain", "送一程"], unchatted: ["plain", "没聊"],
+  seeing_off: ["plain", "送一程"], unchatted: ["plain", "没聊"], faded: ["plain", "淡了"], let_go: ["plain", "放下"],
 };
 export const pill = (st, label) => { const [c, l] = ST[st] ?? ["plain", st ?? "—"]; return `<span class="pill ${c}">${esc(label ?? l)}</span>`; };
 export const TIER = { chat: "总控", work: "执行", light: "读取", expert: "专家" };

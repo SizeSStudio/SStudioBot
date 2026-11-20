@@ -40,8 +40,9 @@ export function releaseNotice(coreDir: string): string | null {
   return `${head}\n${lines.join("\n")}`;
 }
 
-export async function announceRelease(coreDir: string) {
-  const md = releaseNotice(coreDir);
+/** `extra`: more for the same message, so one start makes one notice (the seed report, §8.6) */
+export async function announceRelease(coreDir: string, extra?: string | null) {
+  const md = [releaseNotice(coreDir), extra].filter(Boolean).join("\n\n");
   const { admin_chat } = feishuConf();
   if (!md || !admin_chat) return;
   try { await sendText(admin_chat, md); }

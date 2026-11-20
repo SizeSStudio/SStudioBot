@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 import { P, ownerFeishu, log } from "./config.ts";
 import "./db.ts";
 import { startProxy } from "./proxy.ts";
-import { ensureAgentHome, git, commitIfDirty } from "./memory.ts";
+import { ensureAgentHome, git, commitIfDirty, seedNotice } from "./memory.ts";
 import { PiRunner } from "./runner.ts";
 import { Dispatcher } from "./dispatcher.ts";
 import { Outbox } from "./outbox.ts";
@@ -50,7 +50,7 @@ const rev = revision(coreDir);
 for (const d of [P.sessions, P.logs, P.larkHome]) mkdirSync(d, { recursive: true });
 if (!ownerFeishu()) throw new Error("config/people.yaml: owner.ids.feishu is required");
 if (!existsSync(join(P.config, ".git"))) { git(P.config, "init", "-q", "-b", "main"); commitIfDirty(P.config, "initial config"); }
-ensureAgentHome(join(here, "..", "seed", "agent-home"));
+const seeded = ensureAgentHome(join(here, "..", "seed", "agent-home"), rev?.sha.slice(0, 7));
 renderSelf();
 syncPages();
 if (rebuildIndex()) commitMemory("index");
@@ -104,7 +104,7 @@ const sweep = setInterval(() => { sweepApprovals().catch((e) => log("main", "app
 void sweepApprovals().catch(() => {});
 dispatcher.kick();
 log("main", "core up", { home: P.home, pid: process.pid, rev: rev?.sha.slice(0, 7) ?? "dev" });   // sbot-deploy waits for this line
-void announceRelease(coreDir);
+void announceRelease(coreDir, seedNotice(seeded));
 
 let quitting = false;
 async function shutdown(sig: string) {

@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS signals(
 -- chat list cache for the observer (user identity); groups.yaml stays the source of truth for activation
 CREATE TABLE IF NOT EXISTS chats(chat_id TEXT PRIMARY KEY, name TEXT, external INTEGER, muted INTEGER, chat_mode TEXT, seen_at INTEGER);
 
--- M3c (§觉). Everything below is owner-only: no tool for others, Triage or workers reads it.
+-- M3c (§读3, §读5, §参1, §觉). Everything below is owner-only: no tool for others, Triage or workers reads it.
 -- 随手记 (§读5.3). domain: work|family|friends|body|mind
 CREATE TABLE IF NOT EXISTS life_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, text TEXT NOT NULL, domain TEXT, matter_id INTEGER, people TEXT, src TEXT);
 CREATE INDEX IF NOT EXISTS life_notes_ts ON life_notes(ts);

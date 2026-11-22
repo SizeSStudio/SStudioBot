@@ -1,4 +1,4 @@
-// 生活 (owner-only, §觉): the timeline with a quick note, matters with their events (§读2.5) and the topics that may
+// 生活 (owner-only, §读5): the timeline with a quick note, matters with their events (§读2.5) and the topics that may
 // become one, the people around him and how they connect (§读4), imports from another harness (§读2.6), outlooks and how they turned out, habits and rhythms (only he
 // endorses or drops them), readings, reviews, and his birth info and lens settings (self.yaml: a form here; he can also tell the main agent in his DM).
 

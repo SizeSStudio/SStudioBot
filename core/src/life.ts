@@ -1,4 +1,4 @@
-// 红尘里修, the data layer (DESIGN §觉): 随手记, the timeline, 前瞻, 复盘, 习气 / 节律 and 谁先看见.
+// 红尘里修, the data layer (DESIGN §读5, §觉, §改1, §寸3): 随手记, the timeline, 前瞻, 复盘, 习气 / 节律 and 谁先看见.
 //
 // Everything here is owner-only. The rules that matter are enforced in code, not in prompts:
 //   - an outlook is frozen once written; later feelings are appended as revisits (§觉2, §参1)

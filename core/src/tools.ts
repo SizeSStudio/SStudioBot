@@ -342,7 +342,7 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
-  // ---- 红尘里修 (§觉): owner only ----
+  // ---- 红尘里修 (§读5.1, §觉): owner only ----
   def({
     name: "note_add", level: "L0", for: ["owner"],
     description: "随手记: save something the owner says in passing about his life or state (\"记一下：今天心里有点乱\", \"今天跑了 5 公里\"), in his own words. Goes on the timeline; feeds rhythms and reviews.",

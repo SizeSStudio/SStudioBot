@@ -25,7 +25,7 @@ async function draw(force) {
   const sec = (title, html, note = "") => html ? `<section><h2>${esc(title)}${note ? ` <span class="sub">${esc(note)}</span>` : ""}</h2>${html}</section>` : "";
   body.innerHTML = [
     sec("等你批", d.approvals.map((a) => approvalCard(a)).join(""), d.approvals.length > 1 ? `${d.approvals.length} 条` : ""),
-    // §17.2: asks from groups, DMs and sources; your next word in that place closes them on its own
+    // §读2.5: asks from groups, DMs and sources; your next word in that place closes them on its own
     sec("要你回 / 拍板", d.asks.map((e) => eventCard(e)).join(""), "你在原处说过话就自动算处理了"),
     sec("任务在等你", d.tasks.map((t) => `<article class="card taskask">
       <div class="inline wrap">${pill(t.status)}<b class="clip" data-act="task" data-id="${esc(t.id)}" role="button" tabindex="0">任务 #${esc(t.id)}</b><span class="sub">${rel(t.ts)}</span></div>

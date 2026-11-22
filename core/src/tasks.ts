@@ -1,4 +1,4 @@
-// Task Engine (DESIGN §4.2, §7.2B, §7.6). A task is a worker lane: Claude Agent SDK `query()` running the pinned
+// Task Engine (DESIGN §办1.3, §底3.2B, §底3.6). A task is a worker lane: Claude Agent SDK `query()` running the pinned
 // Claude Code CLI through sudo → worker-exec, model calls through the LLM proxy with a per-run token. Two modes:
 //   host (default): sbot-h as a transient systemd service on the host: full network and tailnet, full sudo,
 //     persistent HOME, ssh hosts and skills from config/worker.yaml. A PreToolUse guard keeps it off the core's files.
@@ -364,7 +364,7 @@ export class TaskEngine {
         // no bwrap: the host worker runs commands directly (sudo included)
         ? { sandbox: { enabled: false }, settings: { skipWebFetchPreflight: true, env: { PATH: path } } }
         : { sandbox: { enabled: true, failIfUnavailable: true, autoAllowBashIfSandboxed: true, allowUnsandboxedCommands: false, network: { httpProxyPort: egressPort } },
-            // sudo keeps only ANTHROPIC_* / CLAUDE_* / LANG; WebFetch's proxy and PATH go through settings (§7.6)
+            // sudo keeps only ANTHROPIC_* / CLAUDE_* / LANG; WebFetch's proxy and PATH go through settings (§底3.6)
             settings: { skipWebFetchPreflight: true, env: { HTTPS_PROXY: `http://127.0.0.1:${egressPort}`, NO_PROXY: "127.0.0.1,localhost", PATH: path } } }),
       env: {
         LANG: "C.UTF-8", CLAUDE_CONFIG_DIR: join(cwd, ".claude"),
@@ -483,7 +483,7 @@ export class TaskEngine {
     return id;
   }
 
-  /** §5.5: expert reviews the diff before the card goes out (daily_limit respected), then the card is posted. */
+  /** §办2.5: expert reviews the diff before the card goes out (daily_limit respected), then the card is posted. */
   private async review(aid: number, t: Record<string, any>) {
     const a = getApproval(aid);
     if (!a) return;
@@ -547,7 +547,7 @@ export class TaskEngine {
 // ---------------------------------------------------------------------------------------------- host-mode helpers
 
 // The core's own files. A host worker has sudo, so this is a guard against slips and injected instructions, not a wall
-// (§7.6): it can't stop a determined `sudo` one-liner, it does stop "cat the secrets / read the db / poke the console".
+// (§底3.6): it can't stop a determined `sudo` one-liner, it does stop "cat the secrets / read the db / poke the console".
 const CORE_PATHS = /\/srv\/(data\/)?sbot(?![\w-])|secrets\.env|\/run\/sbot(?![\w-])|\/proc\/[^\s/]+\/environ|\/opt\/sbot\/bin\/lark/;
 export const coreGuard: HookCallback = async (input: any) => {
   // only where the tool goes, not what it writes: editing this repo's docs that mention /srv/sbot must still work

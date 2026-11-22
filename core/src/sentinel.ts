@@ -1,4 +1,4 @@
-// Sentinel (DESIGN §9.2): pure code, no model. Every 5 minutes it checks for things that need the owner and posts a
+// Sentinel (DESIGN §底4.2): pure code, no model. Every 5 minutes it checks for things that need the owner and posts a
 // fixed-template alert to the admin group. Each alert key re-fires at most every `again` (default 6 h), and a
 // recovered condition clears its key so the next failure alerts again.
 

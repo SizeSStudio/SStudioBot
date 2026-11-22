@@ -1,4 +1,4 @@
-// SStudioBot core (DESIGN §14). M0: inbox + Dispatcher + pi Runner + tool layer + LLM proxy + Feishu DM + outbox.
+// SStudioBot core (DESIGN §附3). M0: inbox + Dispatcher + pi Runner + tool layer + LLM proxy + Feishu DM + outbox.
 // M1: approvals + admin-group cards + observer + Triage/drafts. M2: Task Engine (workers) + follow-up timers + matters.
 // M3b: config console on a unix socket behind tailscale serve.
 // M3a: wiki index + full-text search, jobs.yaml (morning report, nightly dream + morning diff), sentinel, 先安静.
@@ -74,7 +74,7 @@ const sources = new Sources();
 const scheduler = new Scheduler(() => dispatcher.kick(),
   { dream: async () => { await runDream(runner); }, dream_diff: async () => { await postDreamDiff(); }, health_card: async () => { await postHealthCard(); }, lens_day: async () => { queueHorizonReadings("day"); }, lens_week: async () => { queueHorizonReadings("week"); }, lens_month: async () => { queueHorizonReadings("month"); },
     improve: async (_n, job) => { log("improve", "job", { out: await runImprove(job) }); }, improve_review: async () => { await runImproveReview(); },
-    // the card still goes out on code's findings; a throw only asks for the model's part again later (§9.4)
+    // the card still goes out on code's findings; a throw only asks for the model's part again later (§底4.3)
     matter_review: async () => { const r = await runMatterReview(); if (r.modelError && classifyUpstream(r.modelError)) throw new Error(r.modelError); } },
   { morning: () => morningText(), review_day: () => reviewDayText(), review_week: () => reviewWeekText(), review_month: () => reviewMonthText() },
   { opened: reviewOpened, notRun: (...a) => { reviewNotRun(...a); commitMemory("review not sent"); }, beforeTick: () => { if (closeDueReviews()) commitMemory("reviews closed"); } });
@@ -114,7 +114,7 @@ async function shutdown(sig: string) {
   feishu.stop();
   consoleSrv.close();
   observer.stop(); triage.stop(); sources.stop(); scheduler.stop(); sentinel.stop(); lenses.stop(); clearInterval(sweep);
-  // unfinished runs are recovered on the next start (§1.2); workers are aborted and resumed after the restart
+  // unfinished runs are recovered on the next start (§底1.2); workers are aborted and resumed after the restart
   await Promise.all([dispatcher.drain(20_000), tasks.stop(10_000)]);
   outbox.stop();
   proxy.close();

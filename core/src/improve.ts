@@ -1,4 +1,4 @@
-// M7 self-improvement (DESIGN §16). The signals are his behaviour; the agent only proposes B-level changes
+// M7 self-improvement (DESIGN §进2). The signals are his behaviour; the agent only proposes B-level changes
 // (tuning.ts TUNABLE), he decides. Nothing here touches gates, budgets, tool scope or this file (D).
 //
 //   collectEvalCases ─ code only, his answers only: approved / self-replied drafts, Triage misses and overs
@@ -34,7 +34,7 @@ const NO_REPLY = /不用回|不需要回|不必回|别回|不用管|没必要回
 export const improveBudget = () => Number(gateConf().improve_budget_usd ?? 3);
 const spent = (runId: string) => Number(one("SELECT COALESCE(SUM(cost),0) c FROM usage WHERE run_id=? OR run_id LIKE ?", runId, `${runId}_%`)!.c);
 
-// ---------- eval cases (§16.2): collected by code, the expected answer is always his ----------
+// ---------- eval cases (§进2.2): collected by code, the expected answer is always his ----------
 
 function addCase(kind: string, ref: string, input: string, expected: string, meta: unknown, src: string): boolean {
   return run("INSERT OR IGNORE INTO eval_cases(kind, ref, input, expected, meta_json, src, ts) VALUES(?,?,?,?,?,?,?)",
@@ -115,7 +115,7 @@ function evidencePack(since: number): Pack {
   return { text: parts.join("\n\n"), ids };
 }
 
-const improveSystem = () => `你在帮${ownerName()}的个人 agent 做自我改进（DESIGN §16）。下面是他最近的行为信号：审批决定、改稿意见、他自己回的消息、分拣漏掉的消息、指标。
+const improveSystem = () => `你在帮${ownerName()}的个人 agent 做自我改进（DESIGN §进2）。下面是他最近的行为信号：审批决定、改稿意见、他自己回的消息、分拣漏掉的消息、指标。
 你的任务：找出最值得改的 0～${MAX_PROPOSALS} 处，写成对「可以提议修改的文件」的具体修改。
 
 规则：
@@ -165,7 +165,7 @@ export function validateProposals(raw: unknown, ids: Set<string>): { ok: Proposa
   return { ok, dropped };
 }
 
-// ---------- replay (§16.4) ----------
+// ---------- replay (§进2.4) ----------
 
 const RAISE = ["notify", "draft", "escalate"];
 
@@ -259,7 +259,7 @@ export function lineDiff(a: string, b: string, max = 60): string {
 
 let busy = false;
 
-/** gate: enough new signals since the last run (§16.4 thresholds come from the job spec) */
+/** gate: enough new signals since the last run (§进2.4 thresholds come from the job spec) */
 export function improveDue(job: Partial<JobSpec> & Record<string, any>, now = Date.now()): { due: boolean; why: string; since: number } {
   const last = Number(kvGet("improve.last_run") ?? 0);
   const since = last || now - 28 * DAY;
@@ -408,7 +408,7 @@ export async function onTuningRevise(a: Row, note: string): Promise<string> {
   return `改好了，卡片上是 v${a.draft_version + 1}（${newIds.length} 处）`;
 }
 
-// ---------- two weeks later (§16.5) ----------
+// ---------- two weeks later (§进2.5) ----------
 
 export async function runImproveReview(now = Date.now()): Promise<number> {
   let n = 0;

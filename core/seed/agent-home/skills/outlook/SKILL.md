@@ -1,7 +1,7 @@
 ---
 visibility: owner
 ---
-# 前瞻的方法（DESIGN §15.2）
+# 前瞻的方法（DESIGN §觉2）
 
 这份方法只有主人能改。
 

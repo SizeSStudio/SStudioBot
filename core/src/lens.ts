@@ -1,4 +1,4 @@
-// Lenses and the 解读账本 (DESIGN §4.5, §15.7). A lens is a view, to be felt against life: no scoring, no hit rate.
+// Lenses and the 解读账本 (DESIGN §参3, §参1). A lens is a view, to be felt against life: no scoring, no hit rate.
 //
 // A reading is requested (by the main agent in the owner's conversation, or by the day / week / month jobs), queued here and run as
 // a restricted worker: Claude Agent SDK on the pinned CLI as sbot-w, sandboxed, egress proxy with an EMPTY allowlist
@@ -68,7 +68,7 @@ const ONE_PER_MATTER = new Set(["liuyao:cast", "ziwei:zhanbu"]);
 
 const pluginVersion = () => { try { return JSON.parse(readFileSync(join(PLUGIN, ".claude-plugin", "plugin.json"), "utf8")).version ?? "?"; } catch { return "?"; } };
 
-/** §15.7 版本冻结: chart parameters (and the birth data they use) → a new version; the ledger is split by it */
+/** §参1 版本冻结: chart parameters (and the birth data they use) → a new version; the ledger is split by it */
 export function profileVersion(lens: string, method: string): string {
   const { birth, lenses } = selfLensConf();
   const needs = LENSES[lens]?.methods[method]?.birth;
@@ -91,7 +91,7 @@ export function requestReading(r: ReadingRequest): number {
   if (m.birth && !birthReady(birth)) throw new Error("出生信息还没填全（要日期、时间、性别、出生地经度）。他在私聊里说，用 self_profile 记；或者去控制台「生活 › 出生信息」填。不需要生辰的六爻、紫占现在就能看。");
   const horizon = m.horizon ?? r.horizon ?? null;
   if (horizon && !periodOk(horizon, r.period ?? "")) throw new Error(`${HORIZON_ZH[horizon] ?? horizon}看法的 period 不对，要像 ${{ day: "2026-12-03", week: "2026-W49", month: "2026-12" }[horizon] ?? "2026-12"}`);
-  // per version: after a corrected birth time the old month view must not block the new chart's (§15.7)
+  // per version: after a corrected birth time the old month view must not block the new chart's (§参1)
   if (horizon && !r.changedBecause && one("SELECT id FROM readings WHERE lens=? AND method=? AND horizon=? AND period=? AND profile_version=? AND status!='failed'", r.lens, r.method, horizon, r.period, profileVersion(r.lens, r.method)))
     throw new Error(`${def.zh} ${r.period} 的看法已经有了（写下后不改，回看用 reading_revisit）。这段时间里事情本身变了才再看，在 changed_because 里写清楚。`);
   if (r.matterId && ONE_PER_MATTER.has(`${r.lens}:${r.method}`) && !r.changedBecause) {
@@ -191,7 +191,7 @@ export class LensEngine {
 
   private fail(r: Record<string, any>, err: string) {
     log("lens", "failed", { id: r.id, err: err.slice(0, 300) });
-    // §9.4: the month view is written before the day's month review, so it may wait most of the day for the upstream
+    // §底4.3: the month view is written before the day's month review, so it may wait most of the day for the upstream
     const f = r.requested_by === "job" ? classifyUpstream(err) : undefined;
     if (f) {
       const n = (r.retries ?? 0) + 1, deadline = retryDeadline(r.ts, undefined, JOB_RETRY_HOURS), at = nextAttempt(f, n, deadline);
@@ -290,7 +290,7 @@ export class LensEngine {
     finally { clearTimeout(dog); eg.close(); revokeToken(token); this.ac = undefined; }
     if (eg.log.length) log("lens", "network attempts blocked", { id: r.id, n: eg.log.length });
     run("UPDATE runs SET status=?, ended=?, stop_reason=? WHERE id=?", submitted ? "done" : "failed", Date.now(), result?.subtype ?? err?.slice(0, 200) ?? null, runId);
-    // the CLI reports an API failure as an error result, not a throw; keep its words so §9.4 can tell what it was
+    // the CLI reports an API failure as an error result, not a throw; keep its words so §底4.3 can tell what it was
     const said = result?.is_error ? String(result.result ?? result.subtype ?? "") : "";
     if (!submitted) throw new Error(err ? err.slice(0, 300) : ac.signal.aborted ? "超时" : said ? said.slice(0, 300) : "没有交回结果");
 

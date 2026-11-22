@@ -1,5 +1,5 @@
 #!/bin/bash
-# Turn on the console's public entrance (DESIGN §10.1). Run as root from a checkout, after the core that has
+# Turn on the console's public entrance (DESIGN §触5.1). Run as root from a checkout, after the core that has
 # console-web.ts is deployed and the DNS record (A → this server, DNS only / grey cloud) exists:
 #   sudo bash deploy/console-web/install.sh <host>        e.g. console.example.com
 # Idempotent. Doesn't set the password or console.yaml web.origin; see the end of its output. The tailnet entrance

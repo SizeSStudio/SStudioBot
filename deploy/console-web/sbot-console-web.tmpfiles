@@ -1,4 +1,4 @@
-# /etc/tmpfiles.d/sbot-console-web.conf (DESIGN §10.1). The public entrance's socket directory: sbot owns it, setgid
+# /etc/tmpfiles.d/sbot-console-web.conf (DESIGN §触5.1). The public entrance's socket directory: sbot owns it, setgid
 # sbot-web so the socket the core makes inside gets that group; only nginx (www-data, added to sbot-web) can connect.
 # The tailnet socket stays in /run/sbot (0700), which www-data can't reach, so nginx can't forge Tailscale-User-Login.
 d /run/sbot-web 2750 sbot sbot-web -

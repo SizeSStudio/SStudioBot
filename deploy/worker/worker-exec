@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run the pinned Claude Code CLI for a worker (DESIGN §4.2, §7.6). Called by the core (user sbot) only as:
+# Run the pinned Claude Code CLI for a worker (DESIGN §办1.3, §底3.6). Called by the core (user sbot) only as:
 #   sudo -n /usr/local/lib/sbot/worker-exec [--host] <cli args...>
 # Root-owned; the only thing callers control is the CLI's argv, its cwd (must be a task dir of that mode) and
 # ANTHROPIC_*/CLAUDE_*/LANG env (sudoers env_keep).

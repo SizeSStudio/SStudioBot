@@ -5,13 +5,13 @@
 > Reached through Feishu (and later WeChat), with background workers for heavy jobs, a permission gate in front of every
 > outward action, and an owner-only web console. Run on one Linux VPS. The docs are in Chinese.
 
-一个常驻的个人 agent，陪主人修自己、离苦得乐的伙伴。它替主人办事，也借办事、日常和镜头读懂主人，把几种看法放在一起互相参照，帮主人补齐视角、先看见问题，再陪着一点点改。飞书管工作和审批；重活交给后台 worker；记忆打通；所有对外出口都要主人批准。设计的出发点见 [DESIGN §0](docs/design/00-principles.md)。
+一个常驻的个人 agent，陪主人修自己、离苦得乐的伙伴。它替主人办事，也借办事、日常和镜头读懂主人，把几种看法放在一起互相参照，帮主人补齐视角、先看见问题，再陪着一点点改。飞书管工作和审批；重活交给后台 worker；记忆打通；所有对外出口都要主人批准。设计的出发点见 [DESIGN §0](docs/design/00-why.md)。
 
 **状态**：作者自己的实例已经在跑（M0–M7），处于打磨期，改动频繁。这是一个**单用户**项目，没有做成可以直接拿来给别人用的产品；代码和设计公开，欢迎参考。
 
 ## 它怎么运转
 
-always-on 不等于一直在跑。agent 平时睡着，被事件叫醒后跑一个 **run**，跑完存好状态退出（[DESIGN §1](docs/design/01-runtime-identity-channels.md#1-运行模型五件套)）：
+always-on 不等于一直在跑。agent 平时睡着，被事件叫醒后跑一个 **run**，跑完存好状态退出（[DESIGN §底1](docs/design/09-base.md)）：
 
 | 件 | 是什么 |
 |---|---|
@@ -26,7 +26,7 @@ always-on 不等于一直在跑。agent 平时睡着，被事件叫醒后跑一�
 - **key 不进 agent**：所有模型调用都走核心里的 LLM 代理，每个 run 只拿一个临时令牌；用量计量和预算上限也在代理里。
 - **worker 两种模式**：默认 host：独立用户 `sbot-h` 直接在宿主机上跑，网络、tailnet、sudo、skill 都有，ssh 主机和 skill 在 `config/worker.yaml` 里配；sandbox：独立用户 `sbot-w`，bubblewrap 沙箱 + iptables 限制出口，用来处理不可信内容。两种模式都没有凭证，推送都要主人在管理群批准后由核心来推。
 - **审批非阻塞**：对外发言、推代码、在群里说话都会生成审批卡片，只认主人本人点击；批准后由发件箱按原稿发出。
-- **越用越会办事，但不会越来越大**：agent 能改自己的记忆和风格笔记；skill、prompt、模型档位要提案 + 回放评测 + 主人批；代码走 PR；权限、预算、auto 规则和这套机制本身永远不由 agent 提（[§16](docs/design/09-rsi-matters-graph.md#16-agent-自己的-rsi越用越会办事)）。
+- **越用越会办事，但不会越来越大**：agent 能改自己的记忆和风格笔记；skill、prompt、模型档位要提案 + 回放评测 + 主人批；代码走 PR；权限、预算、auto 规则和这套机制本身永远不由 agent 提（[§进2](docs/design/10-improve.md)）。
 
 模型分四档（chat / work / light / expert），按角色路由，不绑厂商：对话角色在核心进程里用 pi（`@earendil-works/pi-coding-agent`），worker 和镜头用 Claude Agent SDK（`@anthropic-ai/claude-agent-sdk`）。
 
@@ -56,7 +56,7 @@ docs/DESIGN.md  设计文档索引和版本变更；正文按章节拆在 docs/d
 
 ## 安装
 
-还没有一键安装。大致顺序（细节见 DESIGN [§1.3](docs/design/01-runtime-identity-channels.md#13-部署单机轻量2026-11-16-定)、[§7](docs/design/03-wechat-permissions.md#7-权限闸门与审批)、[§10](docs/design/05-console.md#10-配置控制台m3-起)）：
+还没有一键安装。大致顺序（细节见 DESIGN [§底1.3](docs/design/09-base.md)、[§底3](docs/design/09-base.md)、[§触5](docs/design/07-touch.md)）：
 
 1. 建用户 `sbot`、`sbot-w`（`sbot-h` 由 `deploy/worker/install.sh` 建），数据目录 `/srv/sbot`（→ `/srv/data/sbot`），装好 `/opt/node`。
 2. 在 `/srv/sbot/config/` 建配置仓库，模板在 `core/seed/config/`：`people.yaml` 填主人的飞书 open_id，`models.yaml` 填各档上游。密钥写进 `secrets.env`（只写不读，不进备份）。

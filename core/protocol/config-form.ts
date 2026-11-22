@@ -1,5 +1,5 @@
-// Wire format of the console's config forms (DESIGN §10.6). The server describes each config file; a client only draws
-// the description, so the old console and the §19 clients share one definition. Types only: nothing here runs.
+// Wire format of the console's config forms (DESIGN §触5.6). The server describes each config file; a client only draws
+// the description, so the old console and the §触6 clients share one definition. Types only: nothing here runs.
 
 export type FieldType = "text" | "number" | "bool" | "select" | "segment" | "time" | "duration" | "tags" | "multiselect" | "picker" | "kv" | "group" | "list" | "map";
 /** where a picker's choices come from: FormContext.options, except `endpoints`, which is read from the form being edited */

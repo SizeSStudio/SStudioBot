@@ -4,7 +4,7 @@
 //     SBOT_LARK_CLI=/bin/false node test/m3c-smoke.ts
 //
 // Checks: timeline view + note, outlook caps / frozen / period format, review 未聊 vs chatted, owner-noticing quote,
-// 送一程 after N owner noticings and the restore hint, 淡了 / 放下 (§15.15), dream's self_candidate evidence rules, self files rendered,
+// 送一程 after N owner noticings and the restore hint, 淡了 / 放下 (§寸4), dream's self_candidate evidence rules, self files rendered,
 // memory_read blocked on Feishu for self/habits.md, self_mark only from the owner, reflect texts, health card text.
 
 import { mkdirSync, readFileSync, existsSync } from "node:fs";
@@ -101,7 +101,7 @@ const last = submitReview({ kind: "day", period: "2026-11-08", facts: "f", owner
 ok(last.hints.join("").includes("你觉得需要吗") && one("SELECT status FROM self_items WHERE id=?", hid)!.status === "seeing_off", "agent noticings after 送一程 → ask him, status unchanged");
 ok(all("SELECT * FROM signals WHERE kind='review_question'").length >= 1, "review question feedback signalled");
 
-// ── 5b. 淡了 / 放下 (§15.15) ──
+// ── 5b. 淡了 / 放下 (§寸4) ──
 takeSelfChanges();
 markSelfItem(rid, "endorsed", "t");
 const old = Date.now() - 200 * 86400_000;

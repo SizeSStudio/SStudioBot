@@ -1,4 +1,4 @@
-// LLM proxy (DESIGN §5.2). Every model request from every run goes through 127.0.0.1:7811/llm.
+// LLM proxy (DESIGN §办2.2). Every model request from every run goes through 127.0.0.1:7811/llm.
 //
 //   1. run token: random per run, stored only as a sha256 hash, bound to { run, tier, budget, expiry }
 //   2. model alias: sbot-<tier> → the tier's real model (re-read from models.yaml, so edits apply to the next call)
@@ -6,7 +6,7 @@
 //   4. metering: usage from the SSE / JSON response × price → `usage` table
 //   5. hard limits: run budget (output tokens) and global daily cost → 403 permission_error (not 429: the CLI would
 //      retry for ~3 min, P0). Why a run ended is read from run_tokens.status, not from the client's error text.
-//   6. optional per-tier fallback (§5.3): the tier's model reports a usage limit → the same request goes to the fallback.
+//   6. optional per-tier fallback (§办2.3): the tier's model reports a usage limit → the same request goes to the fallback.
 //      Without one configured the response is passed through untouched.
 
 import http from "node:http";
@@ -16,7 +16,7 @@ import { one, run, tx } from "./db.ts";
 import { gzipSync } from "node:zlib";
 import { classifyUpstream } from "./retry.ts";
 
-/** §10.4: runs whose exact model requests the console keeps (7 days, owner-only, no agent tool reads them) */
+/** §触5.4: runs whose exact model requests the console keeps (7 days, owner-only, no agent tool reads them) */
 const CAPTURE_ROLES = ["main", "draft"];
 
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
@@ -35,7 +35,7 @@ export const tokenStatus = (runId: string) => one("SELECT status, spent_output, 
 
 /**
  * One tool-less Messages call through the proxy with its own short-lived token (summaries, Triage, redrafts, checks,
- * expert reviews). Returns the text. `json: true` → parse the first JSON value in the reply, retrying once (§5.4:
+ * expert reviews). Returns the text. `json: true` → parse the first JSON value in the reply, retrying once (§办2.4:
  * structured output by prompt + code check, not forced tools).
  */
 export async function complete(o: { tier: Tier; system: string; user: string; maxTokens?: number; runId?: string; requester?: string; json?: boolean }): Promise<any> {

@@ -1,4 +1,4 @@
-// The attention window (DESIGN §4.3, §17.2). On the VPS, as sbot, on a fresh throwaway home:
+// The attention window (DESIGN §读2.4, §读2.5). On the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh attention-smoke.ts 7830
 //

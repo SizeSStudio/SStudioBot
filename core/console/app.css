@@ -441,7 +441,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); overflow: hidden; overscroll-beh
   position: fixed; left: 50%; bottom: calc(var(--nav-h) + 20px); transform: translateX(-50%); z-index: 50; display: flex; flex-direction: column; gap: 6px; align-items: center; pointer-events: none; width: max-content; max-width: 92vw; }
 .toast { background: var(--ink); color: var(--page); padding: 8px 16px; border-radius: 18px; font-size: 14px; white-space: pre-wrap; box-shadow: 0 4px 16px rgba(0,0,0,.2); }
 
-/* §18 因缘图 */
+/* §读4 因缘图 */
 .graph { position: relative; overflow: hidden; }  /* edge labels must not widen the page on phones */
 .graph svg { display: block; width: 100%; overflow: visible; touch-action: manipulation; }
 .graph .ge { stroke: var(--axis); stroke-opacity: 0.75; }
@@ -460,6 +460,6 @@ dialog::backdrop { background: rgba(0,0,0,.35); overflow: hidden; overscroll-beh
 .linkish { background: none; border: 0; padding: 0 0 0 4px; color: var(--accent); font: inherit; cursor: pointer; }
 @media (forced-colors: active) { .graph .gn { fill: CanvasText; } .graph .ge { stroke: CanvasText; } }
 
-/* 生活 › 事: 子事 and the queue fold under what he follows (§15.3) */
+/* 生活 › 事: 子事 and the queue fold under what he follows (§读3.1) */
 details.kids { margin: 2px 0 8px 12px; }
 details.kids > .list, details.kids > .card { margin-top: 6px; }

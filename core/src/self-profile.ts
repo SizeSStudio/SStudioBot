@@ -1,4 +1,4 @@
-// The owner's own material (DESIGN §15.9): birth data and lens settings in config/self.yaml, and the pages under self/.
+// The owner's own material (DESIGN §读5.1): birth data and lens settings in config/self.yaml, and the pages under self/.
 // The console's form and the main agent's self_profile / self_page tools share these functions. Every change is one git
 // commit plus a config_changes row, and can be put back. Commit subjects and the ledger never carry the values.
 

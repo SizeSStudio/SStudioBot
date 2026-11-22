@@ -2,7 +2,7 @@
 //
 //   - started on the first text or tool event (or after START_AFTER_MS of silence, showing "思考中…")
 //   - the outbox row + runs.side_effects are written BEFORE the card is sent (written first, delivered after), so a
-//     crash after sending can never lead to a re-run and a second card (§1.2)
+//     crash after sending can never lead to a re-run and a second card (§底1.2)
 //   - text updates push the full text; Feishu types out the new suffix. Updates are serialized per card (strictly
 //     increasing sequence), latest-wins, at most one in flight
 //   - a grey status line under the text shows what the agent is doing (🔍 搜索中…); finish() removes it and turns
@@ -54,7 +54,7 @@ export class CardStream {
   private timer?: NodeJS.Timeout;
   failed = false;          // couldn't create/send the card: the caller falls back to a plain text reply
 
-  /** thinking=false: no "思考中" card (a scheduled run: nobody is waiting, and a card would rule out a clean retry, §9.4) */
+  /** thinking=false: no "思考中" card (a scheduled run: nobody is waiting, and a card would rule out a clean retry, §底4.3) */
   constructor(ctx: RunCtx, o: { thinking?: boolean } = {}) {
     this.ctx = ctx;
     if (o.thinking !== false) this.timer = setTimeout(() => { if (!this.cardId) this.update("", "💭 思考中…"); }, START_AFTER_MS);

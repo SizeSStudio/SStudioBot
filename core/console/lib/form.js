@@ -1,4 +1,4 @@
-// Draws a config form from the description the server sends (DESIGN §10.6). No per-file code beyond two row captions:
+// Draws a config form from the description the server sends (DESIGN §触5.6). No per-file code beyond two row captions:
 // what a field is, what it allows and what it risks all come from GET /api/config/<file>/form. The server checks and
 // writes; this file only collects a draft. In a draft a missing key means "leave it", null means "clear it".
 

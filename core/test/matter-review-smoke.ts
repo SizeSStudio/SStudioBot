@@ -1,4 +1,4 @@
-// 主线 / 子事, the regrouping ledger and the daily review (DESIGN §15.3, §15.14). On the VPS, as sbot, on a fresh throwaway home:
+// 主线 / 子事, the regrouping ledger and the daily review (DESIGN §读3.1, §读3.2). On the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh matter-review-smoke.ts 7829
 //

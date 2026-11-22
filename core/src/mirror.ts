@@ -1,5 +1,5 @@
-// Bare mirrors of the repos in config/repos.yaml, on the core side (§4.2). The Task Engine bundles from them and
-// pushes approved work through them; the git source (§17.3) reads new commits from them. One mirror per repo.
+// Bare mirrors of the repos in config/repos.yaml, on the core side (§办1.3). The Task Engine bundles from them and
+// pushes approved work through them; the git source (§读2.1) reads new commits from them. One mirror per repo.
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";

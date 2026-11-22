@@ -1,4 +1,4 @@
-// Routine lens jobs (DESIGN §15.2, §15.7). They are on by default, and seeds never reach an existing config, so an
+// Routine lens jobs (DESIGN §觉2, §参1). They are on by default, and seeds never reach an existing config, so an
 // instance that predates them gets them added once. After that jobs.yaml is his: `enabled: false` or deleting the line
 // turns one off and it does not come back.
 

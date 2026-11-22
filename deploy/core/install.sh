@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install or update the core's root-level pieces (DESIGN §1.3): systemd units and the deploy tool. Run as root from a
+# Install or update the core's root-level pieces (DESIGN §底1.3): systemd units and the deploy tool. Run as root from a
 # checkout; re-run after changing anything in deploy/core/. Then it deploys main and turns on auto-deploy.
 #   sudo bash deploy/core/install.sh            (SBOT_NO_AUTODEPLOY=1 to leave sbot-deploy.timer off)
 # Assumes the users, /srv/sbot (→ /srv/data/sbot) with config/ and secrets.env, /opt/node, and lark-cli are in place.

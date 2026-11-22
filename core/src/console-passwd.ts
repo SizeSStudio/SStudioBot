@@ -1,4 +1,4 @@
-// Set the console's public-entrance password (DESIGN §10.1), on the server, as sbot:
+// Set the console's public-entrance password (DESIGN §触5.1), on the server, as sbot:
 //
 //   sudo -u sbot env SBOT_HOME=/srv/sbot /opt/node/bin/node /srv/data/sbot-app/current/core/src/console-passwd.ts
 //   … --logout-all     keep the password, only log every session out

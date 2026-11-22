@@ -1,4 +1,4 @@
-// Schemas for the config repo files (DESIGN §10.3). The console validates every save against these before it writes;
+// Schemas for the config repo files (DESIGN §触5.3). The console validates every save against these before it writes;
 // unknown keys pass through so a newer file never breaks an older core.
 
 import { z } from "zod";
@@ -30,7 +30,7 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
     sensitive_words: z.array(z.string().min(1)).optional(), approval_ttl_hours: z.number().positive().optional(), send_by_hours: z.number().positive().optional(),
     expert_daily_limit: z.number().int().min(0).optional(), proactive_daily_cap: z.number().int().min(0).optional(), daily_budget_usd: z.number().positive().optional(),
     improve_budget_usd: z.number().min(0).optional(),   // M7: per improve run (proposals + replay)
-    // §4.3: how long a raised message waits for him to respond by himself; places: chat_id | source id | source:where | feishu_dm
+    // §读2.4: how long a raised message waits for him to respond by himself; places: chat_id | source id | source:where | feishu_dm
     attention: z.object({ wait_minutes: waitMin.optional(), escalate_wait_minutes: waitMin.optional(), places: z.record(z.string().min(1), waitMin).nullable().optional() }).passthrough().nullable().optional(),
   }).passthrough(),
   "jobs.yaml": z.record(z.string().regex(/^[a-z][a-z0-9_]*$/), z.object({
@@ -39,12 +39,12 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
   }).passthrough()).nullable(),
   "feishu.yaml": z.object({ admin_chat: z.string().regex(/^oc_/).optional(), workbench_chat: z.string().regex(/^oc_/).optional() }).passthrough(),
   "repos.yaml": z.record(z.string(), z.object({ url: z.string().min(1), branch: z.string().optional() }).passthrough()).nullable(),
-  // web.origin turns on the public entrance (§10.1); the host itself is instance data, so it lives only in this file
+  // web.origin turns on the public entrance (§触5.1); the host itself is instance data, so it lives only in this file
   "console.yaml": z.object({
     owners: z.array(z.string().min(3)).min(1),
     web: z.object({ origin: z.string().regex(/^https:\/\/[a-z0-9.-]+(:\d{1,5})?$/, "https://主机名，不带路径和结尾的 /") }).passthrough().optional(),
   }).passthrough(),
-  // §15.9, §15.13, §15.15: birth data for the lenses, the 送一程 thresholds and fade_days. The form and self_profile write it too
+  // §读5.1, §寸3, §寸4: birth data for the lenses, the 送一程 thresholds and fade_days. The form and self_profile write it too
   // (self_profile only birth and lenses: the thresholds are his to change by hand).
   "self.yaml": z.object({
     month: z.enum(["gregorian", "solar_term"]).optional(),
@@ -54,13 +54,13 @@ export const SCHEMAS: Record<string, z.ZodTypeAny> = {
     birth: z.object({}).passthrough().superRefine((b, ctx) => {
       for (const i of birthIssues(b)) ctx.addIssue({ code: "custom", path: [i.path], message: i.message });
     }).optional(),
-    // per-lens settings (cast method, notes for the reader …); any change makes a new profile_version (§15.7)
+    // per-lens settings (cast method, notes for the reader …); any change makes a new profile_version (§参1)
     lenses: z.record(z.string(), z.object({
       enabled: z.boolean().optional(),
       profile: z.object({ cast: z.enum(["dayan", "coins", "time", "random"]).optional(), notes: z.string().max(500).optional() }).passthrough().optional(),
     }).passthrough()).optional(),
   }).passthrough().nullable(),
-  // §17.3 信息源: Feishu DMs for the observer, and the other sources the poller reads (sources.ts)
+  // §读2.1 信息源: Feishu DMs for the observer, and the other sources the poller reads (sources.ts)
   "sources.yaml": z.object({
     feishu: z.object({ dm: z.boolean().optional() }).passthrough().nullable().optional(),
     sources: z.array(z.object({
@@ -85,7 +85,7 @@ export const CONFIG_FILES = Object.keys(SCHEMAS);
 const num = (v: unknown, d: number) => (typeof v === "number" ? v : d);
 
 /**
- * Changes that loosen what the agent may do or spend (§10.3): the admin group gets a separate, loud notice for these.
+ * Changes that loosen what the agent may do or spend (§触5.3): the admin group gets a separate, loud notice for these.
  * `before` / `after` are the parsed files.
  */
 export function widening(file: string, before: any, after: any): string[] {

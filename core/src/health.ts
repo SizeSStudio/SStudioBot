@@ -1,5 +1,5 @@
-// Weekly 办事体检 card (DESIGN §14 M3, §16): metrics only, computed by code from the signals and tables; no model, no
-// proposals (those come with M7). Several numbers side by side on purpose (§16.5): approval rate alone would reward
+// Weekly 办事体检 card (DESIGN §附3 M3, §进2): metrics only, computed by code from the signals and tables; no model, no
+// proposals (those come with M7). Several numbers side by side on purpose (§进2.5): approval rate alone would reward
 // timid, empty drafts.
 
 import { all, one, kvGet } from "./db.ts";
@@ -45,7 +45,7 @@ export function healthText(now = Date.now()): string {
   const t = (o: Record<string, number>, k: string) => Number(o[k] ?? 0);
   return [
     `**办事体检** · ${localStamp(now - 7 * DAY).slice(5, 10)} ~ ${localStamp(now).slice(5, 10)}`,
-    `<font color='grey'>只有指标，不出提案；几个数一起看，最后以你批不批为准（§16.5）。</font>`,
+    `<font color='grey'>只有指标，不出提案；几个数一起看，最后以你批不批为准（§进2.5）。</font>`,
     `**起草**（共 ${drafts}）\n- 原样批准 ${v(cur.approved, prev.approved)}\n- 改了再批 ${v(cur.revised, prev.revised)}，批准的平均改 ${cur.rounds.toFixed(1)} 轮\n- 拒绝 ${v(cur.rejected, prev.rejected)}\n- 你自己回了（草稿作废）${v(cur.mine, prev.mine)}\n- 过期没理 ${v(cur.expired, prev.expired)}`,
     `**分拣**\n- 提醒你 ${v(t(cur.triage, "notify"), t(prev.triage, "notify"))}，起草 ${v(t(cur.triage, "draft"), t(prev.triage, "draft"))}，急事 ${v(t(cur.triage, "escalate"), t(prev.triage, "escalate"))}\n- 归档 / 忽略 ${v(t(cur.triage, "archive") + t(cur.triage, "ignore"), t(prev.triage, "archive") + t(prev.triage, "ignore"))}\n- 可能漏了（判成归档 / 忽略后 2 小时内你自己在群里说话）${v(cur.missed, prev.missed)}`,
     `**任务**\n- 完成 ${v(cur.tasksDone, prev.tasksDone)}，失败 ${v(cur.tasksFailed, prev.tasksFailed)}\n- 你中途回话 ${v(cur.taskReplies, prev.taskReplies)}；推送成功 ${cur.pushes}、失败 ${cur.pushFailed}`,

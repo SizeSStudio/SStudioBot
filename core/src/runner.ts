@@ -1,4 +1,4 @@
-// Runner (DESIGN §4.0): the only place that knows which harness runs a role. Conversational roles run on pi 1.5.2
+// Runner (DESIGN §办1.1): the only place that knows which harness runs a role. Conversational roles run on pi 1.5.2
 // inside the core process; workers (M2) will run on the Claude Agent SDK behind the same interface.
 //
 // pi notes (P0 + 1.5.2 source):

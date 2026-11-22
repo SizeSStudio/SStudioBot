@@ -1,4 +1,4 @@
-# 四档模型（DESIGN §5.1）。/model 会改这里并 git commit；改动下一个请求起生效，不用重启。
+# 四档模型（DESIGN §办2.1）。/model 会改这里并 git commit；改动下一个请求起生效，不用重启。
 # 只放不保密的东西。密钥和不想进仓库的端点地址写在 /srv/sbot/secrets.env，这里用名字引用。
 endpoints:
   main:

@@ -1,4 +1,4 @@
-// Console views for the four areas (DESIGN §10.4): 待办, 会话 (lanes, runs, the chain detail), 生活, 它自己.
+// Console views for the four areas (DESIGN §触5.4): 待办, 会话 (lanes, runs, the chain detail), 生活, 它自己.
 // Read-mostly; the writes here go through the same functions the cards, commands and tools use (approvals.ts,
 // tasks.ts, life.ts), so the console is one more surface, not a second set of rules.
 
@@ -53,11 +53,11 @@ export function inbox() {
     outbox: all("SELECT id, approval_id, channel, status, error, payload, ts FROM outbox WHERE status IN ('failed','unknown') AND ts>? ORDER BY id DESC LIMIT 20", Date.now() - DAY)
       .map((o) => ({ ...o, payload: undefined, text: excerpt(outText(o.payload), 200) })),
     recent: all("SELECT id, kind, title, status, decided_at, decide_note, result FROM approvals WHERE status<>'pending' AND decided_at>? ORDER BY decided_at DESC LIMIT 12", Date.now() - 2 * DAY),
-    asks: openAsks(14, 40).map(eventView),   // §17.2 要你回 / 拍板, still open
+    asks: openAsks(14, 40).map(eventView),   // §读2.5 要你回 / 拍板, still open
   };
 }
 
-// ───────────── 事件 (§17.2) ─────────────
+// ───────────── 事件 (§读2.5) ─────────────
 
 const matterTitle = (id: unknown) => id ? one("SELECT title FROM matters WHERE id=?", id)?.title as string | undefined : undefined;
 const eventView = (e: Record<string, any>) => ({ ...e, msg_ids: undefined, matter_title: matterTitle(e.matter_id) });

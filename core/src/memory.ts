@@ -1,5 +1,5 @@
-// agent-home (DESIGN §8): the memory repo. Only the core touches these files; agents go through the memory tools,
-// which validate paths here. Every journal line carries a source tag the model cannot set (§8.3).
+// agent-home (DESIGN §读1): the memory repo. Only the core touches these files; agents go through the memory tools,
+// which validate paths here. Every journal line carries a source tag the model cannot set (§读1.3).
 
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, copyFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -55,7 +55,7 @@ export function commitIfDirty(dir: string, message: string): boolean {
 }
 
 /**
- * Edit a YAML file in the config repo (comments kept), commit, and log it in config_changes (§10.3). Only code paths
+ * Edit a YAML file in the config repo (comments kept), commit, and log it in config_changes (§触5.3). Only code paths
  * driven by the owner (commands, card clicks) or a one-time upgrade call this; no agent tool can.
  */
 export function editConfig(file: string, edit: (doc: ReturnType<typeof parseDocument>) => string | undefined, source: "card" | "command" | "console" | "upgrade") {
@@ -69,7 +69,7 @@ export function editConfig(file: string, edit: (doc: ReturnType<typeof parseDocu
   run("INSERT INTO config_changes(ts, file, diff, source) VALUES(?,?,?,?)", Date.now(), file, what, source);
 }
 
-// ---- seed (§8.6) ----
+// ---- seed (§底1.5) ----
 // A seed file is copied when missing, and later replaced only while nobody has touched it: kv `seed.state` keeps the
 // blob hash of what was installed, so a file that still has it was not edited by the owner, dream, an improve proposal
 // or a 回滚. Anything else stays as it is and is reported once per new seed version.
@@ -77,8 +77,8 @@ export function editConfig(file: string, edit: (doc: ReturnType<typeof parseDocu
 /** the instance's own notes from day one (dream writes them): copied once, never synced */
 const SEED_ONCE = new Set(["USER.md", "MEMORY.md"]);
 /**
- * The agent's own instructions, which only the owner changes (AGENTS, SOUL, method skills, tuning; §8.1, §15.12,
- * §16.3 B). Seed PRs can be merged without him reading them, so a new version waits for 「更新 seed」 from him.
+ * The agent's own instructions, which only the owner changes (AGENTS, SOUL, method skills, tuning; §读1.1, §底3.7,
+ * §进2.3 B). Seed PRs can be merged without him reading them, so a new version waits for 「更新 seed」 from him.
  */
 export const seedAsks = (rel: string) => rel === "AGENTS.md" || rel === "SOUL.md" || /^(skills|tuning)\//.test(rel);
 /** at: hash installed; was: what it replaced (a 回滚 brings that back, and that is his answer); told: seed already reported */
@@ -108,7 +108,7 @@ function installSeed(rels: string[], why: string): string {
 }
 
 /**
- * Create agent-home as a git repo, copy missing seed files, and bring untouched ones up to the new seed (§8.6).
+ * Create agent-home as a git repo, copy missing seed files, and bring untouched ones up to the new seed (§底1.5).
  * Never overwrites a file that differs from what was installed. `rev` (short sha of the release) goes into the commit.
  */
 export function ensureAgentHome(seedDir: string, rev = ""): SeedReport {
@@ -128,7 +128,7 @@ export function ensureAgentHome(seedDir: string, rev = ""): SeedReport {
     }
     if (SEED_ONCE.has(rel)) continue;
     const e = st[rel] ??= {}, live = blobHash(readFileSync(dest));
-    // already there; a file from before §8.6 (no record yet) that equals the seed starts being tracked here
+    // already there; a file from before §底1.5 (no record yet) that equals the seed starts being tracked here
     if (live === s) { st[rel] = e.at === s ? { at: s, was: e.was } : { at: s }; continue; }
     if (e.at === live && !seedAsks(rel)) { due.push([rel, s, live]); continue; }
     const rolledBack = e.at === s && e.was === live;   // he reverted our update to this very seed: an answer, not news
@@ -209,7 +209,7 @@ export function safePath(rel: string, who: Principal): string {
   if (!n.endsWith(".md")) throw new Error("only .md files");
   if (NEVER.some((p) => n.startsWith(p))) throw new Error(`not allowed: ${rel}`);
   if (who !== "owner" && OWNER_ONLY.some((p) => n.startsWith(p))) throw new Error(`not allowed: ${rel}`);
-  if (who !== "owner" && !n.startsWith("shared/")) throw new Error(`not allowed: ${rel}`);  // §4.1: others only see shared/ (+ people notes, M5)
+  if (who !== "owner" && !n.startsWith("shared/")) throw new Error(`not allowed: ${rel}`);  // §办1.2: others only see shared/ (+ people notes, M5)
   return join(P.agentHome, n);
 }
 
@@ -230,7 +230,7 @@ export function appendJournal(text: string, src: string, ms = Date.now()): strin
   return rel;
 }
 
-/** Files loaded into every owner run (§8.2), with size caps so a runaway file can't eat the context. */
+/** Files loaded into every owner run (§读1.2), with size caps so a runaway file can't eat the context. */
 export function promptFiles(): { name: string; text: string }[] {
   const caps: Record<string, number> = { "AGENTS.md": 12_000, "SOUL.md": 6_000, "USER.md": 4_000, "MEMORY.md": 4_000 };
   return Object.entries(caps).map(([name, cap]) => {

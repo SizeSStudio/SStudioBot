@@ -1,4 +1,4 @@
-// Scheduled runs against upstream failures, the tier fallback, and 未聊 written by code (DESIGN §5.3, §9.4, §15.5).
+// Scheduled runs against upstream failures, the tier fallback, and 未聊 written by code (DESIGN §办2.3, §底4.3, §觉4).
 // On the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s -- retry-smoke.ts 7829' < test/vps-test-home.sh

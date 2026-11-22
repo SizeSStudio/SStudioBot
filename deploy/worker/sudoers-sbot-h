@@ -1,4 +1,4 @@
-# SStudioBot host-mode worker (DESIGN §7.6): full sudo, by the owner's decision (2026-11-18). This means secrets.env
+# SStudioBot host-mode worker (DESIGN §底3.6): full sudo, by the owner's decision (2026-11-18). This means secrets.env
 # is no longer kept from host workers by file permissions; what keeps it out is the worker rules and the core's
 # PreToolUse guard. Sandbox-mode workers (sbot-w) have no sudo.
 sbot-h ALL=(ALL:ALL) NOPASSWD: ALL

@@ -1,4 +1,4 @@
-# 信息源 (DESIGN §17.3). Hot-reloaded. Everything read here goes the same way as group messages: Triage sorts it,
+# 信息源 (DESIGN §读2.1). Hot-reloaded. Everything read here goes the same way as group messages: Triage sorts it,
 # records events (知道就行 / 要盯 / 要你回 / 要你拍板) and hangs them on matters. Nothing here can send anything.
 #
 # feishu.dm: true → other people's DMs to the owner are read too (events only, never drafts). The owner↔bot DM is

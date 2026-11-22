@@ -1,4 +1,4 @@
-// 因缘图 (§18): a small force layout, hand-made SVG, no library. The layout is computed once (300 ticks, deterministic
+// 因缘图 (§读4): a small force layout, hand-made SVG, no library. The layout is computed once (300 ticks, deterministic
 // seed) and drawn still, so there is nothing to animate (reduced motion is respected for free) and the same data always
 // lands in the same place. Solid lines are backed by records; dashed ones are inferred (name match, someone's claim).
 // Colors are the categorical slots in fixed order: person, matter, place, page/document; him in ink.

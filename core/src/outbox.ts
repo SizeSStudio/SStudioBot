@@ -1,4 +1,4 @@
-// Outbox dispatcher (DESIGN §7.3). Everything the agent says goes through here: written first, delivered after.
+// Outbox dispatcher (DESIGN §底3.3). Everything the agent says goes through here: written first, delivered after.
 // Feishu sends carry an idempotency key (outbox.idem_key), so a row left in `sending` by a crash is safe to retry.
 
 import { all, run, tx } from "./db.ts";

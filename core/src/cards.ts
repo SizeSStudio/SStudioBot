@@ -1,4 +1,4 @@
-// Interactive cards in the admin group (§3.1 feishu:console, §7.3): approval cards, group switches, notices.
+// Interactive cards in the admin group (§触2.1 feishu:console, §底3.3): approval cards, group switches, notices.
 // Plain interactive messages (card JSON 2.0, update_multi), sent and patched with the bot identity. Every button
 // carries a small value object; card.action.trigger delivers it back as `action_value` (see feishu.ts).
 
@@ -52,7 +52,7 @@ export const buttons = (...bs: unknown[]) => ({
 });
 export const quote = (s: string, max = 600) => (s.length > max ? s.slice(0, max) + "…" : s).split("\n").map((l) => `> ${l}`).join("\n");
 
-// ---- approval card (§7.3: channel, recipient, identity, draft, trigger, checks, expert opinion) ----
+// ---- approval card (§底3.3: channel, recipient, identity, draft, trigger, checks, expert opinion) ----
 
 const STATUS: Record<string, [string, Color]> = {
   pending: ["待审批", "yellow"], approved: ["已批准", "green"], sending: ["已批准 · 发送中", "green"], sent: ["已发送", "green"],

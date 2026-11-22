@@ -1,4 +1,4 @@
-// Owner commands in the DM (DESIGN §1.2 /stop, §3.3 /new, §5.3 /model). Handled by code, never by a model.
+// Owner commands in the DM (DESIGN §底1.2 /stop, §触2.3 /new, §办2.3 /model). Handled by code, never by a model.
 // Plain text replies; /group answers with a switch card in the admin group.
 
 import { all, one, kvGet } from "./db.ts";

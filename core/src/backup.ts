@@ -1,4 +1,4 @@
-// Nightly backup (DESIGN §1.3): SQLite snapshot + git bundles of config and agent-home → rustfs `sbot-backup`.
+// Nightly backup (DESIGN §底1.3): SQLite snapshot + git bundles of config and agent-home → rustfs `sbot-backup`.
 //
 //   SBOT_HOME=/srv/sbot node src/backup.ts        (sbot-backup.timer, as sbot)
 //

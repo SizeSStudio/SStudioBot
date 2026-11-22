@@ -1,4 +1,4 @@
-// Approvals (DESIGN §7.2, §7.3). Submit-style by default: the tool writes a pending row and returns at once; the card
+// Approvals (DESIGN §底3.2, §底3.3). Submit-style by default: the tool writes a pending row and returns at once; the card
 // goes to the admin group; the owner's click is a new event. Deferred-style (worker git_push) uses the same rows with
 // kind=deferred_tool; the Task Engine resumes the worker after the decision.
 //
@@ -113,7 +113,7 @@ export async function onApprovalClick(v: { id: number; v: number; d: string }, o
   });
   if (!a) { log("approval", "click ignored (not pending or old version)", { id: v.id }); return; }
   log("approval", decision, { id: a.id, kind: a.kind });
-  // §16.3 A: what he asked to change is the main evidence for style notes; dream reads it from the journal
+  // §进2.3 A: what he asked to change is the main evidence for style notes; dream reads it from the journal
   if (a.kind === "send" && decision === "approved" && a.revise_notes) {
     const notes = (JSON.parse(a.revise_notes) as { note: string }[]).map((n) => n.note).join(" / ");
     appendJournal(`审批 #${a.id}（${a.title}）改稿意见：${notes.slice(0, 600)}；最终发出：${String(a.final_text ?? a.draft).slice(0, 600)}`, "owner@approval");
@@ -221,14 +221,14 @@ export async function editDraft(id: number, v: number, text: string, source: str
   return getApproval(id)!;
 }
 
-/** §3.6 step 3: the owner spoke in this chat after the trigger → the pending drafts for that chat are void. */
+/** §读2.2 step 3: the owner spoke in this chat after the trigger → the pending drafts for that chat are void. */
 export function invalidateForOwnerMessage(chatId: string, ts: number, msgId: string) {
   if (one("SELECT 1 FROM outbox WHERE sent_msg_id=?", msgId)) return;   // that was our own send in his name
   const rows = all("SELECT id FROM approvals WHERE status='pending' AND kind='send' AND trigger_chat=? AND trigger_ts<=?", chatId, ts);   // minute precision: same minute counts
   for (const r of rows) {
     run("UPDATE approvals SET status='invalidated', decide_note='你已经亲自回复了', decided_at=? WHERE id=?", Date.now(), r.id);
     signal("replied_myself", { approval_id: r.id });
-    // what he actually sent is the reference answer for the draft (§16.2)
+    // what he actually sent is the reference answer for the draft (§进2.2)
     const mine = one("SELECT text FROM messages WHERE id=?", msgId)?.text, draft = one("SELECT draft, title FROM approvals WHERE id=?", r.id);
     if (mine) appendJournal(`审批 #${r.id}（${draft?.title ?? ""}）作废：他自己回了「${String(mine).slice(0, 500)}」；草稿是「${String(draft?.draft ?? "").slice(0, 400)}」`, "owner@approval");
     void refreshCard(r.id);
@@ -241,7 +241,7 @@ export function onApprovalSent(approvalId: number, ok: boolean, err?: string) {
   void refreshCard(approvalId, ok ? "sent" : "failed");
 }
 
-/** Sentinel bit for approvals (§9.2): expire, then post any missing cards. */
+/** Sentinel bit for approvals (§底4.2): expire, then post any missing cards. */
 export async function sweepApprovals() {
   for (const a of all("SELECT * FROM approvals WHERE status='pending' AND expires_at < ?", Date.now())) {
     if (!run("UPDATE approvals SET status='expired', decided_at=? WHERE id=? AND status='pending'", Date.now(), a.id).changes) continue;

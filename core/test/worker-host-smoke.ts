@@ -1,4 +1,4 @@
-// Host-mode worker smoke on the VPS (DESIGN §4.2, §7.6), after deploy/worker/install.sh has created sbot-h:
+// Host-mode worker smoke on the VPS (DESIGN §办1.3, §底3.6), after deploy/worker/install.sh has created sbot-h:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh test/worker-host-smoke.ts 7830
 //

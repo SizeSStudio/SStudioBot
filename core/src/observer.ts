@@ -1,11 +1,11 @@
-// Feishu observer, user identity (DESIGN §3.5, §3.6). Reads the owner's groups; never writes as the owner.
+// Feishu observer, user identity (DESIGN §触2.5, §读2.2). Reads the owner's groups; never writes as the owner.
 //
 //   - every 30 s one global `+messages-search --query ""` over [cursor − 2 min, now], deduped by message_id
 //   - rows go to `messages` (triage_status pending | digest | done | skipped); Triage is decoupled (triage.ts)
 //   - activation per chat: groups.yaml override > sensitive name → disabled > external / muted → digest > default
 //   - loop filter: the owner's own messages void pending drafts for that chat; bot messages and our sends are skipped
 //   - first start: no reading until the owner confirms the group-list review card; new groups → a notice card
-//   - p2p chats (DMs others send him) only when sources.yaml feishu.dm is on (§17.3); never the owner↔bot DM, which
+//   - p2p chats (DMs others send him) only when sources.yaml feishu.dm is on (§读2.1); never the owner↔bot DM, which
 //     is the main lane. They go in as surface feishu:p2p, are cached in `chats` (chat_mode p2p), and Triage reads them.
 //   - his own message in any observed chat closes the asks it answers there (events.ts markReplied)
 
@@ -30,7 +30,7 @@ export async function userIdentityReady(): Promise<boolean> {
   } catch { return false; }
 }
 
-/** Default rules (§3.5); `why` says which rule applied. */
+/** Default rules (§触2.5); `why` says which rule applied. */
 export function activationOf(chatId: string, name?: string, g: GroupsConfig = groupsConf()): { act: Activation; why: string } {
   const o = g.groups?.[chatId]?.activation;
   if (o) return { act: o, why: "手动设置" };
@@ -101,7 +101,7 @@ export async function onGroupClick(v: { chat: string; a: Activation }, operator:
   await patchCard(cardMsgId, groupCard(ids));
 }
 
-// ---- first-run review (§3.5 ③) ----
+// ---- first-run review (§触2.5 ③) ----
 
 async function postReview() {
   const admin = feishuConf().admin_chat;

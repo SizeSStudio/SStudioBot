@@ -1,4 +1,4 @@
-// Config forms smoke (DESIGN §10.6) on the VPS, as sbot, on a fresh throwaway home:
+// Config forms smoke (DESIGN §触5.6) on the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh config-form-smoke.ts 7829
 //

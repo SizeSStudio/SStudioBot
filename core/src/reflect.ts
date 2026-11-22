@@ -1,6 +1,6 @@
-// 复盘 and 前瞻 as conversations (DESIGN §15.2, §15.5). No separate process: a job (or a matter reaching 收) puts an
+// 复盘 and 前瞻 as conversations (DESIGN §觉2, §觉4). No separate process: a job (or a matter reaching 收) puts an
 // event into the owner's lane with the facts code gathered plus the method from skills/; the main agent opens the
-// conversation, and his replies continue it in the same session. These events never count against 先安静 (§15.11).
+// conversation, and his replies continue it in the same session. These events never count against 先安静 (§触4).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -176,7 +176,7 @@ ${["ziwei", "liuyao"].map((l) => `### ${l}\n${page(`self/lens-notes/${l}.md`, 15
 ${quarterly ? `3. 这是季度第一个月：问他要不要把 self/habits.md、self/rhythms.md、self/guidance-notes.md 和风格笔记（style/）过一遍，删掉他不认的（习气用 self_mark 标 dropped；笔记的删改记下来，dream 会处理）。他说不用就不用。
    现在「淡了」的习气 / 节律（很久没有新证据，已经不再引用）：
 ${selfItemsText({ statuses: ["faded"] }).replace(/^/gm, "   ")}
-   有的话一并列给他：他说「还在」用 self_mark 改回 endorsed，说「放下」改成 let_go，不管就不动。（§15.15）\n` : ""}
+   有的话一并列给他：他说「还在」用 self_mark 改回 endorsed，说「放下」改成 let_go，不管就不动。（§寸4）\n` : ""}
 ## 复盘方法（skills/review/SKILL.md）
 ${skill("review")}
 
@@ -184,7 +184,7 @@ ${skill("review")}
 ${skill("outlook")}`;
 }
 
-/** 事收 (§15.5): queued into the matter's own lane when it reaches 收 */
+/** 事收 (§觉4): queued into the matter's own lane when it reaches 收 */
 export function queueMatterReview(id: number) {
   const m = one("SELECT * FROM matters WHERE id=?", id);
   if (!m?.lane) return;
@@ -216,7 +216,7 @@ ${skill("review")}`;
   log("reflect", "matter review queued", { matter: id, lane: m.lane });
 }
 
-// ───────────── 未聊 is written by code (§15.5) ─────────────
+// ───────────── 未聊 is written by code (§觉4) ─────────────
 
 const REVIEW_JOBS: Record<string, "day" | "week" | "month"> = { review_day: "day", review_week: "week", review_month: "month" };
 const FACTS_MAX = 6000;
@@ -302,7 +302,7 @@ export function closeDueReviews(now = Date.now()): number {
   return filed;
 }
 
-/** 今日留意 for the morning report (§15.2): the week's and month's outlooks it should nest under */
+/** 今日留意 for the morning report (§觉2): the week's and month's outlooks it should nest under */
 export function morningOutlookText(): string {
   const now = Date.now();
   return `## 今日留意的依据（前瞻）

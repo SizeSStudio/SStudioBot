@@ -1,7 +1,7 @@
-// Harness-independent tool layer (DESIGN §4.0, §4.1, §7.1). A tool = zod schema + TS function + action level.
+// Harness-independent tool layer (DESIGN §办1.1, §办1.2, §底3.1). A tool = zod schema + TS function + action level.
 // The gate lives here, in the wrapper, before any side effect: both pi and the SDK go through `callTool`.
-// L2 tools (send, request_approval) never act themselves: they write a pending approval and return at once (§7.2A);
-// the owner's click is a new event. Worker L2 tools (git_push) are gated in tasks.ts with PreToolUse defer (§7.2B).
+// L2 tools (send, request_approval) never act themselves: they write a pending approval and return at once (§底3.2A);
+// the owner's click is a new event. Worker L2 tools (git_push) are gated in tasks.ts with PreToolUse defer (§底3.2B).
 
 import { z } from "zod";
 import { appendJournal, cleanRel, localStamp, readPage, type Principal } from "./memory.ts";
@@ -26,7 +26,7 @@ import { LEVELS, STATES, addMatterKeys, eventLine, eventsQuery, linkEvents, matt
 export interface TurnContext { channel: "feishu"; chat_id: string; message_id?: string; thread_id?: string; in_thread?: boolean; surface: string }
 export interface RunCtx {
   runId: string; lane: string; principal: Principal; turn: TurnContext;
-  src: string;          // journal source tag, set by code (§8.3)
+  src: string;          // journal source tag, set by code (§读1.3)
   token: string;        // this run's LLM proxy token (for tools that call a model, e.g. web_search)
   replies: number;      // reply() calls so far; the dispatcher only auto-sends the final text when this is 0
   ownerTyped?: boolean; // every event in this run is a message he typed; timers, task notices and forwarded events are not
@@ -34,13 +34,13 @@ export interface RunCtx {
 export type Level = "L0" | "L1" | "L2";
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {
   name: string; description: string; schema: S; level: Level;
-  /** who may see the tool at all (§4.1: tools are given per session type, not per trust in the model) */
+  /** who may see the tool at all (§办1.2: tools are given per session type, not per trust in the model) */
   for: Principal[];
   exec(args: z.infer<S>, ctx: RunCtx): Promise<string>;
 }
 const def = <S extends z.ZodObject>(d: ToolDef<S>) => d as unknown as ToolDef;
 
-/** Queue a message to the run's own input source. Counted as a side effect in the same transaction (§1.2). */
+/** Queue a message to the run's own input source. Counted as a side effect in the same transaction (§底1.2). */
 export function queueReply(ctx: Pick<RunCtx, "runId" | "lane" | "turn">, text: string) {
   return tx(() => {
     const r = run(`INSERT INTO outbox(run_id, lane, channel, target_json, payload, idem_key, send_by, ts) VALUES(?,?,?,?,?,?,?,?)`,
@@ -52,7 +52,7 @@ export function queueReply(ctx: Pick<RunCtx, "runId" | "lane" | "turn">, text: s
   });
 }
 
-/** his own conversation, not a group: what is his can be shown here in full (§15.9) */
+/** his own conversation, not a group: what is his can be shown here in full (§读5.1) */
 export const isPrivateTurn = (ctx: Pick<RunCtx, "principal" | "turn">) => ctx.principal === "owner" && (ctx.turn.surface === "feishu:dm" || ctx.turn.surface === "console");
 /** private, and he asked in this very run. Other runs can carry outside text, which must not reach his birth data or pages. */
 const ownerDirect = (ctx: RunCtx) => isPrivateTurn(ctx) && ctx.ownerTyped === true;
@@ -93,7 +93,7 @@ export const TOOLS: ToolDef[] = [
     description: "Read one memory page by its path relative to the memory root, e.g. journal/2026-11-17.md or people/wife.md.",
     schema: z.object({ path: z.string().min(1) }),
     async exec({ path }, ctx) {
-      // §15.9: whole files are his to read in his own DM; groups, and runs he didn't start, get single items via self_list
+      // §读5.1: whole files are his to read in his own DM; groups, and runs he didn't start, get single items via self_list
       if (ctx.turn.channel === "feishu" && !ownerDirect(ctx) && /^self\/(habits\.md|rhythms\.md|charts\/)/.test(cleanRel(path))) return "这个文件只在他私聊里、他亲手问的那一轮整份读；这里用 self_list 看具体条目，只引用相关的一两条。";
       return readPage(path, ctx.principal);
     },
@@ -162,7 +162,7 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
-  // ---- tasks (§4.2) ----
+  // ---- tasks (§办1.3) ----
   def({
     name: "task_start", level: "L1", for: ["owner"],
     description: "Start a background worker for a substantial job (coding, research, writing a document, anything taking more than a couple of minutes). By default it runs on the server itself (full network and tailnet, sudo, ssh to the owner's machines, skills), posts progress in a workbench topic, may ask questions (they come back to you), and reports back here when done. Give it everything it needs in goal/context: it cannot see this conversation or memory.",
@@ -188,7 +188,7 @@ export const TOOLS: ToolDef[] = [
   def({ name: "task_reply", level: "L1", for: ["owner"], description: "Pass the owner's answer or new instructions to a task (resumes it if it was waiting or finished).",
     schema: z.object({ task_id: z.string(), text: z.string().min(1) }), async exec({ task_id, text }) { return replyTask(task_id.replace(/^#/, ""), text, "dm"); } }),
 
-  // ---- follow-ups (§9.1) ----
+  // ---- follow-ups (§底4.1) ----
   def({
     name: "followup_set", level: "L1", for: ["owner"],
     description: "Set a reminder: at the given local time you get a timer event in this conversation with the note, and act on it then (remind him, check something, ask how it went). Resolve relative dates (\"周三\", \"明早\") against the current time first.",
@@ -206,7 +206,7 @@ export const TOOLS: ToolDef[] = [
   def({ name: "followup_cancel", level: "L1", for: ["owner"], description: "Cancel a pending reminder.", schema: z.object({ id: z.number() }),
     async exec({ id }) { return cancelFollowup(id) ? `#${id} 取消了` : `#${id} 不存在或者已经不在等待中`; } }),
 
-  // ---- matters, 事 (§15.3, §15.4) ----
+  // ---- matters, 事 (§读3.1, §觉3) ----
   def({
     name: "matter_open", level: "L1", for: ["owner"],
     description: "Open a matter (事): something the owner is going through over days or weeks that deserves its own page (a negotiation, a hire, a move, a hard conversation). Returns the matter id and the 起局 playbook to follow with him.",
@@ -232,7 +232,7 @@ export const TOOLS: ToolDef[] = [
   }),
   def({
     name: "matter_events", level: "L0", for: ["owner"],
-    description: "The event ledger (§17.2): what happened around him in groups, DMs and sources, each with a kind (ask / decision / commitment / progress / risk / deadline / info) and a level (fyi 知道就行 / watch 要盯 / reply 要你回 / decide 要你拍板). Filter by matter, topic, level, state (open = still waiting on him). Use for a matter's timeline, \"what's waiting on me\", and summaries.",
+    description: "The event ledger (§读2.5): what happened around him in groups, DMs and sources, each with a kind (ask / decision / commitment / progress / risk / deadline / info) and a level (fyi 知道就行 / watch 要盯 / reply 要你回 / decide 要你拍板). Filter by matter, topic, level, state (open = still waiting on him). Use for a matter's timeline, \"what's waiting on me\", and summaries.",
     schema: z.object({
       matter_id: z.number().optional(), topic: z.string().max(24).optional(), levels: z.array(z.enum(LEVELS)).optional(), states: z.array(z.enum(STATES)).optional(),
       q: z.string().optional().describe("substring of summary, person or place"),
@@ -282,7 +282,7 @@ export const TOOLS: ToolDef[] = [
   }),
   def({
     name: "matter_review", level: "L1", for: ["owner"],
-    description: "The daily review's suggestions about matters (§15.14). list: today's and the queue. act: apply the option he just chose for suggestion id (option = one of the listed codes, e.g. attach / merge / close / drop / ok). undo: take back his decision on id. Only act on what he said; never choose for him.",
+    description: "The daily review's suggestions about matters (§读3.2). list: today's and the queue. act: apply the option he just chose for suggestion id (option = one of the listed codes, e.g. attach / merge / close / drop / ok). undo: take back his decision on id. Only act on what he said; never choose for him.",
     schema: z.object({ action: z.enum(["list", "act", "undo"]).default("list"), id: z.number().optional(), option: z.string().max(20).optional() }),
     async exec(a) {
       try {
@@ -308,7 +308,7 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
-  // ---- 因缘 (§18): the people around him; owner only ----
+  // ---- 因缘 (§读4): the people around him; owner only ----
   def({
     name: "person_lookup", level: "L0", for: ["owner"],
     description: "Who someone is in his life: circle, relation in people.yaml, how and when they first showed up, relations, the people around them, matters together, where they usually talk, their page. Use before drafting to or about someone, or when he asks about a person. A name shared by two people returns candidates: ask again with #id.",
@@ -342,7 +342,7 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
-  // ---- 红尘里修 (§15): owner only ----
+  // ---- 红尘里修 (§读5.1, §觉): owner only ----
   def({
     name: "note_add", level: "L0", for: ["owner"],
     description: "随手记: save something the owner says in passing about his life or state (\"记一下：今天心里有点乱\", \"今天跑了 5 公里\"), in his own words. Goes on the timeline; feeds rhythms and reviews.",
@@ -494,14 +494,14 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
-  // ---- expert (§5.5, manual trigger) ----
+  // ---- expert (§办2.5, manual trigger) ----
   def({
     name: "consult_expert", level: "L1", for: ["owner"],
     description: "Ask the expert-tier model for a second opinion on a hard question (when the owner asks for it, or the stakes are high and you are unsure). Give it the full context; it has no tools and no memory.",
     schema: z.object({ question: z.string().min(1).max(4000), context: z.string().max(40_000).default("") }),
     async exec({ question, context }, ctx) {
       const day = localStamp().slice(0, 10), used = Number(kvGet(`expert.used.${day}`) ?? 0);
-      kvSet(`expert.used.${day}`, String(used + 1));   // counted; a manual ask still runs past daily_limit (§5.5)
+      kvSet(`expert.used.${day}`, String(used + 1));   // counted; a manual ask still runs past daily_limit (§办2.5)
       const out = await complete({ tier: "expert", maxTokens: 3000, requester: "expert", runId: `ex_${ctx.runId}_${used}`,
         system: `你是给${ownerName()}的助手当顾问的专家。直接、具体；指出风险和你不确定的地方。`, user: `${context ? `背景：\n${context}\n\n` : ""}问题：${question}` });
       return `专家意见（今天第 ${used + 1} 次，额度 ${gateConf().expert_daily_limit}）：\n${out}`;
@@ -527,7 +527,7 @@ export async function callTool(t: ToolDef, rawArgs: unknown, ctx: RunCtx): Promi
 }
 
 /**
- * web_search for pi lanes (§5.4): one Messages call through the proxy (light tier) with the server tool
+ * web_search for pi lanes (§办2.4): one Messages call through the proxy (light tier) with the server tool
  * web_search_20250305, which the upstream supports (P0). Returns the model's digest plus the cited URLs.
  */
 async function webSearch(query: string, token: string): Promise<string> {

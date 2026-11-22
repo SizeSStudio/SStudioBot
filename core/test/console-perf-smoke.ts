@@ -1,4 +1,4 @@
-// Console response plumbing smoke (DESIGN §10.5) on the VPS, as sbot, on a fresh throwaway home:
+// Console response plumbing smoke (DESIGN §触5.5) on the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh console-perf-smoke.ts 7830
 //

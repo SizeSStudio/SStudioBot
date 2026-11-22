@@ -1,4 +1,4 @@
-// Regrouping and correcting matters (DESIGN §15.3). Every change goes through here and leaves one row in matter_ops:
+// Regrouping and correcting matters (DESIGN §读3.1). Every change goes through here and leaves one row in matter_ops:
 // who, when, why, and exactly what it takes to put it back. Only his hand gets here: a card button, the console, or the
 // main agent acting on what he just said. The daily review (matter-review.ts) only ever suggests.
 //

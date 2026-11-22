@@ -1,10 +1,10 @@
-// Bot-side routing for the bot's own groups and card callbacks (DESIGN §3.1, §7.3).
+// Bot-side routing for the bot's own groups and card callbacks (DESIGN §触2.1, §底3.3).
 //
 //   admin group (feishu:console): owner's reply in a card's thread → revise / reject with reasons; `/group 关键词`;
-//     `回滚 <sha>` reverts one memory commit (the morning dream diff, §8.3); `更新 seed [名字…]` takes the new seed
-//     for the agent's instructions that wait for him (§8.6)
+//     `回滚 <sha>` reverts one memory commit (the morning dream diff, §读1.3); `更新 seed [名字…]` takes the new seed
+//     for the agent's instructions that wait for him (§底1.5)
 //   workbench (feishu:workbench): owner's reply in a task's topic → that task; anything else → lane feishu:wb:<topic root>
-//   other groups: ignored here; the observer reads the owner's groups as the owner (§3.6)
+//   other groups: ignored here; the observer reads the owner's groups as the owner (§读2.2)
 //   card.action.trigger: deduped by event_id (inbox, lane "card"), then routed by the button value's `k`
 
 import { feishuConf, log, ownerFeishu } from "./config.ts";

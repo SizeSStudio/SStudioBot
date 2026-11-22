@@ -1,4 +1,4 @@
-// What each config file's form looks like (DESIGN §10.6). Labels and help are written for the owner: what the setting
+// What each config file's form looks like (DESIGN §触5.6). Labels and help are written for the owner: what the setting
 // controls, its default, what turning it up or down does. Types, ranges and required-ness are added from the zod schemas
 // in schemas.ts (config-form.ts), and the smoke test fails if the two drift apart.
 // Public repo: examples here are made up. self.yaml has no form yet: its page is 生活 › 出生信息.

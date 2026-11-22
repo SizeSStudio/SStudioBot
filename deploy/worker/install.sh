@@ -22,7 +22,7 @@ systemctl is-active sbot-netfilter.service
 iptables -S SBOT_W; iptables -S OUTPUT | head -2; ip6tables -S SBOT_W | head -3
 sudo -u sbot-w /opt/sbot/claude-code/current/claude --version
 
-# ---- host-mode worker sbot-h (DESIGN §4.2, §7.6): runs on the host, full network/tailnet, full sudo, persistent HOME
+# ---- host-mode worker sbot-h (DESIGN §办1.3, §底3.6): runs on the host, full network/tailnet, full sudo, persistent HOME
 H=/srv/data/sbot-h
 getent group sbot-h >/dev/null || groupadd --system sbot-h
 id sbot-h >/dev/null 2>&1 || useradd --system --gid sbot-h --home-dir $H/home --shell /bin/bash sbot-h

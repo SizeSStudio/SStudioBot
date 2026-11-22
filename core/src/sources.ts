@@ -1,4 +1,4 @@
-// 信息源 (DESIGN §17.3). Everything that is not a Feishu chat comes in here and lands in `messages` as
+// 信息源 (DESIGN §读2.1). Everything that is not a Feishu chat comes in here and lands in `messages` as
 // surface source:<id>, chat_id <id>:<where>, triage_status pending, so Triage, events and matters treat it like a chat.
 //
 //   config/sources.yaml   feishu.dm (Feishu DMs; the observer reads them) + sources: [{ id, kind, every, domain, … }]

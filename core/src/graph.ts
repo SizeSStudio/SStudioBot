@@ -1,12 +1,12 @@
-// 因缘 (DESIGN §18): who is around him, how they connect to each other and to matters, places and pages, and how each
+// 因缘 (DESIGN §读4): who is around him, how they connect to each other and to matters, places and pages, and how each
 // connection began. Borrowed from graphify: every edge says why it exists and how sure it is (EXTRACTED = straight from
 // a record or confirmed by him, INFERRED = matched by name or someone's claim), the build is code only (no model), and
 // queries are neighbours / shortest path / a small report.
 //
 // persons (his merges, splits, circles, notes, confirmed relations) are durable. graph_edges / graph_nodes are a view:
 // dropped and rebuilt from messages, events, matters, pages and raw sources at most every 15 minutes.
-// people.yaml (identity + trust, §2.2) is only read here: being in persons gives nobody any permission.
-// self/ and readings never enter the graph (§15.9).
+// people.yaml (identity + trust, §读4.2) is only read here: being in persons gives nobody any permission.
+// self/ and readings never enter the graph (§读5.1).
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, posix } from "node:path";
@@ -236,7 +236,7 @@ function build() {
       if (typeof p === "number" && !hidden.has(p)) add(`p:${p}`, `m:${mRoot(Number(m.id))}`, "key", "INFERRED", m.opened_at ?? 0, "关键人");
     }
   }
-  // 4. raw sources (§8.5): a document links the pages it fed (the table comes with ingest; until then there is none)
+  // 4. raw sources (§读1.5): a document links the pages it fed (the table comes with ingest; until then there is none)
   if (hasTable("raw_sources")) for (const r of all("SELECT sha256, title, pages_json, received_at FROM raw_sources WHERE pages_json IS NOT NULL")) {
     let pages: unknown = []; try { pages = JSON.parse(r.pages_json); } catch { /* */ }
     if (!Array.isArray(pages)) continue;

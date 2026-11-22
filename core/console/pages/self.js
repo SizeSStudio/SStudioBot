@@ -1,6 +1,6 @@
-// 它自己: how it is running (connections, what's busy, jobs), whether it's getting better (§16 health trend), its own
+// 它自己: how it is running (connections, what's busy, jobs), whether it's getting better (§进2 health trend), its own
 // improvement proposals (diff, replay, roll back), its memory (commits, pages, search), what it costs, its models and
-// keys, its config files, which groups it watches, and the other places it reads (§17.3 信息源).
+// keys, its config files, which groups it watches, and the other places it reads (§读2.1 信息源).
 
 import { $, $$, S, esc, api, toast, pill, tierDot, row, tile, rel, mdhm, isoDay, money, k, empty, loading, tabs, chips, diffHtml, mdText,
   busy, ACTS, openDrawer, closeDrawer, TIER, ROLE, jobWhen } from "/lib/core.js";
@@ -74,7 +74,7 @@ PAGES.status = (body) => {
 };
 ACTS.runjob = (el) => busy(el, "在跑…", async () => { const r = await api(`/jobs/${el.dataset.name}/run`, { method: "POST" }); toast(r.result, 4000); });
 
-// ───────── 健康 (§16): small multiples, one measure per chart, weekly ─────────
+// ───────── 健康 (§进2): small multiples, one measure per chart, weekly ─────────
 const METRICS = [
   ["approved", "草稿一次就批", "次", "好"], ["revised", "改过再批", "次"], ["rejected", "草稿被拒", "次", "少"], ["mine", "你自己回了（没用草稿）", "次", "少"],
   ["expired", "草稿过期没人管", "次", "少"], ["rounds", "平均改稿轮数", "轮", "少"], ["missed", "群里漏提醒", "次", "少"], ["notify", "群消息提醒你", "次"],
@@ -103,7 +103,7 @@ PAGES.health = async (body) => {
   }
 };
 
-// ───────── 提案 (§16) ─────────
+// ───────── 提案 (§进2) ─────────
 PAGES.proposals = async (body) => {
   const ps = await api("/self/proposals");
   body.innerHTML = ps.length ? `<div class="sub">它对自己提示词、规则的改动建议。批准后生效，两周后回看；随时可以回滚。</div><div class="list">${ps.map((p) =>
@@ -315,7 +315,7 @@ ACTS.setgroup = async (el) => {
   x.act = r.act; x.why = r.why; drawGroups(); toast(`${x.name}：${ACT_LONG[r.act]}`);
 };
 
-// ───────── 信息源 (§17.3) ─────────
+// ───────── 信息源 (§读2.1) ─────────
 PAGES.sources = async (body) => {
   const d = await api("/sources");
   const last = (x) => !x.last ? "还没拉过" : `上次 ${rel(x.last.at)}${x.last.ok ? `，新 ${x.last.n} 条` : `，出错：${x.last.err ?? ""}`}`;

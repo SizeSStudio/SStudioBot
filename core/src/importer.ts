@@ -1,4 +1,4 @@
-// 导入 (DESIGN §17.4): bring 【事】 and 【人】 over from wherever he was before.
+// 导入 (DESIGN §读2.6): bring 【事】 and 【人】 over from wherever he was before.
 //
 //   material ─► sbot-import/1 JSON as is ─┐
 //            └► anything else: the work tier normalizes it with import/PROMPT.md (the same prompt he can hand
@@ -36,7 +36,7 @@ export interface ImportPerson { name: string; aka: string[]; org: string; role: 
 export interface ImportMatter {
   key: string; title: string; domain: "work" | "personal"; status: "active" | "closing" | "done" | "dropped"; why: string; direction: string[]; facts: string[];
   people: string[]; places: string[]; keys: string[]; close_condition: string; opened?: number; closed?: number; next: string[];
-  parent: string;   // key of the 主线 this is a 子事 of (§15.3); empty for a 主线
+  parent: string;   // key of the 主线 this is a 子事 of (§读3.1); empty for a 主线
 }
 export interface ImportEvent { matter: string | null; ts: number; kind: string; level: string; who: string; where: string; text: string; link?: string; state: "open" | "done" }
 export interface ImportDoc { format: string; from: string; exported_at: string; people: ImportPerson[]; matters: ImportMatter[]; events: ImportEvent[] }
@@ -177,7 +177,7 @@ function findMatter(m: ImportMatter) {
 }
 const slugOf = (name: string) => name.replace(/[\/\\:*?"<>|#\s.]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
 
-/** how many lines he would end up following (§17.4), and a word of warning when the material came out too fine-grained */
+/** how many lines he would end up following (§读2.6), and a word of warning when the material came out too fine-grained */
 function shapeOf(doc: ImportDoc) {
   const live = doc.matters.filter((m) => m.status === "active" || m.status === "closing");
   const mains = live.filter((m) => !m.parent).length, subs = live.length - mains;
@@ -235,7 +235,7 @@ export function applyImport(sha: string) {
   const sum: Summary = { people_new: [], people_updated: [], matters_new: [], matters_merged: [], keys_added: {}, events: 0, open: 0 };
   const day = localStamp().slice(0, 10);
   try {
-    // people → their pages (owner-only by default, §8)
+    // people → their pages (owner-only by default, §读1)
     for (const p of doc.people) {
       const slug = slugOf(p.name);
       if (!slug) continue;

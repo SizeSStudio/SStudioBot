@@ -1,4 +1,4 @@
-// 飞书邮箱, a built-in source (DESIGN §17.3): sources.yaml `kind: feishu-mail`. New mail goes the way group messages
+// 飞书邮箱, a built-in source (DESIGN §读2.1): sources.yaml `kind: feishu-mail`. New mail goes the way group messages
 // go: Triage sorts it, events land on matters. Read as the owner through the core's lark-cli login, which is why this
 // lives in the core and not in a plugin: a plugin must never get that login.
 //

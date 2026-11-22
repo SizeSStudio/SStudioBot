@@ -147,7 +147,7 @@ export function stepsHtml(steps, role) {
 export const inputLabel = (x) => `${INPUT[x.kind] ?? x.kind}${x.source && x.source !== x.kind && x.kind !== "user" ? ` · ${x.source}` : ""}`;
 export const runLabel = (r) => `${ROLE[r.role] ?? r.role}`;
 
-// ───────── one event (§17.2): what it asks of him, where, which matter; open asks can be closed in place ─────────
+// ───────── one event (§读2.5): what it asks of him, where, which matter; open asks can be closed in place ─────────
 export const EV_KIND = { ask: "找他", decision: "定了", commitment: "答应", progress: "进展", risk: "风险", deadline: "时间点", info: "信息" };
 export const EV_LEVEL = { fyi: "知道就行", watch: "要盯", reply: "要你回", decide: "要你拍板" };
 const EV_STATE = { open: ["warn", "等你"], seen: ["plain", "知道了"], done: ["good", "处理了"], dropped: ["plain", "不用了"] };

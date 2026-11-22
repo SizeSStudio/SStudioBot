@@ -1,4 +1,4 @@
-# 认人只认 ID（DESIGN §2）。名字只用于显示。
+# 认人只认 ID（DESIGN §底2）。名字只用于显示。
 owner:
   name: 你的名字
   ids:

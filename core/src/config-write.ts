@@ -1,4 +1,4 @@
-// The one way a whole config file gets written (DESIGN §10.3): hash check → YAML → schema → write → git commit →
+// The one way a whole config file gets written (DESIGN §触5.3): hash check → YAML → schema → write → git commit →
 // config_changes → note in the admin group. The console's editor, the birth form and the main agent's self_profile all
 // come through here, so none of them can skip a step.
 
@@ -59,7 +59,7 @@ export function saveConfigText(file: string, text: string, hash: string, o: { so
   run("INSERT INTO config_changes(ts, file, diff, source) VALUES(?,?,?,?)", Date.now(), file, diff.slice(0, 4000), o.source);
   log("console", "config saved", { file, lines: diff.split("\n").length, source: o.source });
   const lines = diff.split("\n").slice(0, 24).map((l) => l.slice(0, 140)), who = WHO[o.source];
-  // §15.9: the admin group is a group, so self.yaml's content stays out of it; it only hears that the file changed
+  // §读5.1: the admin group is a group, so self.yaml's content stays out of it; it only hears that the file changed
   void notifyAdmin(file === "self.yaml" ? `⚙️ **${who}改了 self.yaml**（${diff.split("\n").length} 行；私人内容，不在群里显示，去控制台或私聊看）`
     : `⚙️ **${who}改了 ${file}**\n\`\`\`\n${lines.join("\n")}${diff.split("\n").length > 24 ? "\n…" : ""}\n\`\`\``)
     .then(() => wide.length ? notifyAdmin(`⚠️ **放宽了限制**（${who}，${file}）\n${wide.map((w) => `- ${w}`).join("\n")}`) : undefined);

@@ -1,4 +1,4 @@
-// 生活 › 人 and 生活 › 因缘 (§18). Everyone he has met, what kind of person they are, who is around them, and how each
+// 生活 › 人 and 生活 › 因缘 (§读4). Everyone he has met, what kind of person they are, who is around them, and how each
 // tie began. Trust stays in people.yaml (shown here read-only); everything editable here is memory: circle, note,
 // merges, splits, relations. Solid = a record says so or he confirmed it; 推测 = matched by name or someone's claim.
 

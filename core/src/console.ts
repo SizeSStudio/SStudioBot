@@ -1,4 +1,4 @@
-// Config console (DESIGN §10). Two entrances, each its own unix socket, each trusting only its own proof of identity:
+// Config console (DESIGN §触5). Two entrances, each its own unix socket, each trusting only its own proof of identity:
 //   tailnet  /run/sbot/console.sock (dir 0700 sbot): only `tailscale serve --https=8444` (root) reaches it; every request
 //            must carry a Tailscale-User-Login listed in config/console.yaml owners. tailscaled replaces a forged one.
 //   web      /run/sbot-web/console.sock (dir 2750 sbot:sbot-web): nginx on public 443 reaches it; identity is only the
@@ -7,7 +7,7 @@
 //   /api/*  status (+ SSE), flow, usage, groups, config files, secrets (write-only), jobs, memory
 //   /*      the static front end in core/console/
 //
-// Writes follow §10.3: validate (schemas.ts) → write → git commit "via console" → config_changes → note in the admin
+// Writes follow §触5.3: validate (schemas.ts) → write → git commit "via console" → config_changes → note in the admin
 // group; changes that loosen limits get a separate loud notice. Secret values never leave this process: the API only
 // says whether a name is set.
 
@@ -88,7 +88,7 @@ async function status(d: ConsoleDeps) {
     lark: { user: await larkUserReady() },
     observer: {
       lastPoll: Number(kvGet("observer.cursor") ?? 0) || null, chats: one("SELECT COUNT(*) n FROM chats WHERE COALESCE(chat_mode,'')<>'p2p'")!.n,
-      // groups, DMs (when on) and sources all go through Triage (§17.3)
+      // groups, DMs (when on) and sources all go through Triage (§读2.1)
       last24h: Object.fromEntries(all("SELECT triage_status s, COUNT(*) n FROM messages WHERE (surface IN ('feishu:group','feishu:p2p') OR surface LIKE 'source:%') AND ts>? GROUP BY 1", now - 86400_000).map((r) => [r.s, r.n])),
     },
     runs: all("SELECT id, lane, role, tier, model, started FROM runs WHERE status='running' ORDER BY started"),
@@ -253,7 +253,7 @@ async function saveConfig(file: string, text: string, hash: string) {
 /** config-write and self-profile know nothing about HTTP; their refusals become the same 4xx the console always gave */
 const httpErr = (e: unknown) => e instanceof ConfigError ? bad(e.message, e.status) : e;
 
-// ───────── config forms (§10.6) ─────────
+// ───────── config forms (§触5.6) ─────────
 // A form submission becomes new file text (config-form.ts) and goes through saveConfig above like any other edit.
 
 const chatName = (id: string): string | undefined => one("SELECT name FROM chats WHERE chat_id=?", id)?.name || undefined;
@@ -579,7 +579,7 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
       if (p === "/life/topics") return json(200, V.topics());
       if (p === "/life/topic") return json(200, V.topicEvents(String(url.searchParams.get("t") ?? "")));
       if (p === "/life/topic/link" && method === "POST") { const b = await body(req); return json(200, V.topicLink(String(b.topic ?? ""), Number(b.matter_id))); }
-      // §17.4 导入: preview never writes memory; apply / undo commit agent-home and tell the admin group
+      // §读2.6 导入: preview never writes memory; apply / undo commit agent-home and tell the admin group
       if (p === "/import/prompt") return json(200, { prompt: promptText(), example: exampleText() });
       if (p === "/imports") return json(200, importsList());
       if (p === "/import/preview" && method === "POST") {
@@ -599,7 +599,7 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
         void notifyAdmin(`↩️ 控制台撤销了导入 #${m[1]}`);
         return json(200, r);
       }
-      // §18 人 / 因缘: persons and relations are memory (no config, no permission), so no admin notice
+      // §读4 人 / 因缘: persons and relations are memory (no config, no permission), so no admin notice
       const gerr = <T,>(f: () => T): T => { try { return f(); } catch (e: any) { if (e instanceof HttpError) throw e; throw bad(String(e?.message ?? e)); } };
       if (p === "/life/people") return json(200, { people: G.peopleList(String(url.searchParams.get("q") ?? "").trim(), String(url.searchParams.get("circle") ?? "")), circles: G.CIRCLES, rels: G.REL_PRESETS });
       if ((m = /^\/life\/person\/(\d+)$/.exec(p))) {
@@ -621,7 +621,7 @@ export function startConsole(d: ConsoleDeps): { tailnet: http.Server; web: http.
       if (p === "/life/outlooks") return json(200, V.outlooks());
       if (p === "/life/self") return json(200, V.selfItems());
       if ((m = /^\/life\/self\/(\d+)$/.exec(p)) && method === "POST") { const b = await body(req); return json(200, V.markSelf(Number(m[1]), String(b.status), b.note ? String(b.note) : undefined)); }
-      // §15.9 the birth form: structured fields, written through the same path as the YAML editor
+      // §读5.1 the birth form: structured fields, written through the same path as the YAML editor
       if (p === "/life/birth") {
         try {
           if (method === "GET") return json(200, profileView());

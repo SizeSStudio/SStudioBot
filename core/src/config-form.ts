@@ -1,4 +1,4 @@
-// Config forms (DESIGN §10.6): turn a submitted form into new YAML text. Nothing here writes. The result goes to the
+// Config forms (DESIGN §触5.6): turn a submitted form into new YAML text. Nothing here writes. The result goes to the
 // console's saveConfig, the same function the raw editor uses, so hash check, schema, git, config_changes, the admin-group
 // diff and widening() all stay in one place.
 //

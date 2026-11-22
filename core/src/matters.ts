@@ -1,4 +1,4 @@
-// Matters, "事" (DESIGN §15.3, §15.4). State in the `matters` table; content (发心, 方向, 盘点, 过程, 复盘) in
+// Matters, "事" (DESIGN §读3.1, §觉3). State in the `matters` table; content (发心, 方向, 盘点, 过程, 复盘) in
 // agent-home/matters/<id>.md, which is memory. 起局 runs in the matter's own lane as a protocol the main agent follows
 // (the playbook below is returned by matter_open), not as a separate process. Lenses (M6) are optional step 4.6; 复盘 comes at 收 (M3c).
 
@@ -23,7 +23,7 @@ export const PLAYBOOK = `起局按这个顺序，一步一步来，不要一口�
 
 const file = (id: number) => join(P.agentHome, "matters", `${id}.md`);
 
-// 主线 and 子事 (§15.3): a matter with no parent is a 主线; its children fold under it and their events add up to it.
+// 主线 and 子事 (§读3.1): a matter with no parent is a 主线; its children fold under it and their events add up to it.
 // One level only. A duplicate merged away keeps its row (status 'merged', merged_into) so it can be taken back out.
 const OPEN = "('open','active','closing')";
 export const OPEN_MATTER = `status IN ${OPEN}`;
@@ -74,7 +74,7 @@ export function openMatter(o: { title: string; domain: "work" | "personal"; lane
   return { id, rel };
 }
 
-/** Append a line under one section of the matter file; the source tag is set by code (§8.3). */
+/** Append a line under one section of the matter file; the source tag is set by code (§读1.3). */
 export function noteMatter(idIn: number, section: Section, text: string, src: string): string {
   const id = liveId(idIn) ?? idIn;
   const m = one("SELECT * FROM matters WHERE id=?", id);

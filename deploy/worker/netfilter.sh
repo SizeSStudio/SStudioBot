@@ -1,5 +1,5 @@
 #!/bin/bash
-# Egress rules for sbot-w (DESIGN §7.6). Idempotent. Only matches uid sbot-w; nothing else is touched.
+# Egress rules for sbot-w (DESIGN §底3.6). Idempotent. Only matches uid sbot-w; nothing else is touched.
 # Host-mode workers (sbot-h) are deliberately not matched: they get the host's full network, tailnet included.
 set -euo pipefail
 PROXY_PORT=7811          # LLM proxy

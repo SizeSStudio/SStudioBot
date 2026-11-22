@@ -1,4 +1,4 @@
-// Triage (DESIGN §4.3, §17.2) for observed messages: Feishu groups, Feishu DMs (sources.yaml feishu.dm) and every
+// Triage (DESIGN §读2.4, §读2.5) for observed messages: Feishu groups, Feishu DMs (sources.yaml feishu.dm) and every
 // source in sources.yaml. Plus the draft run and notice batching.
 //
 //   pending messages ─► per chat / place: rules (when_mentioned without @me → archive, groups only) ─► one light call
@@ -33,10 +33,10 @@ const ACTIONS = ["ignore", "archive", "notify", "draft", "escalate"];
 const RULES_WHY = "（分拣失败，按规则）";
 const RAISED = ["notify", "draft", "escalate"];
 const sha8 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 8);
-/** surfaces Triage reads: observed groups, observed DMs, sources (§17.3). The owner↔bot DM is the main lane, not here. */
+/** surfaces Triage reads: observed groups, observed DMs, sources (§读2.1). The owner↔bot DM is the main lane, not here. */
 const TRIAGED = "(surface IN ('feishu:group','feishu:p2p') OR surface LIKE 'source:%')";
 
-/** `tuning` = the raw text of tuning/triage.md; replay passes a candidate instead of the live file (§16.4) */
+/** `tuning` = the raw text of tuning/triage.md; replay passes a candidate instead of the live file (§进2.4) */
 export const triageSystem = (tuning = tunedRaw("tuning/triage.md")) => `你是${ownerName()}的消息分拣员。下面是他看得到的一处地方（飞书群、别人发给他的私聊，或一个信息源：代码仓库、工单、邮件、网页……）的新消息。做两件事。
 
 一、逐条分类：
@@ -74,7 +74,7 @@ const atMeOf = (r: Msg, owner = ownerFeishu()) => { const x = rawOf(r); return x
 /** Feishu mentions carry open_id (ou_) for people and the app_id (cli_) for a bot; the owner is an open_id */
 const isBotId = (id: unknown) => /^cli_/.test(String(id ?? ""));
 /**
- * Who a message is said to (§4.3): `me`, or `others` when it @s people / bots and not him. A model reading "@X 查一下"
+ * Who a message is said to (§读2.4): `me`, or `others` when it @s people / bots and not him. A model reading "@X 查一下"
  * sees an ask and raises it as if he were asked; code holds the line, the model only sorts what is left.
  */
 function addressOf(r: Msg, owner = ownerFeishu()): { me: boolean; others: { name: string; bot: boolean }[] } {
@@ -113,7 +113,7 @@ export const triageContext = (chat: string, firstTs: number) =>
   all("SELECT * FROM messages WHERE chat_id=? AND ts<=? AND triage_status<>'pending' ORDER BY ts DESC, id DESC LIMIT 12", chat, firstTs).reverse();
 
 /**
- * §16.3 A: style notes (dream distils them from his revision requests) and a few examples of his real voice in this
+ * §进2.3 A: style notes (dream distils them from his revision requests) and a few examples of his real voice in this
  * chat: drafts he approved, and what he wrote here himself. Code picks them; the drafter sees them as reference only.
  */
 function voiceFor(chatId: string, chatName: string): { text: string; examples: number[]; style: string[] } {
@@ -201,8 +201,8 @@ export class Triage {
     todo.forEach((r, i) => {
       let { action, why } = pick.get(i) ?? { action: atMe(r) ? "notify" : "archive", why: RULES_WHY };
       if (atMe(r) && (action === "ignore" || action === "archive")) action = "notify";
-      if (action === "draft" && !isGroup) action = "notify";   // drafts go out as him in a group (§4.3); DMs and sources: he answers himself
-      // anyone can write a mail or a web page: it reaches him, never the agent that has tools (§17.3)
+      if (action === "draft" && !isGroup) action = "notify";   // drafts go out as him in a group (§读2.4); DMs and sources: he answers himself
+      // anyone can write a mail or a web page: it reaches him, never the agent that has tools (§读2.1)
       if (action === "escalate" && surface.startsWith("source:")) action = "notify";
       actions[i] = capAction(action, capOf(r, owner).action); whys[i] = why;
     });
@@ -232,8 +232,8 @@ export class Triage {
   }
 
   /**
-   * Raised messages whose window is over (§4.3): if he has responded they end here, quietly; otherwise each goes its
-   * way. notify just becomes eligible for the next batch. triage_action keeps what Triage decided (§16 reads it).
+   * Raised messages whose window is over (§读2.4): if he has responded they end here, quietly; otherwise each goes its
+   * way. notify just becomes eligible for the next batch. triage_action keeps what Triage decided (§进2 reads it).
    */
   async release(chat?: string) {
     const rows = all(`SELECT * FROM messages WHERE attn='waiting' AND wait_until<=?${chat ? " AND chat_id=?" : ""} ORDER BY ts, id LIMIT 200`, ...(chat ? [Date.now(), chat] : [Date.now()]));
@@ -261,7 +261,7 @@ export class Triage {
   }
 
   /**
-   * The model's events, checked by code (§17.2): indices must be in the batch, the matter must be open, an event that
+   * The model's events, checked by code (§读2.5): indices must be in the batch, the matter must be open, an event that
    * needs him lifts its ignored / archived messages to notify, a drafted / escalated message makes its event at least
    * 「要你回」, and every raised message without an event gets one of its own. Mutates `actions`.
    */
@@ -305,7 +305,7 @@ export class Triage {
     return res;
   }
 
-  /** The draft run (§4.3): chat tier, only this chat's context, others' tool scope, a fresh session. */
+  /** The draft run (§读2.4): chat tier, only this chat's context, others' tool scope, a fresh session. */
   async draft(r: Record<string, any>, why: string) {
     const raw = JSON.parse(r.raw_json ?? "{}");
     // includes what was said after it: a draft now runs after the window, and someone may have answered meanwhile
@@ -319,7 +319,7 @@ export class Triage {
     const runId = `d_${Date.now().toString(36)}_${sha8(r.id)}`;
     const dir = join(P.sessions, "inputs");
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${runId}.txt`), text);      // §16: draft input snapshot
+    writeFileSync(join(dir, `${runId}.txt`), text);      // §进2: draft input snapshot
     run(`INSERT INTO runs(id, lane, session_key, role, tier, model, status, started, input_ref, versions_json) VALUES(?,?,?,?,?,?,?,?,?,?)`,
       runId, `draft:${r.chat_id}`, null, "draft", "work", tierConf("work").model, "running", Date.now(), join(dir, `${runId}.txt`),
       JSON.stringify({ prompt: sha8(draftSystem()), model: tierConf("work").model, examples: voice.examples, style: voice.style, tuning: tuningVersion("tuning/draft.md") }));
@@ -367,7 +367,7 @@ export class Triage {
   /**
    * One batch at most every NOTIFY_MS; the clock only starts when something is sent, so a lone reminder goes when due.
    * What he responded to since it came due is dropped here. Asks still waiting on him always go, read or not (like a
-   * task asking him something, §9.3): reading is not answering. The rest are only "worth knowing": dropped if he has
+   * task asking him something, §寸2): reading is not answering. The rest are only "worth knowing": dropped if he has
    * read them, else they count against the daily cap, on their own counter so they can't use up the quota of task
    * notices and follow-ups, and over the cap wait for the morning report.
    */
@@ -404,7 +404,7 @@ export class Triage {
 }
 
 /**
- * One notice for a batch of notify messages (§17.2): one line per event, asks first, grouped by matter / topic so the
+ * One notice for a batch of notify messages (§读2.5): one line per event, asks first, grouped by matter / topic so the
  * same thing said in three chats reads as one thing. Messages without an event (older rows) keep the old line.
  */
 export function noticeText(rows: Msg[]): string {

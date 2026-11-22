@@ -1,4 +1,4 @@
-// Birth data rules (DESIGN §15.9). Pure: no config, no I/O, so schemas.ts, the form and the lens run share one answer.
+// Birth data rules (DESIGN §读5.1). Pure: no config, no I/O, so schemas.ts, the form and the lens run share one answer.
 // ziwei-chart only takes a solar datetime plus gender and longitude, so those decide what "complete" means here.
 
 export interface Birth {

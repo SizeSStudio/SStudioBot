@@ -1,4 +1,4 @@
-// Birth form, the main agent's self_profile / self_page, routine lens views (DESIGN §15.2, §15.7, §15.9). All data is made up.
+// Birth form, the main agent's self_profile / self_page, routine lens views (DESIGN §觉2, §参1, §读5.1). All data is made up.
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh self-profile-smoke.ts 7829 [--live]
 //

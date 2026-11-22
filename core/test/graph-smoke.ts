@@ -1,4 +1,4 @@
-// §18 因缘 smoke on the VPS, as sbot, on a fresh throwaway home:
+// §读4 因缘 smoke on the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh graph-smoke.ts 7830
 //
@@ -64,7 +64,7 @@ writeFileSync(join(P.agentHome, "people", "zhangsan.md"), "---\ntitle: 张三\n-
 writeFileSync(join(P.agentHome, "topics", "上线复盘.md"), "# 上线复盘\n\n见 [新版上线](../matters/" + M + ".md)，[[people/zhangsan]] 拍的板\n");
 mkdirSync(join(P.agentHome, "self"), { recursive: true });
 writeFileSync(join(P.agentHome, "self", "secret.md"), "# 不该进图\n\n[[people/小李]] 小李\n");
-// raw_sources arrives with ingest (§8.5, §11); create it as designed so this path runs
+// raw_sources arrives with ingest (§读1.5, §底5); create it as designed so this path runs
 run(`CREATE TABLE IF NOT EXISTS raw_sources(sha256 TEXT PRIMARY KEY, s3_key TEXT, mime TEXT, bytes INTEGER, title TEXT, origin_url TEXT, src TEXT, visibility TEXT,
   received_at INTEGER, inbox_id INTEGER, ingested_at INTEGER, pages_json TEXT)`);
 run("INSERT INTO raw_sources(sha256, s3_key, mime, bytes, title, src, visibility, received_at, pages_json) VALUES(?,?,?,?,?,?,?,?,?)",

@@ -1,5 +1,5 @@
-// 生活 (owner-only, §15): the timeline with a quick note, matters with their events (§17.2) and the topics that may
-// become one, the people around him and how they connect (§18), imports from another harness (§17.4), outlooks and how they turned out, habits and rhythms (only he
+// 生活 (owner-only, §觉): the timeline with a quick note, matters with their events (§读2.5) and the topics that may
+// become one, the people around him and how they connect (§读4), imports from another harness (§读2.6), outlooks and how they turned out, habits and rhythms (only he
 // endorses or drops them), readings, reviews, and his birth info and lens settings (self.yaml: a form here; he can also tell the main agent in his DM).
 
 import { $, $$, esc, api, toast, pill, row, rel, hm, mdhm, isoDay, dayLabel, empty, loading, tabs, chips, mdText, busy, busyTyping, jobWhen, ACTS, openDrawer } from "/lib/core.js";
@@ -115,7 +115,7 @@ PAGES.matters = async (body) => {
     (tps.length ? `<section><h2>话头 <span class="sub">近两周反复说到、还没挂到事上的</span></h2><div class="list">${tps.map(topic).join("")}</div></section>` : "") +
     (closed.length ? `<section><h2>收了的</h2><div class="list">${closed.map(card).join("")}</div></section>` : "") + opsHtml(rv.ops) || empty("还没有「事」。对话里说「开一件事」，或它觉得一件事要跟一阵时会提议；也可以从「导入」把以前的事搬进来。");
 };
-// 每日整理 (§15.14): suggestions only; a button here is the same as the one on the card
+// 每日整理 (§读3.2): suggestions only; a button here is the same as the one on the card
 const reviewItem = (r) => `<div class="card"><div class="inline wrap"><span class="tag">${esc(r.kind_zh)}</span><span>${esc(r.text)}</span></div>${r.why ? `<div class="sub">${esc(r.why)}</div>` : ""}
   <div class="actions">${r.options.length ? r.options.map((o, i) => `<button type="button" class="btn small${i ? "" : " primary"}" data-act="mrdo" data-id="${r.id}" data-a="${esc(o.a)}">${esc(o.label)}</button>`).join("")
     : r.status === "acted" || r.status === "ok" ? `<span class="sub">✓ ${esc(r.done_zh ?? "好")}</span><button type="button" class="btn small" data-act="mrdo" data-id="${r.id}" data-a="undo">撤销</button>` : ""}</div></div>`;
@@ -181,11 +181,11 @@ ACTS.topiclink = (el) => busy(el, "在挂…", async () => {
   await ACTS.matter({ dataset: { id: mid } });
 });
 
-// ───────── 人 / 因缘 (§18): lib/people.js ─────────
+// ───────── 人 / 因缘 (§读4): lib/people.js ─────────
 PAGES.people = peopleTab;
 PAGES.yinyuan = yinyuanTab;
 
-// ───────── 导入 (§17.4) ─────────
+// ───────── 导入 (§读2.6) ─────────
 PAGES.imports = async (body) => {
   const list = await api("/imports");
   body.innerHTML = `

@@ -1,4 +1,4 @@
-// 事件账本 (DESIGN §17.2). Triage (Feishu groups, DMs, every source in sources.yaml) and imports write here; matters,
+// 事件账本 (DESIGN §读2.5). Triage (Feishu groups, DMs, every source in sources.yaml) and imports write here; matters,
 // the morning report, the console and the agent read it.
 //
 // An event is one meaningful moment, hung on a matter (事) or, until there is one, a loose topic (话头):
@@ -72,7 +72,7 @@ const eventSaid = (e: Row): Said[] => {
 const MAX_BETWEEN = 3;
 
 /**
- * Does this word respond to these messages? The one rule for "he responded" (§17.2).
+ * Does this word respond to these messages? The one rule for "he responded" (§读2.5).
  * direct: he replied to one of them, or spoke in their thread. plain: an unaddressed word that follows them closely in
  * the same conversation, or one that @s whoever asked. Replying to something else, speaking in another thread, or
  * @-ing someone else is not a response.
@@ -149,7 +149,7 @@ export const requeueVoidedDrafts = () => Number(run(`UPDATE messages SET triage_
 /** true while this message's event is an ask still waiting on him */
 export const isOpenAsk = (m: Row) => !!m.event_id && !!one("SELECT 1 FROM events WHERE id=? AND state='open' AND level IN ('reply','decide')", m.event_id);
 
-/** Notices held over the daily cap (§9.3), for the morning report; what he has since responded to is dropped. */
+/** Notices held over the daily cap (§寸2), for the morning report; what he has since responded to is dropped. */
 export function takeHeldNotices(): { ts: number; text: string }[] {
   const out = new Map<string, { ts: number; text: string }>();
   for (const m of all("SELECT * FROM messages WHERE attn='held' ORDER BY ts, id LIMIT 200")) {
@@ -245,7 +245,7 @@ export function matterByKey(topicIn: unknown): number | null {
 }
 
 /**
- * Which matter a new event goes on (§17.2). Triage names a 主线 by number; a topic that is the key of one of its 子事
+ * Which matter a new event goes on (§读2.5). Triage names a 主线 by number; a topic that is the key of one of its 子事
  * narrows it. With no usable number, a topic that is a known key still finds its matter, so a key really does link.
  */
 export function resolveEventMatter(matter: unknown, topic: unknown): number | null {
@@ -291,7 +291,7 @@ export function matterEventStats(id: number) {
   return one(`SELECT COUNT(*) n, SUM(CASE WHEN state='open' AND level IN ('reply','decide') THEN 1 ELSE 0 END) open, MAX(ts) last FROM events WHERE matter_id IN (${inList(f) || "NULL"})`, ...f)!;
 }
 
-/** an imported ask nobody has confirmed is still live: old, or on a matter that is no longer open (§15.14) */
+/** an imported ask nobody has confirmed is still live: old, or on a matter that is no longer open (§读3.2) */
 export function isStaleImportAsk(e: Record<string, any>, days = matterReviewConf().ask_days): boolean {
   if (e.source !== "import" || e.state !== "open" || !needsHim(e.level)) return false;
   if (one("SELECT 1 FROM matter_reviews WHERE fp=? AND status='ok'", `ask:${e.id}`)) return false;   // he said it is still waiting on him

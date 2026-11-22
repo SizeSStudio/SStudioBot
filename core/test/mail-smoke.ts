@@ -1,4 +1,4 @@
-// 飞书邮箱 source smoke (DESIGN §17.3), on the VPS as sbot on a fresh throwaway home:
+// 飞书邮箱 source smoke (DESIGN §读2.1), on the VPS as sbot on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s -- mail-smoke.ts 7830' < test/vps-test-home.sh
 //

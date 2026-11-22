@@ -1,4 +1,4 @@
-// Proactive messages (DESIGN §9.3 先安静) and the morning report's facts (§9.1).
+// Proactive messages (DESIGN §寸2 先安静) and the morning report's facts (§底4.1).
 //
 // A run is proactive when nothing in it was typed by a person: timers, task notices, system events. Each proactive
 // run that says something counts against gate.yaml proactive_daily_cap (default 6). Once the cap is reached, further

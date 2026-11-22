@@ -1,4 +1,4 @@
-// Per-worker egress proxy (DESIGN §7.6). Sandboxed commands and WebFetch reach the internet only through this, on
+// Per-worker egress proxy (DESIGN §底3.6). Sandboxed commands and WebFetch reach the internet only through this, on
 // 127.0.0.1:7820-7829 (the only ports besides the LLM proxy that the SBOT_W chain lets sbot-w reach). CONNECT to :443
 // of an allow-listed domain only; the proxy runs as sbot (outside SBOT_W), so it refuses non-public addresses itself.
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Build the read-only lens plugin (DESIGN §15 lenses, §13 "镜头 skill") from the Mac sources.
+# Build the read-only lens plugin (DESIGN §参1 lenses, §附2 "镜头 skill") from the Mac sources.
 # Output: a staging dir + tarball; install on the VPS with install.sh (root) into /opt/sbot/plugins/sbot-lens.
 #
 #   SRC_SKILLS=<skills checkout> SRC_KB=<紫微 kb dir> bash deploy/lens/build.sh   # → deploy/lens/out/sbot-lens.tgz

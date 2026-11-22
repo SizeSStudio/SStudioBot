@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy the core from GitHub (DESIGN §1.3). Runs as root; installed to /usr/local/lib/sbot/sbot-deploy by install.sh.
+# Deploy the core from GitHub (DESIGN §底1.3). Runs as root; installed to /usr/local/lib/sbot/sbot-deploy by install.sh.
 #
 #   sbot-deploy                 deploy the tip of $SBOT_DEPLOY_BRANCH (default main)
 #   sbot-deploy --if-new        same, but quiet when it is already live or already failed once (the timer uses this)

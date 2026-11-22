@@ -1,4 +1,4 @@
-// The daily look over matters (DESIGN §15.14). Code gathers the facts, a cheap model adds what code can't see, and a
+// The daily look over matters (DESIGN §读3.2). Code gathers the facts, a cheap model adds what code can't see, and a
 // handful of suggestions reach him as one card. Nothing here changes a matter or an event: only his click does, through
 // matter-ops.ts, where it is logged and can be undone.
 //

@@ -1,7 +1,7 @@
-// SQLite (DESIGN §11, M0 subset). node:sqlite, WAL, one connection, synchronous API.
+// SQLite (DESIGN §底5, M0 subset). node:sqlite, WAL, one connection, synchronous API.
 //
 // inbox is the single source of truth for "what woke us up"; outbox for "what we said"; runs.side_effects decides
-// whether an interrupted run may be retried (§1.2).
+// whether an interrupted run may be retried (§底1.2).
 
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
@@ -64,7 +64,7 @@ CREATE INDEX IF NOT EXISTS usage_ts ON usage(ts);
 CREATE TABLE IF NOT EXISTS config_changes(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, file TEXT, diff TEXT, source TEXT);
 CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT);
 
--- M1 (§7.3). kind: send|plan|deferred_tool; status: pending|approved|rejected|expired|superseded|invalidated
+-- M1 (§底3.3). kind: send|plan|deferred_tool; status: pending|approved|rejected|expired|superseded|invalidated
 CREATE TABLE IF NOT EXISTS approvals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, origin_lane TEXT, run_id TEXT, task_id TEXT, tool_use_id TEXT,
   requester TEXT, channel TEXT, target_json TEXT, as_identity TEXT, title TEXT, draft TEXT,
@@ -74,26 +74,26 @@ CREATE TABLE IF NOT EXISTS approvals(
   card_msg_id TEXT, matter_id INTEGER, ts INTEGER);
 CREATE INDEX IF NOT EXISTS approvals_status ON approvals(status, trigger_chat);
 
--- M2 (§4.2). status: queued|running|waiting_approval|needs_input|interrupted|done|failed|cancelled
+-- M2 (§办1.3). status: queued|running|waiting_approval|needs_input|interrupted|done|failed|cancelled
 CREATE TABLE IF NOT EXISTS tasks(
   id TEXT PRIMARY KEY, origin_lane TEXT, origin_turn_json TEXT, goal TEXT, context TEXT, status TEXT NOT NULL, tier TEXT,
   repo TEXT, allow_json TEXT, budget INTEGER, timeout_ms INTEGER, workdir TEXT, session_ref TEXT, wb_root_msg TEXT,
   wb_thread TEXT, question TEXT, result_json TEXT, error TEXT, matter_id INTEGER, last_output_at INTEGER, runs INTEGER NOT NULL DEFAULT 0,
   started INTEGER, ended INTEGER, ts INTEGER);
 
--- §9: follow-ups (schedules from jobs.yaml come in M3)
+-- §底4: follow-ups (schedules from jobs.yaml come in M3)
 CREATE TABLE IF NOT EXISTS timers(
   id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, lane TEXT, turn_json TEXT, due_at INTEGER NOT NULL, note TEXT,
   status TEXT NOT NULL DEFAULT 'pending', matter_id INTEGER, created_by TEXT, fired_at INTEGER, ts INTEGER);
 CREATE INDEX IF NOT EXISTS timers_due ON timers(status, due_at);
 
--- §15.3. status: open|active|closing|reviewed|dropped|done|merged (done: finished without a 复盘, e.g. §17.4 import; merged: see merged_into)
--- keys (v0.13, JSON list): other names / topics for it; Triage links what it reads by these (§17.2)
+-- §读3.1. status: open|active|closing|reviewed|dropped|done|merged (done: finished without a 复盘, e.g. §读2.6 import; merged: see merged_into)
+-- keys (v0.13, JSON list): other names / topics for it; Triage links what it reads by these (§读2.5)
 CREATE TABLE IF NOT EXISTS matters(
   id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT, domain TEXT, lane TEXT, status TEXT NOT NULL DEFAULT 'open',
   close_condition TEXT, file_path TEXT, opened_at INTEGER, closed_at INTEGER, reviewed_at INTEGER);
 
--- §16, M1 only records. src is always the owner's behaviour
+-- §进2, M1 only records. src is always the owner's behaviour
 CREATE TABLE IF NOT EXISTS signals(
   id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, kind TEXT, role TEXT, run_id TEXT, approval_id INTEGER, task_id TEXT,
   value_json TEXT, src TEXT);
@@ -101,33 +101,33 @@ CREATE TABLE IF NOT EXISTS signals(
 -- chat list cache for the observer (user identity); groups.yaml stays the source of truth for activation
 CREATE TABLE IF NOT EXISTS chats(chat_id TEXT PRIMARY KEY, name TEXT, external INTEGER, muted INTEGER, chat_mode TEXT, seen_at INTEGER);
 
--- M3c (§15). Everything below is owner-only: no tool for others, Triage or workers reads it.
--- 随手记 (§15.6). domain: work|family|friends|body|mind
+-- M3c (§觉). Everything below is owner-only: no tool for others, Triage or workers reads it.
+-- 随手记 (§读5.3). domain: work|family|friends|body|mind
 CREATE TABLE IF NOT EXISTS life_notes(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, text TEXT NOT NULL, domain TEXT, matter_id INTEGER, people TEXT, src TEXT);
 CREATE INDEX IF NOT EXISTS life_notes_ts ON life_notes(ts);
--- 前瞻 (§15.2). Frozen once written; feelings come later as outlook_revisits rows. horizon: day|week|month|matter
+-- 前瞻 (§觉2). Frozen once written; feelings come later as outlook_revisits rows. horizon: day|week|month|matter
 CREATE TABLE IF NOT EXISTS outlooks(id INTEGER PRIMARY KEY AUTOINCREMENT, horizon TEXT NOT NULL, period TEXT NOT NULL, text TEXT NOT NULL,
   why_refs TEXT, look_for TEXT, revisit_at TEXT, matter_id INTEGER, run_id TEXT, ts INTEGER);
 CREATE INDEX IF NOT EXISTS outlooks_period ON outlooks(horizon, period);
 CREATE TABLE IF NOT EXISTS outlook_revisits(id INTEGER PRIMARY KEY AUTOINCREMENT, outlook_id INTEGER NOT NULL, ts INTEGER, text TEXT, src TEXT, run_id TEXT);
--- 复盘 (§15.5). kind: day|week|month|matter; status: chatted|unchatted
+-- 复盘 (§觉4). kind: day|week|month|matter; status: chatted|unchatted
 CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, period TEXT NOT NULL, matter_id INTEGER, facts TEXT,
   owner_words TEXT, agent_notes TEXT, status TEXT NOT NULL, file_path TEXT, run_id TEXT, ts INTEGER);
--- 习气 / 节律 (§15.10, §15.15). status: candidate|endorsed|seeing_off|faded|let_go|dropped. self/habits.md and rhythms.md are rendered from here.
+-- 习气 / 节律 (§改1, §寸4). status: candidate|endorsed|seeing_off|faded|let_go|dropped. self/habits.md and rhythms.md are rendered from here.
 CREATE TABLE IF NOT EXISTS self_items(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, text TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'candidate',
   evidence_json TEXT, owner_said INTEGER NOT NULL DEFAULT 0, first_seen INTEGER, last_seen INTEGER, updated_at INTEGER, note TEXT);
--- 谁先看见 (§15.13). who: owner|agent; prompted: the owner said it after an open question (still counts as owner)
+-- 谁先看见 (§寸3). who: owner|agent; prompted: the owner said it after an open question (still counts as owner)
 CREATE TABLE IF NOT EXISTS noticings(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, item_id INTEGER, item_text TEXT, who TEXT NOT NULL,
   prompted INTEGER NOT NULL DEFAULT 0, quote TEXT, review_id INTEGER, run_id TEXT);
 CREATE INDEX IF NOT EXISTS noticings_item ON noticings(item_id, ts);
 
--- M6 §15.7 解读账本: a lens's view, written before the fact and never edited; revisits are appended.
+-- M6 §参1 解读账本: a lens's view, written before the fact and never edited; revisits are appended.
 -- status: queued|running|done|failed. lens 'agent' = the facts-only view next to a lens (optional).
 CREATE TABLE IF NOT EXISTS readings(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, lens TEXT NOT NULL, method TEXT, profile_version TEXT,
   question TEXT, horizon TEXT, period TEXT, matter_id INTEGER, reading TEXT, notice_json TEXT, claims_json TEXT, chart_ref TEXT,
   status TEXT NOT NULL DEFAULT 'queued', error TEXT, run_id TEXT, origin_lane TEXT, origin_turn_json TEXT, requested_by TEXT, done_at INTEGER);
 CREATE INDEX IF NOT EXISTS readings_period ON readings(horizon, period);
--- M7 §16. eval_cases: collected by code; expected is always his (the text he sent / raise / no_draft). kind: draft|triage
+-- M7 §进2. eval_cases: collected by code; expected is always his (the text he sent / raise / no_draft). kind: draft|triage
 CREATE TABLE IF NOT EXISTS eval_cases(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, ref TEXT NOT NULL UNIQUE, input TEXT NOT NULL,
   expected TEXT NOT NULL, meta_json TEXT, src TEXT, ts INTEGER);
 -- proposals. status: proposed|approved|rejected|expired|superseded|conflict|kept|rolled_back
@@ -138,11 +138,11 @@ CREATE TABLE IF NOT EXISTS proposals(id INTEGER PRIMARY KEY AUTOINCREMENT, ts IN
 CREATE INDEX IF NOT EXISTS proposals_status ON proposals(status, review_due);
 CREATE TABLE IF NOT EXISTS reading_revisits(id INTEGER PRIMARY KEY AUTOINCREMENT, reading_id INTEGER NOT NULL, claim_idx INTEGER,
   ts INTEGER, text TEXT, src TEXT, run_id TEXT);
--- console §10.4: the full model request of main and draft runs (gzip), owner-only, kept 7 days; no agent tool reads it
+-- console §触5.4: the full model request of main and draft runs (gzip), owner-only, kept 7 days; no agent tool reads it
 CREATE TABLE IF NOT EXISTS requests(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, run_id TEXT, usage_id INTEGER, tier TEXT, model TEXT, bytes INTEGER, body BLOB);
 CREATE INDEX IF NOT EXISTS requests_ts ON requests(ts);
 CREATE INDEX IF NOT EXISTS requests_run ON requests(run_id);
--- v0.13 §17.2 事件账本: meaningful moments from any source, hung on a matter (事) or a loose topic (话头).
+-- v0.13 §读2.5 事件账本: meaningful moments from any source, hung on a matter (事) or a loose topic (话头).
 -- kind: ask|decision|commitment|progress|risk|deadline|info · level: fyi|watch|reply|decide
 -- state: open (reply / decide not handled yet) | done | dropped | seen (fyi / watch) · source: a sources.yaml id, 'import'
 -- place_id = the chat (or source place) it happened in: the owner speaking there later closes its open asks.
@@ -154,10 +154,10 @@ CREATE INDEX IF NOT EXISTS events_matter ON events(matter_id, ts);
 CREATE INDEX IF NOT EXISTS events_topic ON events(topic, ts);
 CREATE INDEX IF NOT EXISTS events_open ON events(state, level, ts);
 CREATE INDEX IF NOT EXISTS events_place ON events(place_id, state);
--- §17.4 imports from another harness. status: applied|undone. summary_json: counts + the matter ids it created.
+-- §读2.6 imports from another harness. status: applied|undone. summary_json: counts + the matter ids it created.
 CREATE TABLE IF NOT EXISTS imports(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER, origin TEXT, sha TEXT, raw_path TEXT, summary_json TEXT,
   commit_sha TEXT, status TEXT NOT NULL DEFAULT 'applied');
--- v0.14 §18 因缘. persons = everyone met (no permission meaning: trust stays in people.yaml, §2.2); his merges, splits,
+-- v0.14 §读4 因缘. persons = everyone met (no permission meaning: trust stays in people.yaml, §读4.2); his merges, splits,
 -- circles and notes live here. aliases: kind feishu|wechat (ids) or name; a name may point at several persons (ambiguous).
 -- cluster is derived (rebuilt with the graph). relations: person ↔ person, conf EXTRACTED (he confirmed) | INFERRED.
 CREATE TABLE IF NOT EXISTS persons(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, slug TEXT, config_key TEXT, circle TEXT, note TEXT,
@@ -172,11 +172,11 @@ CREATE TABLE IF NOT EXISTS graph_edges(a TEXT NOT NULL, b TEXT NOT NULL, rel TEX
   first_ts INTEGER, last_ts INTEGER, evidence TEXT, PRIMARY KEY(a, b, rel));
 CREATE INDEX IF NOT EXISTS graph_edges_b ON graph_edges(b);
 CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, kind TEXT NOT NULL, label TEXT, ts INTEGER);
--- v0.19 §15.3: every regrouping or correction of matters / events, with what it takes to put it back.
+-- v0.19 §读3.1: every regrouping or correction of matters / events, with what it takes to put it back.
 -- kind: merge|attach|main|detach|status|event|move|topic|rename · touches (JSON): m<id> / e<id> it changed
 CREATE TABLE IF NOT EXISTS matter_ops(id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL, kind TEXT NOT NULL, summary TEXT, why TEXT, by TEXT NOT NULL,
   review_id INTEGER, touches TEXT NOT NULL DEFAULT '[]', undo_json TEXT, undone_at INTEGER, undone_by TEXT);
--- v0.19 §15.14 每日整理: suggestions only; nothing changes until he acts on one. fp identifies the question, so a settled one is not asked again.
+-- v0.19 §读3.2 每日整理: suggestions only; nothing changes until he acts on one. fp identifies the question, so a settled one is not asked again.
 -- kind: group|stale|old_ask|suspect|topic · status: pending|shown|acted|ok|void
 CREATE TABLE IF NOT EXISTS matter_reviews(id INTEGER PRIMARY KEY AUTOINCREMENT, fp TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, prio INTEGER NOT NULL DEFAULT 0,
   why TEXT, data_json TEXT NOT NULL, origin TEXT NOT NULL DEFAULT 'code', status TEXT NOT NULL DEFAULT 'pending', shown_n INTEGER NOT NULL DEFAULT 0, last_shown INTEGER,
@@ -194,13 +194,13 @@ for (const [table, col] of [["outbox", "kind TEXT NOT NULL DEFAULT 'text'"], ["o
   ["inbox", "not_before INTEGER"], ["readings", "not_before INTEGER"], ["readings", "retries INTEGER"], ["reviews", "delivery TEXT"]]) {
   try { db.exec(`ALTER TABLE ${table} ADD COLUMN ${col}`); } catch { /* already there */ }
 }
-// §4.3 attention window. attn: waiting (in its window) | answered (he responded, nothing sent) | read (not an ask, he has read it) | held (over the cap, for the morning report)
+// §读2.4 attention window. attn: waiting (in its window) | answered (he responded, nothing sent) | read (not an ask, he has read it) | held (over the cap, for the morning report)
 db.exec("CREATE INDEX IF NOT EXISTS messages_attn ON messages(attn, wait_until)");
-// §9.4 inbox.not_before: a scheduled event waiting out an upstream failure. §15.5 reviews.delivery, on rows code wrote:
+// §底4.3 inbox.not_before: a scheduled event waiting out an upstream failure. §觉4 reviews.delivery, on rows code wrote:
 // sent (he didn't answer) | replied (he answered, nothing was filed) | not_sent. review_open: went out or is going out, not filed yet.
 db.exec(`CREATE TABLE IF NOT EXISTS review_open(id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, period TEXT NOT NULL, facts TEXT,
   fired_at INTEGER, deadline INTEGER NOT NULL, inbox_key TEXT, run_id TEXT, UNIQUE(kind, period))`);
-// §15.3 主线 and 子事: parent_id is one level deep; merged_into points at the matter a duplicate became (status 'merged')
+// §读3.1 主线 and 子事: parent_id is one level deep; merged_into points at the matter a duplicate became (status 'merged')
 db.exec("CREATE INDEX IF NOT EXISTS matters_parent ON matters(parent_id)");
 
 export type Row = Record<string, any>;
@@ -228,7 +228,7 @@ export function tx<T>(fn: () => T): T {
 
 export const kvGet = (k: string) => one("SELECT v FROM kv WHERE k=?", k)?.v as string | undefined;
 export const kvSet = (k: string, v: string) => run("INSERT INTO kv(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", k, v);
-/** §16: record an owner-behaviour signal. Only recorded in M1, never analyzed. */
+/** §进2: record an owner-behaviour signal. Only recorded in M1, never analyzed. */
 export const signal = (kind: string, o: { role?: string; run_id?: string; approval_id?: number; task_id?: string; value?: unknown } = {}) =>
   run("INSERT INTO signals(ts, kind, role, run_id, approval_id, task_id, value_json, src) VALUES(?,?,?,?,?,?,?,?)",
     Date.now(), kind, o.role ?? null, o.run_id ?? null, o.approval_id ?? null, o.task_id ?? null, o.value === undefined ? null : JSON.stringify(o.value), "owner");

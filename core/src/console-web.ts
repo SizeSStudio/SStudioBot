@@ -1,4 +1,4 @@
-// Public entrance to the console (DESIGN §10.1): nginx on 443 (Let's Encrypt, DNS only at Cloudflare) → unix socket
+// Public entrance to the console (DESIGN §触5.1): nginx on 443 (Let's Encrypt, DNS only at Cloudflare) → unix socket
 // /run/sbot-web/console.sock. Same shape as the owner's other admin gate: one password (PBKDF2-SHA256, hash in
 // secrets.env), an HMAC-signed session cookie for 12 h (Secure, HttpOnly, SameSite=Strict), the login POST must come
 // from our own Origin, failures are rate limited here and in nginx.

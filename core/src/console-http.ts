@@ -1,4 +1,4 @@
-// Console response plumbing (DESIGN §10.5): content-hashed static files with 304s, and br/gzip done in the core so both
+// Console response plumbing (DESIGN §触5.5): content-hashed static files with 304s, and br/gzip done in the core so both
 // entrances get it (tailscale serve doesn't compress, and nginx changes need a manual install). SSE is never compressed.
 
 import type http from "node:http";

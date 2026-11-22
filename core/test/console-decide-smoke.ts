@@ -1,4 +1,4 @@
-// Console decide smoke (DESIGN §10.4) on the VPS, as sbot, on a fresh throwaway home:
+// Console decide smoke (DESIGN §触5.4) on the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh console-decide-smoke.ts 7829
 //

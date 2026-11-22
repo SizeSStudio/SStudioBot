@@ -1,4 +1,4 @@
-// Paths, config files and secrets (DESIGN §1.3, §5.3).
+// Paths, config files and secrets (DESIGN §底1.3, §办2.3).
 //
 // The config repo (/srv/sbot/config, git) is the source of truth; files are re-read when their mtime changes, so an
 // edit takes effect on the next request without a restart. secrets.env is never handed to any agent.
@@ -29,7 +29,7 @@ export type Tier = "chat" | "work" | "light" | "expert";
 export const TIERS: Tier[] = ["chat", "work", "light", "expert"];
 
 export interface Price { in: number; out: number; cache_read?: number; cache_write?: number }  // USD per 1M tokens
-/** §5.3: used only when the tier's own model reports a usage limit. Off unless the owner fills it in: it can bill elsewhere. */
+/** §办2.3: used only when the tier's own model reports a usage limit. Off unless the owner fills it in: it can bill elsewhere. */
 export interface TierFallback { endpoint?: string; model: string; price?: Price }
 export interface ModelsConfig {
   endpoints: Record<string, { base_url: string; auth: "bearer" | "x-api-key"; key_ref: string }>;
@@ -60,28 +60,28 @@ export const people = (): PeopleConfig => cached(join(P.config, "people.yaml"), 
 export const ownerFeishu = (): string | undefined => people().owner?.ids?.feishu;
 export const ownerName = (): string => people().owner?.name ?? "主人";
 
-/** config/feishu.yaml: the bot's own chats (§3.1) */
+/** config/feishu.yaml: the bot's own chats (§触2.1) */
 export const feishuConf = (): { admin_chat?: string; workbench_chat?: string } =>
   cached(join(P.config, "feishu.yaml"), (t) => parse(t) ?? {}, {});
 
-/** config/groups.yaml (§3.5): explicit per-chat settings; everything else follows the default rules */
+/** config/groups.yaml (§触2.5): explicit per-chat settings; everything else follows the default rules */
 export type Activation = "always" | "when_mentioned" | "digest" | "disabled";
 export interface GroupsConfig { reviewed?: boolean; default?: Activation; groups?: Record<string, { name?: string; activation?: Activation; reply?: string }> }
 export const groupsConf = (): GroupsConfig => cached(join(P.config, "groups.yaml"), (t) => parse(t) ?? {}, {});
 
-/** config/gate.yaml (§3.5, §7.4, §9.3) with defaults */
+/** config/gate.yaml (§触2.5, §底3.4, §寸2) with defaults */
 export interface GateConfig { sensitive_words: string[]; approval_ttl_hours: number; send_by_hours: number; expert_daily_limit: number; improve_budget_usd: number }
 const GATE_DEFAULTS: GateConfig = {
   sensitive_words: ["HR", "人事", "薪酬", "绩效", "财务", "法务", "董事会"], approval_ttl_hours: 12, send_by_hours: 2, expert_daily_limit: 20, improve_budget_usd: 3,
 };
 export const gateConf = (): GateConfig => ({ ...GATE_DEFAULTS, ...cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {}) });
 
-/** config/jobs.yaml (§9.1): periodic jobs; only the owner edits it, hot-reloaded. enabled: false = as if it weren't there */
+/** config/jobs.yaml (§底4.1): periodic jobs; only the owner edits it, hot-reloaded. enabled: false = as if it weren't there */
 export interface JobSpec { every: "day" | "week" | "month"; at: string; weekday?: number; day?: number; do: string; lane?: string; text?: string; quota?: boolean; retry_hours?: number; enabled?: boolean }
 export const jobsConf = (): Record<string, JobSpec> => cached(join(P.config, "jobs.yaml"),
   (t) => Object.fromEntries(Object.entries((parse(t) ?? {}) as Record<string, JobSpec>).filter(([, j]) => j?.enabled !== false)), {});
 
-/** the 每日整理 job (§15.14), whatever it is called in jobs.yaml; its knobs live on the job line */
+/** the 每日整理 job (§读3.2), whatever it is called in jobs.yaml; its knobs live on the job line */
 export const matterReviewConf = () => {
   const j = Object.values(jobsConf()).find((x) => x?.do === "matter_review") as (JobSpec & Record<string, unknown>) | undefined;
   const n = (v: unknown, d: number) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : d);
@@ -89,7 +89,7 @@ export const matterReviewConf = () => {
     tier: (TIERS as string[]).includes(String(j?.tier)) ? (j!.tier as Tier) : undefined };
 };
 
-/** knobs in gate.yaml: proactive_daily_cap (§9.3), daily_budget_usd (§9.2; falls back to models.yaml budgets.daily_cost) */
+/** knobs in gate.yaml: proactive_daily_cap (§寸2), daily_budget_usd (§底4.2; falls back to models.yaml budgets.daily_cost) */
 export const quietConf = () => {
   const g = cached(join(P.config, "gate.yaml"), (t) => parse(t) ?? {}, {} as any);
   let daily: number | undefined;
@@ -98,7 +98,7 @@ export const quietConf = () => {
 };
 
 /**
- * gate.yaml attention (§4.3): how long a raised message waits for him to respond by himself before it reaches him.
+ * gate.yaml attention (§读2.4): how long a raised message waits for him to respond by himself before it reaches him.
  *   wait_minutes (30) · escalate_wait_minutes (0) · places: { <chat_id | source id | source:where place | feishu_dm>: minutes }
  */
 const minutes = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0;
@@ -115,7 +115,7 @@ export function waitMinutes(chat: string, surface: string, action: string): numb
   return action === "escalate" ? Math.min(escalate, base) : base;
 }
 
-/** config/self.yaml (§15.9, §15.13, §15.15): month rhythm, the 送一程 thresholds, and how long until an item 淡了 */
+/** config/self.yaml (§读5.1, §寸3, §寸4): month rhythm, the 送一程 thresholds, and how long until an item 淡了 */
 export const selfConf = (): { month: "gregorian" | "solar_term"; see_off_after: number; restore_after: number; fade_days: number } => {
   const s = cached(join(P.config, "self.yaml"), (t) => parse(t) ?? {}, {} as any);
   return { month: s.month === "solar_term" ? "solar_term" : "gregorian", see_off_after: Number(s.see_off_after ?? 3), restore_after: Number(s.restore_after ?? 2),
@@ -128,11 +128,11 @@ export const selfLensConf = (): { birth?: Record<string, any>; lenses: Record<st
   return { birth: s.birth, lenses: s.lenses ?? {} };
 };
 
-/** config/repos.yaml (§4.2): repos a worker may get a copy of, and where an approved push goes */
+/** config/repos.yaml (§办1.3): repos a worker may get a copy of, and where an approved push goes */
 export const reposConf = (): Record<string, { url: string; branch?: string }> => cached(join(P.config, "repos.yaml"), (t) => parse(t) ?? {}, {});
 
 /**
- * config/worker.yaml (§4.2): how workers run. Owner-edited only, like every config file.
+ * config/worker.yaml (§办1.3): how workers run. Owner-edited only, like every config file.
  *   default_mode: host | sandbox            (default host)
  *   path: [/opt/foo/bin]                    extra PATH dirs, prepended, both modes
  *   skills: [name, …] | all                 skills to enable; default = every dir under config/skills/
@@ -144,7 +144,7 @@ export interface WorkerConf { default_mode?: "host" | "sandbox"; path?: string[]
 export const workerConf = (): WorkerConf => cached(join(P.config, "worker.yaml"), (t) => parse(t) ?? {}, {});
 
 /**
- * config/sources.yaml (§17.3): Feishu DMs on / off (the observer reads them) and the other places events come from.
+ * config/sources.yaml (§读2.1): Feishu DMs on / off (the observer reads them) and the other places events come from.
  * Each source: { id, kind (a SOURCE_KINDS key: git, fetch, command, feishu-mail), every ("15m" | "2h" | "1d"), domain, enabled, …kind-specific }.
  */
 export interface SourceSpec { id: string; kind: string; every?: string; domain?: "work" | "personal"; enabled?: boolean; env?: string[]; [k: string]: unknown }
@@ -161,7 +161,7 @@ export function tierConf(tier: Tier) {
 
 /**
  * KEY=VALUE lines; # comments; optional surrounding quotes. Read by the proxy, backup, and the source poller, which
- * hands a command plugin only the names its sources.yaml entry lists under env: (§17.3). Never to a model or agent.
+ * hands a command plugin only the names its sources.yaml entry lists under env: (§读2.1). Never to a model or agent.
  */
 export function secret(name: string): string | undefined {
   const all = cached(P.secrets, (text) => {

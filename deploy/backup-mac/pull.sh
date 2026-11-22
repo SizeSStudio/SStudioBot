@@ -1,5 +1,5 @@
 #!/bin/bash
-# Off-site copy of SStudioBot's nightly backup onto the owner's Mac (DESIGN §1.3).
+# Off-site copy of SStudioBot's nightly backup onto the owner's Mac (DESIGN §底1.3).
 #
 #   bash pull.sh            (launchd runs it: install.sh)
 #

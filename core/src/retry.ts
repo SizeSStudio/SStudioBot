@@ -1,4 +1,4 @@
-// Scheduled work against upstream trouble (DESIGN §9.4): what kind of failure this is, when to try again, and the one
+// Scheduled work against upstream trouble (DESIGN §底4.3): what kind of failure this is, when to try again, and the one
 // message to the admin group when we stop trying. Nobody is waiting on a scheduled run, so it can afford to wait.
 
 import { run, tx } from "./db.ts";
@@ -77,7 +77,7 @@ export const failureText = (f: UpstreamFailure, err: string | undefined, stamp: 
 export const READ_ONLY_TOOLS = new Set(["memory_search", "memory_read", "web_search", "feishu_chats", "feishu_read", "task_list", "followup_list",
   "matter_events", "matter_list", "person_lookup", "person_path", "timeline_query", "readings_query", "self_list"]);
 
-/** A fixed-template line to the admin group, through the outbox like every other message (§9.2). */
+/** A fixed-template line to the admin group, through the outbox like every other message (§底4.2). */
 export function adminNotice(text: string) {
   const chat = feishuConf().admin_chat;
   if (!chat) { log("retry", "no admin chat for notice", { text: text.slice(0, 120) }); return; }

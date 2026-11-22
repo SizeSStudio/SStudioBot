@@ -1,4 +1,4 @@
-// Scheduler (DESIGN §9.1). Two kinds of timers in one table:
+// Scheduler (DESIGN §底4.1). Two kinds of timers in one table:
 //   - follow-up (one-off, set by the main agent): when due, a `timer` event goes into its lane, then it is done
 //   - schedule (from config/jobs.yaml, hot-reloaded): one row per job; when due it fires and moves to the next time.
 //     A schedule missed while the core was down (> GRACE late) is not run, only recorded as missed; one whose previous
@@ -57,10 +57,10 @@ export const cancelFollowup = (id: number) => run("UPDATE timers SET status='can
 
 /** code handlers for jobs (do: <name>); `event` and `morning` are built in */
 export type JobHandler = (name: string, job: JobSpec) => Promise<void>;
-/** builds the factual digest for the morning report (§9.1, §9.3); registered by main to avoid an import cycle */
+/** builds the factual digest for the morning report (§底4.1, §寸2); registered by main to avoid an import cycle */
 export type EventText = (name: string, job: JobSpec) => string | undefined;
 
-/** what the 复盘 ledger needs from the scheduler (§15.5); registered by main to avoid an import cycle */
+/** what the 复盘 ledger needs from the scheduler (§觉4); registered by main to avoid an import cycle */
 export interface SchedulerHooks {
   /** start of every tick, before anything fires: a review past its deadline is filed before the morning report is written */
   beforeTick?: () => void;
@@ -117,7 +117,7 @@ export class Scheduler {
     this.hook("beforeTick", () => this.hooks.beforeTick?.());
     const now = Date.now();
     const due = all("SELECT * FROM timers WHERE status='pending' AND due_at<=? ORDER BY due_at LIMIT 50", now);
-    // §9.4: events waiting out an upstream failure, and code jobs doing the same
+    // §底4.3: events waiting out an upstream failure, and code jobs doing the same
     let fired = !!one("SELECT 1 FROM inbox WHERE status='received' AND not_before IS NOT NULL AND not_before<=? LIMIT 1", now);
     this.retryJobs(now);
     for (const t of due) {
@@ -188,7 +188,7 @@ export class Scheduler {
       .finally(() => this.busy.delete(name));
   }
 
-  /** code jobs that failed on the upstream (§9.4); the plan lives in kv so a restart doesn't lose it */
+  /** code jobs that failed on the upstream (§底4.3); the plan lives in kv so a restart doesn't lose it */
   private retryJobs(now: number) {
     for (const r of all("SELECT k, v FROM kv WHERE k LIKE 'job.%.retry'")) {
       const name = r.k.slice(4, -6), v = JSON.parse(r.v), j = jobsConf()[name], h = j && this.handlers[j.do];

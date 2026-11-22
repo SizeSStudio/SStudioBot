@@ -1,4 +1,4 @@
-# SStudioBot (DESIGN §7.6): Claude Code sandbox needs a nested userns inside bwrap (apply-seccomp).
+# SStudioBot (DESIGN §底3.6): Claude Code sandbox needs a nested userns inside bwrap (apply-seccomp).
 # Replaces Ubuntu bwrap-userns-restrict (disabled via /etc/apparmor.d/disable/). Source: code.claude.com/docs/en/sandboxing
 abi <abi/4.0>,
 include <tunables/global>

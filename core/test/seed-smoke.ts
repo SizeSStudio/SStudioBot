@@ -1,11 +1,11 @@
-// Seed sync (§8.6) on a fresh throwaway home, offline (no model calls, no Feishu):
+// Seed sync (§底1.5) on a fresh throwaway home, offline (no model calls, no Feishu):
 //
 //   ssh <server> 'bash -s seed-smoke.ts 7829' < test/vps-test-home.sh
 //
 // Uses its own fake seed versions (fictional text). Checks: fresh install is quiet and recorded; untouched ordinary
 // files take a new seed with one commit; the agent's instructions (AGENTS, SOUL, skills/) wait for 「更新 seed」;
 // hand-edited files are never overwritten and reported once; USER.md is never synced; a 回滚 is respected; a failed
-// commit puts the old file back and is retried; an instance from before §8.6 is adopted without overwriting.
+// commit puts the old file back and is retried; an instance from before §底1.5 is adopted without overwriting.
 
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
@@ -106,7 +106,7 @@ ok(clean(), "nothing left half-done");
 r = ensureAgentHome(v3, "ccccccc");
 ok(r.updated.join() === "notes/c.md" && live("notes/c.md") === "模板 C v3\n" && clean(), "next start: taken");
 
-// ── 8. an instance from before §8.6 (no record) ──
+// ── 8. an instance from before §底1.5 (no record) ──
 run("DELETE FROM kv WHERE k='seed.state'");
 n = commits();
 r = ensureAgentHome(v3, "ddddddd");

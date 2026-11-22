@@ -1,10 +1,10 @@
-// Dispatcher + Session Manager (DESIGN §1.2, §3.3).
+// Dispatcher + Session Manager (DESIGN §底1.2, §触2.3).
 //
 //   - one run per lane at a time; lanes run in parallel up to MAX_CONCURRENT
 //   - a run takes every `received` event of its lane (batched: three messages → one reply)
 //   - restart recovery: a `running` run with no side effects goes back to `received`; one with side effects becomes
 //     `interrupted` and the owner is told, never re-run automatically
-//   - rolling sessions: idle > ROLL_IDLE_MS, /new, or the tier's model changed (§5.4) → new session; the old one is
+//   - rolling sessions: idle > ROLL_IDLE_MS, /new, or the tier's model changed (§办2.4) → new session; the old one is
 //     summarized (light tier) into sessions.summary + journal and carried into the first turn of the new one
 //   - resume fallback: session file gone → new session with summary + recent messages
 
@@ -48,7 +48,7 @@ const payloadOf = (r: Record<string, any>) => JSON.parse(r.payload_json ?? "{}")
 const SCHEDULED_LABEL: Record<string, string> = { timer: "到点提醒", matter: "事收复盘", lens: "镜头结果" };
 
 /**
- * §9.4: a scheduled event whose run hit an upstream failure goes back to the inbox with a not_before, or, once its
+ * §底4.3: a scheduled event whose run hit an upstream failure goes back to the inbox with a not_before, or, once its
  * window is over, is marked failed with one line to the admin group. Nobody is told in the DM: nobody asked.
  */
 function requeueScheduled(rows: Record<string, any>[], f: UpstreamFailure, err: string | undefined) {
@@ -137,7 +137,7 @@ export class Dispatcher {
     const rows = tx(() => {
       const rows = all("SELECT * FROM inbox WHERE lane=? AND status='received' AND COALESCE(not_before,0)<=? ORDER BY id LIMIT ?", lane, Date.now(), BATCH);
       if (!rows.length) return rows;
-      if (holdIfOverCap(rows)) return [];    // §9.3: over today's proactive cap → parked for the morning report
+      if (holdIfOverCap(rows)) return [];    // §寸2: over today's proactive cap → parked for the morning report
       const ids = rows.map((r) => r.id);
       run(`UPDATE inbox SET status='processing', run_id=? WHERE id IN (${ids.map(() => "?").join(",")})`, runId, ...ids);
       run("INSERT INTO runs(id, lane, session_key, role, tier, model, status, started, versions_json) VALUES(?,?,?,?,?,?,?,?,?)",
@@ -192,7 +192,7 @@ export class Dispatcher {
     }
     const tok = tokenStatus(runId);
     const why = tok?.status === "budget_exhausted" ? "这一轮的 token 预算用完了，先停在这里" : `模型调用出错：${(res.error ?? "").slice(0, 200)}`;
-    // §9.4: safe to run again only if this attempt said nothing and changed nothing
+    // §底4.3: safe to run again only if this attempt said nothing and changed nothing
     const failure = res.stop === "error" && tok?.status !== "budget_exhausted" && scheduled.length ? classifyUpstream(res.error) : undefined;
     const retry = failure && !res.fullText.trim() && ctx.replies === 0 && res.toolCalls.every((t) => READ_ONLY_TOOLS.has(t)) ? failure : undefined;
     if (retry && onlyScheduled) {
@@ -296,7 +296,7 @@ async function summarize(lane: string, since: number): Promise<string | undefine
 function systemPrompt(turn: TurnContext, streaming = false): string {
   const files = promptFiles();
   const get = (n: string) => files.find((f) => f.name === n)?.text || "（空）";
-  const own = turn.surface === "feishu:dm" || turn.surface === "console";   // §15.9: his own conversation, not a group
+  const own = turn.surface === "feishu:dm" || turn.surface === "console";   // §读5.1: his own conversation, not a group
   return [
     get("AGENTS.md"),
     get("SOUL.md"),

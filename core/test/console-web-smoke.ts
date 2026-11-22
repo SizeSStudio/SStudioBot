@@ -1,4 +1,4 @@
-// Console entrances smoke (DESIGN §10.1) on the VPS, as sbot, on a fresh throwaway home:
+// Console entrances smoke (DESIGN §触5.1) on the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh console-web-smoke.ts 7831
 //

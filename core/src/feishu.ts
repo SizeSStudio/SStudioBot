@@ -1,8 +1,8 @@
-// Feishu adapter, bot identity (DESIGN §3.1, §3.4): owner DM, admin group, workbench, card callbacks.
+// Feishu adapter, bot identity (DESIGN §触2.1, §触2.4): owner DM, admin group, workbench, card callbacks.
 // Group routing (admin group / workbench) is in routes.ts; groups the owner is in are read by the observer.
 //
 // Receive: `lark-cli event consume im.message.receive_v1 --as bot` (NDJSON on stdout, one event per line). The handler
-// only writes to messages + inbox and returns (§1.2). Events missed while the core was down are caught up from the
+// only writes to messages + inbox and returns (§底1.2). Events missed while the core was down are caught up from the
 // DM history (+chat-messages-list) using chat_cursors, deduped by message_id via inbox UNIQUE(source, source_msg_id).
 // Send: +messages-reply / +messages-send --as bot with --idempotency-key = outbox.idem_key, text on stdin.
 

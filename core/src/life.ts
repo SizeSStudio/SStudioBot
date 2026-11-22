@@ -1,11 +1,11 @@
-// 红尘里修, the data layer (DESIGN §15): 随手记, the timeline, 前瞻, 复盘, 习气 / 节律 and 谁先看见.
+// 红尘里修, the data layer (DESIGN §觉): 随手记, the timeline, 前瞻, 复盘, 习气 / 节律 and 谁先看见.
 //
 // Everything here is owner-only. The rules that matter are enforced in code, not in prompts:
-//   - an outlook is frozen once written; later feelings are appended as revisits (§15.2, §15.7)
-//   - a review without the owner's own words is stored as 未聊; the agent's 对照 is dropped then (§15.5)
-//   - a noticing credited to the owner must quote words he actually said in that review (§15.13)
+//   - an outlook is frozen once written; later feelings are appended as revisits (§觉2, §参1)
+//   - a review without the owner's own words is stored as 未聊; the agent's 对照 is dropped then (§觉4)
+//   - a noticing credited to the owner must quote words he actually said in that review (§寸3)
 //   - habit / rhythm candidates need evidence; only the owner endorses or drops them; 送一程 is decided by code
-//   - 淡了 is decided by code (no new evidence for fade_days); 放下 only by the owner, and dream stops adding to it (§15.15)
+//   - 淡了 is decided by code (no new evidence for fade_days); 放下 only by the owner, and dream stops adding to it (§寸4)
 // self/habits.md and self/rhythms.md are rendered from self_items, like index.md: nobody edits them by hand.
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -33,7 +33,7 @@ CREATE VIEW timeline AS
   UNION ALL SELECT ended, 'task', 'task:'||id, CASE status WHEN 'done' THEN '完成：' WHEN 'failed' THEN '失败：' ELSE status||'：' END || goal, NULL, matter_id FROM tasks WHERE ended IS NOT NULL
   UNION ALL SELECT opened_at, 'matter', 'matter:'||id, '起：'||title, CASE domain WHEN 'work' THEN 'work' ELSE NULL END, id FROM matters
   UNION ALL SELECT closed_at, 'matter', 'matter:'||id, status||'：'||title, CASE domain WHEN 'work' THEN 'work' ELSE NULL END, id FROM matters WHERE closed_at IS NOT NULL
-  -- §17.2: events that belong to a matter or needed him; the rest (fyi noise) stays in the ledger only
+  -- §读2.5: events that belong to a matter or needed him; the rest (fyi noise) stays in the ledger only
   UNION ALL SELECT ts, 'event', 'event:'||id,
     CASE level WHEN 'decide' THEN '〔要你拍板〕' WHEN 'reply' THEN '〔要你回〕' WHEN 'watch' THEN '〔要盯〕' ELSE '' END
       || COALESCE('「'||place||'」','') || COALESCE(actor||'：','') || summary
@@ -82,7 +82,7 @@ export function addNote(o: { text: string; domain?: string; matterId?: number; p
   return id;
 }
 
-// ───────────── timeline (§15.6) ─────────────
+// ───────────── timeline (§读5.3) ─────────────
 
 const KIND_ZH: Record<string, string> = { said: "他说", said_group: "他在群里", note: "随手记", sent: "代发", approval: "审批", task: "任务", matter: "事", event: "事件", outlook: "前瞻", revisit: "回看", review: "复盘" };
 
@@ -114,7 +114,7 @@ export function ownerActivity(from: number, to: number) {
   return one(`SELECT COUNT(*) n FROM timeline WHERE ts>=? AND ts<? AND kind IN ('said','said_group','note','approval','matter')`, from, to)!.n as number;
 }
 
-// ───────────── 前瞻 (§15.2) ─────────────
+// ───────────── 前瞻 (§觉2) ─────────────
 
 const CAP: Record<string, number> = { day: 1, week: 3, month: 3, matter: 3 };
 export interface OutlookItem { text: string; why_refs?: string[]; look_for?: string; revisit_at?: string }
@@ -158,12 +158,12 @@ export function outlooksText(horizon: string, period: string): string {
   }).join("\n");
 }
 
-// ───────────── 习气 / 节律 (§15.10, §15.13) ─────────────
+// ───────────── 习气 / 节律 (§改1, §寸3) ─────────────
 
 const STATUS_ZH: Record<string, string> = { candidate: "候选", endorsed: "我认可", seeing_off: "送一程", dropped: "不认", faded: "淡了", let_go: "放下" };
 export type SelfStatus = "candidate" | "endorsed" | "seeing_off" | "dropped" | "faded" | "let_go";
 
-/** §15.15: status changes the morning diff counts (counts only: the content of self/ stays out of the admin group) */
+/** §寸4: status changes the morning diff counts (counts only: the content of self/ stays out of the admin group) */
 function noteSelfChange(kind: "seeing_off" | "faded" | "let_go" | "back") {
   const c = JSON.parse(kvGet("self.changes") ?? "{}");
   c[kind] = (c[kind] ?? 0) + 1;
@@ -196,7 +196,7 @@ export function upsertCandidate(o: { id?: number; kind: "habit" | "rhythm"; text
     if (!cur) throw new Error(`no self item #${o.id}`);
     if (cur.status === "let_go") throw new Error(`#${o.id} 他放下了：不再为它攒证据，也不要换个说法重提`);
     const ev = [...new Set([...JSON.parse(cur.evidence_json ?? "[]"), ...o.evidence])];
-    // §15.15: new evidence brings a faded item back only as a candidate; he has to endorse it again
+    // §寸4: new evidence brings a faded item back only as a candidate; he has to endorse it again
     const status = cur.status === "faded" ? "candidate" : cur.status;
     run("UPDATE self_items SET evidence_json=?, owner_said=MAX(owner_said, ?), last_seen=?, updated_at=?, status=? WHERE id=?", JSON.stringify(ev), o.ownerSaid ? 1 : 0, now, now, status, o.id);
     if (status !== cur.status) {
@@ -224,7 +224,7 @@ export function markSelfItem(id: number, status: Exclude<SelfStatus, "faded">, n
   return `#${id} ${STATUS_ZH[cur.status]} → ${STATUS_ZH[status]}`;
 }
 
-/** §15.15 淡了: an endorsed (or 送一程) item with no new evidence, mention or word from him for fade_days stops being cited.
+/** §寸4 淡了: an endorsed (or 送一程) item with no new evidence, mention or word from him for fade_days stops being cited.
  *  Nothing is deleted; new evidence brings it back as a candidate (upsertCandidate). Runs nightly before dream. */
 export function fadeSelfItems(now = Date.now()): number[] {
   const { fade_days } = selfConf();
@@ -255,7 +255,7 @@ export function renderSelf() {
   }
 }
 
-// ───────────── 复盘 (§15.5) + 谁先看见 ─────────────
+// ───────────── 复盘 (§觉4) + 谁先看见 ─────────────
 
 export interface Noticing { item_id?: number; item_text: string; who: "owner" | "agent"; prompted?: boolean; quote?: string }
 export interface QuestionFeedback { q: string; response: "talked" | "short" | "declined" | "none" }
@@ -263,12 +263,12 @@ export interface QuestionFeedback { q: string; response: "talked" | "short" | "d
 export function submitReview(o: {
   kind: "day" | "week" | "month" | "matter"; period: string; matterId?: number; facts: string; ownerWords: string[]; agentNotes?: string;
   noticings: Noticing[]; questions: QuestionFeedback[]; runId: string;
-  /** only when code files it (§15.5): how the round ended, and a line saying so in place of his words */
+  /** only when code files it (§觉4): how the round ended, and a line saying so in place of his words */
   delivery?: "sent" | "replied" | "not_sent"; deliveryNote?: string;
 }): { id: number; rel: string; hints: string[] } {
   const words = o.ownerWords.map((w) => w.trim()).filter(Boolean);
   const chatted = words.length > 0;
-  // §15.13: credit to the owner only with a quote of what he said here
+  // §寸3: credit to the owner only with a quote of what he said here
   for (const n of o.noticings) {
     if (n.who === "owner" && (!n.quote || !words.some((w) => w.includes(n.quote!.trim()) || n.quote!.includes(w))))
       throw new Error(`noticing「${n.item_text}」记成主人先看见，需要 quote 是他在这次复盘里的原话（owner_words 里的一句）`);
@@ -300,7 +300,7 @@ export function submitReview(o: {
   const id = Number(run("INSERT INTO reviews(kind, period, matter_id, facts, owner_words, agent_notes, status, file_path, run_id, ts, delivery) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
     o.kind, o.period, o.matterId ?? null, o.facts, JSON.stringify(words), notes || null, chatted ? "chatted" : "unchatted", rel, o.runId, Date.now(), o.delivery ?? null).lastInsertRowid);
   for (const w of words) appendJournal(`复盘 #${id}（${o.kind} ${o.period}）他说：${w}`, `review@${o.kind}`);
-  for (const q of o.questions) signal("review_question", { role: "reflect", run_id: o.runId, value: { review: id, kind: o.kind, ...q } });   // §16.2 陪伴
+  for (const q of o.questions) signal("review_question", { role: "reflect", run_id: o.runId, value: { review: id, kind: o.kind, ...q } });   // §进2.2 陪伴
   const hints: string[] = [];
   for (const n of o.noticings) {
     run("INSERT INTO noticings(ts, item_id, item_text, who, prompted, quote, review_id, run_id) VALUES(?,?,?,?,?,?,?,?)",
@@ -311,7 +311,7 @@ export function submitReview(o: {
   return { id, rel, hints };
 }
 
-/** §15.13 送一程: the last N noticings of an endorsed item were all the owner's → seeing_off. The way back needs his word. */
+/** §寸3 送一程: the last N noticings of an endorsed item were all the owner's → seeing_off. The way back needs his word. */
 export function seeOff(itemId: number): string | undefined {
   const item = one("SELECT * FROM self_items WHERE id=?", itemId);
   if (!item) return;
@@ -333,7 +333,7 @@ export function seeOff(itemId: number): string | undefined {
   }
 }
 
-/** a mirror, not a KPI (§15.13): how many mentions this period were seen first by him */
+/** a mirror, not a KPI (§寸3): how many mentions this period were seen first by him */
 export function noticingsSummary(from: number, to: number): string {
   const rows = all("SELECT who, COUNT(*) n FROM noticings WHERE ts>=? AND ts<? GROUP BY who", from, to);
   const n = (w: string) => Number(rows.find((r) => r.who === w)?.n ?? 0);

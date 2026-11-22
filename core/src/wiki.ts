@@ -1,4 +1,4 @@
-// Knowledge-base layer over agent-home (DESIGN §8.4, §8.5): page visibility, the pages_fts index (FTS5 trigram,
+// Knowledge-base layer over agent-home (DESIGN §读1.4, §读1.5): page visibility, the pages_fts index (FTS5 trigram,
 // synced from the files by mtime after every commit), index.md (rebuilt by code) and log.md (append-only).
 //
 // Visibility is decided by code: self/ and journal/ are always owner; shared/ is shared; projects/topics/sources/groups
@@ -123,7 +123,7 @@ export function searchWiki(query: string, who: "owner" | "work" | "known" | "oth
 const GROUPS: [string, string][] = [["", "根目录"], ["people/", "人"], ["groups/", "群"], ["projects/", "项目"], ["topics/", "主题"],
   ["sources/", "资料"], ["matters/", "事"], ["shared/", "可分享"], ["self/", "自我（仅主人）"]];
 
-/** index.md: one line per page, grouped; rebuilt by code (§8.5). Journal is summarized, not listed. */
+/** index.md: one line per page, grouped; rebuilt by code (§读1.5). Journal is summarized, not listed. */
 export function rebuildIndex(): boolean {
   syncPages();
   const rows = all("SELECT path, title, summary, visibility FROM pages ORDER BY path");
@@ -144,7 +144,7 @@ export function rebuildIndex(): boolean {
   return true;
 }
 
-/** log.md: `## [2026-11-17] dream | 标题` + optional lines (§8.5) */
+/** log.md: `## [2026-11-17] dream | 标题` + optional lines (§读1.5) */
 export function appendLog(kind: string, title: string, lines: string[] = []) {
   const f = join(P.agentHome, "log.md");
   if (!existsSync(f)) writeFileSync(f, "# 记录\n\n只追加：ingest、dream、lint、好答案回收都记一笔。\n\n");

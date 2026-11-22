@@ -1,4 +1,4 @@
-// Triage: who a message is said to (DESIGN §4.3). On the VPS, as sbot, on a fresh throwaway home:
+// Triage: who a message is said to (DESIGN §读2.4). On the VPS, as sbot, on a fresh throwaway home:
 //
 //   ssh <server> 'bash -s' < test/vps-test-home.sh triage-address-smoke.ts 7830
 //

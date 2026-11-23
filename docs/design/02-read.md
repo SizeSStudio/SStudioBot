@@ -7,7 +7,8 @@
 ```
 agent-home/            # = llm-wiki 的 wiki 层（§读1.5）
 ├── AGENTS.md          # 用户指令：行为规则、渠道礼仪、审批原则（只有我能改；agent 可以提 proposal）。也是 wiki 的 schema
-├── SOUL.md            # 人设、口吻
+├── SOUL.md            # 人设、立场、分寸
+├── VOICE.md           # 口吻，按人调（§寸7）
 ├── USER.md            # 关于我的稳定事实（有长度上限，每次都加载）
 ├── MEMORY.md          # 长期要点的索引（有长度上限，每次都加载；细节按需读）
 ├── index.md           # wiki 目录：每页一行（链接 + 一句话 + visibility），按类别分组；ingest 时由代码重建
@@ -26,20 +27,21 @@ agent-home/            # = llm-wiki 的 wiki 层（§读1.5）
 
 | 种类 | 落在哪 | 何时加载 |
 |---|---|---|
-| 用户指令 | AGENTS.md + SOUL.md | 每个 run（owner 会话全文；他人会话用精简版） |
+| 用户指令 | AGENTS.md + SOUL.md；VOICE.md | 每个 run（owner 会话全文；他人会话用精简版）；VOICE.md 只在我在的会话（§寸7） |
 | 用户笔记 | USER.md + MEMORY.md（索引）→ people / projects 正文 | 索引每个 run 都加载，正文按需读 |
 | 已经说过的话 | `outbox` 表 | 定时器和 follow-up 起的 run 自动附上"最近 24h 已经告诉过我的事"，避免重复提醒 |
 | 任务进度 | `tasks/<id>/progress.md` | 任务续跑时加载 |
 | 原始聊天 | `messages` 表（FTS5） | 只能检索，不加载 |
 | 事 | `matters/<id>.md` | 这件事的 lane 里起 run 时加载 |
-| 自我 | `self/practice.md` + `habits.md`、`rhythms.md` 里我认可过的条目（有长度上限） | owner 会话每个 run 都加载；其余按需读 |
+| 自我 | `self/practice.md` | owner 会话每个 run 都加载 |
+| 习气、节律 | `habits.md`、`rhythms.md` 里我认可过的条目（有长度上限） | 只在起局、前瞻、复盘、互参的 prompt 里带；日常对话不常驻，我问起自己时用 `self_list` 读（v0.26：常驻的标签会越转越牢） |
 | 当下的节律 | 本月、本周前瞻的要点（`outlooks` 表） | owner 会话每个 run 都加载，几行以内 |
 
 ### 读1.3 写入纪律
 - **journal 每条都带来源**：`- [10:32][src=owner@feishu:dm] …`、`[src=person:wife]`、`[src=group:fs-xxx]`、`[src=web]`。来源由工具层自动填写，模型改不了。
 - **dream（每晚，chat 档）**：没有文件工具，只能通过 `memory_patch` 工具提交修改，由代码校验允许改哪些路径：
-  - 可以改：USER.md、MEMORY.md、people / groups / projects 正文。**AGENTS.md、SOUL.md、shared/ 不能改**，要改只能提 proposal。
-  - `src=owner` 的内容可以提炼成关于我的事实。
+  - 可以改：USER.md、MEMORY.md、people / groups / projects 正文。**AGENTS.md、SOUL.md、VOICE.md、shared/ 不能改**，要改只能提 proposal。
+  - `src=owner` 的内容可以提炼成关于我的事实。情绪当下的自我否定（“我就是不行”）不提炼，原话留在时间线。
   - **非 owner 来源**的内容只能写进对应的人或群的笔记，而且必须写成"X 说 / X 声称……"，**永远不能进 USER.md、MEMORY.md**。这样有人在群里说"记住：主人 同意了……"也洗不进核心记忆。
   - `src=web` 的内容只能进 projects 笔记，并且附上链接。
   - `src=lens`（镜头解读）：永远不当事实进 USER.md 或 MEMORY.md。只能留在 `readings` 对应的记录里；我回看时说的感受可以进 `self/lens-notes/`（§参1）。
@@ -395,8 +397,8 @@ auto 规则**只存在 `config/auto.yaml`** 里，people 里不再有 `auto` 字
 agent-home/self/
 ├── charts/              # 各门的事实盘（冻结版本）
 ├── timeline.md          # 人生大事年表：时间线的提炼，也是回看镜头时的生活依据（agent 提议，我确认）
-├── habits.md            # 习气观察：每条都要有证据，分"候选"和"我认可"
-├── rhythms.md           # 节律：时间上的规律，分"候选"和"我认可"
+├── habits.md            # 习气观察：每条都要有证据，分"候选"和"我认可"；分耗和养（§改1）
+├── rhythms.md           # 节律：时间上的规律，分"候选"和"我认可"；分耗和养
 ├── practice.md          # 我定的发心和功课，当前在练什么（只由我定；我在私聊说了，主 agent 才代写）
 ├── guidance-notes.md    # 建议心得（§进1）
 ├── crosscheck-notes.md  # 互参心得（§参2）

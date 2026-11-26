@@ -167,7 +167,7 @@ GET /api/v1/threads/:id/items?before=<cursor>   → 翻历史
 | 确认后才算 | **批准 / 拒绝**、取消任务、停止 run、派任务 | 立刻显示「处理中」，服务端确认才变状态。有对外后果的动作不能先画成已完成 |
 | 乐观锁 | 审批带 `draft_version`，配置带文件 hash | 冲突回 409 和最新内容，客户端显示最新状态，不覆盖 |
 
-**任务和 diff**：任务视图不假设 worker 在哪，任务带 `executor { kind: local | t3 | herdr, host, external_ref }`，步骤、问题、结果、diff 都走同样的实体。worker 派到别的机器怎么做由另一份设计定，这里只留位置。运行中的 diff 来自 `Edit` / `Write` 的工具输入，定稿的 diff 从镜像算（§办1.3，核心不在 worker 目录里跑 git）。diff 和工具输出都按不可信文本渲染。
+**任务和 diff**：任务视图不假设 agent 在哪，任务带 `{ node, agent, session_ref, attempt }`（§办3），步骤、问题（等待点）、结果、diff 都走同样的实体。运行中的 diff 来自 ACP `session/update` 里工具调用带的 diff（迁完之前的 SDK worker 是 `Edit` / `Write` 的工具输入）；定稿的 diff 由节点程序在工作目录里算好回传（`core.hooksPath=/dev/null`；SDK worker 从镜像算，§办1.3.1）。diff 和工具输出都按不可信文本渲染。
 
 ### 触6.5 对话
 

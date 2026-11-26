@@ -5,7 +5,7 @@
 | 老婆和朋友私聊的回复策略 | 承诺检测通过就自动回，其余审批（§底3.4）；原来的数字上限 2026-11-26 去掉 |
 | 各档用什么模型 | 留好配置；2026-11-17 定四档：chat opus、work sonnet、light haiku、expert opus（§办2.1） |
 | 私人内容出现在工作飞书里 | 可以接受 |
-| harness | 干活交给节点上现成的 agent（Claude Code、Codex、pi 等），经 ACP 驱动，客户端 acpx（2026-11-26，§办3）；lens 和迁完之前的 worker 用 Claude Agent SDK；对话角色用 pi（P0 对比后定）；我们的工具和闸门写成与 harness 无关的一层（§办1.1） |
+| harness | 干活交给节点上现成的 agent：Claude Code（Agent SDK）、Codex（app-server）、pi（RPC）走官方接口，别的走 ACP，客户端 acpx（2026-11-26，§办3.2）；lens 和迁完之前的 worker 用 Claude Agent SDK；对话角色用 pi（P0 对比后定）；我们的工具和闸门写成与 harness 无关的一层（§办1.1） |
 | 群里要不要自动回 | 按群开关，默认全部审批 |
 | 搜索 | 优先用模型自带的；兜底工具在 P0 准备好 |
 | 飞书群 | 默认 `always`，以 user 身份轮询读取；敏感群和外部群默认关闭或只出摘要；首次启用时过一遍群列表（§触2.5） |
@@ -39,7 +39,8 @@
 - **LayerFS**（Ephemeral-AI-Lab/layerfs）：候选思路是 worker 每次写操作一个 checkpoint（影子分支），以及 dream 在分支上整理再合并；还没写进正文，也不引入依赖。
 - OpenClaw / NanoClaw / nanobot / Hermes Agent：见 v0.6 附录。OpenClaw 用 acpx 接外部 harness，`openclaw mcp serve` 把自己的工具给 Claude Code、Codex 用，是 §办3.2 反向开放的参考。
 - **ACP**（Agent Client Protocol）：JSON-RPC，agent 一般作为子进程走 stdio。`session/new`、`session/prompt`、`session/cancel`、`session/load`（可选）、`session/request_permission`；没有轮中插话。适配：`claude-agent-acp`、`codex-acp`、`pi-acp`。§办3。
-- **acpx**（openclaw/acpx，npm `acpx`，MIT，alpha）：无界面的 ACP 客户端；session 持久、忙时排队、权限模式、NDJSON 输出；库入口 `acpx/runtime`。§办3.2 用它，锁版本。
+- **acpx**（openclaw/acpx，npm `acpx`，MIT，alpha）：无界面的 ACP 客户端；session 持久、忙时排队、权限模式、NDJSON 输出；库入口 `acpx/runtime`。§办3.2 用它接 ACP agent，锁版本。
+- **Paseo**（getpaseo/paseo，Apache-2.0，2026-11 是 0.17）：每台机器一个 daemon 管 agent，手机、桌面、网页连进来。Claude 走 Agent SDK、Codex 走 app-server、pi 走 RPC，其余走 ACP（`packages/server/src/server/agent/providers/`）。借了：等权限时发消息先拒掉请求（`docs/glossary.md` Steer）、空闲释放进程留 session（`docs/agent-lifecycle.md`）、ACP 续接的三档。没借：每台机器一个独立 daemon（和"一个主"不合）、端到端加密中继（我们走 tailnet）。设备身份和凭证分开、客户端的排队条和推送原因留给 §触6 重做时看。
 - T3 Code：thread / delegate / task notification / queue 的交互模型。
 - **graphify**：把代码和资料建成知识图谱。借了这几条：边分 EXTRACTED / INFERRED，路径取最弱一跳；只用代码构建；邻居、最短路径、解释三种查询；社区自动分、不靠模型命名；名字有歧义就拒绝并列候选。§读4 按它设计，没有引入依赖。
 - **HappyClaw**（riba2534/happyclaw）：技术栈和场景跟我们最接近，不 fork，只借设计：

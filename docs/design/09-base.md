@@ -39,7 +39,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
                              │ 节点主动连主（tailnet；设备密钥配对，新节点默认关）│
        ┌─────────────────────┴────────┐   ┌────────────┴─────────────┐   ┌────┴───────────────────┐
        │ 节点：主所在那台               │   │ 节点：Mac 和别的机器        │   │ 节点：Windows 微信机      │
-       │ acpx ─► Claude Code/Codex/pi │   │ acpx ─► Claude Code/Codex/pi│   │ 微信 4.0.x（专属号）      │
+       │ Claude Code/Codex/pi/ACP     │   │ Claude Code/Codex/pi/ACP    │   │ 微信 4.0.x（专属号）      │
        │ 对话里的命令（§办1.2）          │   │ 本机登录 · 备份副本          │   │ wechat-reader / sender   │
        └──────────────────────────────┘   └──────────────────────────┘   └────────────────────────┘
 ```
@@ -56,8 +56,8 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 - **去重**：`UNIQUE(source, source_msg_id)`，用渠道给的消息 ID。定时器事件用 `timer_id:due_at` 作为 ID。
 - **lane**：每个会话（session key）或每个任务（task id）是一条 lane。**一条 lane 同一时刻只有一个 run**，不同 lane 之间可以并发，不设全局上限（§办3.4）。
 - **合批**：开始一个 run 时，把这条 lane 上所有 `received` 的事件一起取出（有上限），合成一轮输入。我连发三条只会得到一个回复。
-- **run 进行中来了新事件**：我的消息能插就插（pi `steer`，2026-11-26 起不再后置）；插不进的和其他事件排队，等下一个 run。我发 `/stop` 时停这一轮（pi `abort`，ACP `session/cancel`）。
-- **进程模型**：对话角色在核心进程里用 pi 跑；任务是节点上的一个 ACP session（§办3）。lens 和迁完之前的 worker 是一次 `query()`，起一个 CLI 子进程。
+- **run 进行中来了新事件**：我的消息能插就插（pi `steer`，2026-11-26 起不再后置）；插不进的和其他事件排队，等下一个 run。我发 `/stop` 时停这一轮（pi `abort`；节点任务见 §办3.4）。
+- **进程模型**：对话角色在核心进程里用 pi 跑；任务是节点上一个 agent 的 session（§办3.2）。lens 和迁完之前的 worker 是一次 `query()`，起一个 CLI 子进程。
 - **状态**：`received → processing → done | failed | dropped`。核心进程重启后：
   - `processing` 的 run，如果**没有记录到任何副作用**（没进发件箱、没提交审批、没开任务），就回到 `received` 自动重试。
   - 有副作用的标为 `interrupted`，并在这条 lane 里告诉我"上一轮做到 X 时被中断了，要继续吗"。**不自动重跑有副作用的 run。**
@@ -70,7 +70,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 
 **现在**：主在一台 VPS（4 核 / 6.7G 内存，已装好 tailscale），它也是一个节点。主可以换到 Mac 或 Windows（§办3.1）。
 
-原来不做远程 worker，理由是闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。换成 ACP 以后这些大都没了：权限由 agent 自己管，来问转看一眼卡；agent 用本机登录；掉线按 §办3.4；代码就在节点本地。PR #15 的 ssh 派活不再用。
+原来不做远程 worker，理由是闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。交给节点上现成的 agent 以后这些大都没了：权限由 agent 自己管，来问转看一眼卡；agent 用本机登录；掉线按 §办3.4；代码就在节点本地。PR #15 的 ssh 派活不再用。
 
 **怎么轻**
 - **对话角色不起子进程**：用 pi 时在核心进程里跑。实测一个 Claude Code CLI 子进程常驻 230～320 MB，每条消息都起一个会很重。
@@ -201,7 +201,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
    - 为什么批准时不返回 allow 让 CLI 去跑工具：P0 实测（`probes/worker-isolation.ts` W3）resume 时 CLI 总是报 `Deferred tool resume: tool 'mcp__sbot__…' is no longer available`（in-process MCP 还没连上），之后 allow 的调用约 15～25% 会变成"用户拒绝了这个操作"，**跟 sudo 无关**（不套包装脚本也一样），`MCP_CONNECTION_NONBLOCKING=false` 也没用。核心代执行 + deny 带结果：10/10 正常，动作也只执行一次（执行权本来就在核心，§办1.3）。
 4. 审批过期，按 deny 处理。
 
-**C. 看一眼（节点 agent，§办3.3）**：ACP 权限请求、`ask`、派到别的机器的通知都发看一眼卡。前两种是任务的等待点，答案原样回到同一个 session，不占进程；通知不等我点。
+**C. 看一眼（节点 agent，§办3.3）**：agent 的权限请求、`ask`、派到别的机器的通知都发看一眼卡。前两种是任务的等待点，答案原样回到同一个 session，不占进程；通知不等我点。
 
 ### 底3.3 审批状态机
 
@@ -354,7 +354,7 @@ approvals(id, kind, origin_lane, run_id, requester_id, action, channel, target, 
           draft, draft_version, refs_json, checks_json, expert_json, trigger_msg_id,
           deferred_tool_json, status, superseded_by, expires_at, decided_by, decided_at,
           card_msg_id, card_thread_id)
-      -- kind: send|plan|deferred_tool|glance|ask（glance = ACP 权限请求和通知，ask = agent 问我）
+      -- kind: send|plan|deferred_tool|glance|ask（glance = agent 的权限请求和通知，ask = agent 问我）
       -- status: pending|approved|rejected|expired|superseded|invalidated
 outbox(id, approval_id UNIQUE NULL, lane, channel, target, payload, status, attempts,
        send_by, sent_msg_id, ts)                           -- status: queued|sending|sent|failed|unknown|expired

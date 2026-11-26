@@ -261,13 +261,14 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] `crosschecks` 落地时带上取信规则（§参2）
 
 ### 附2.17 办和底座第 4 批待实现（2026-11-26，§办3）
-- [ ] 先核实：ACP `session/new` 的 `mcpServers` 能不能把我们的工具挂给三种 agent；`session/load` 哪些支持；acpx 的库入口和权限回调够不够用（不够就用 ACP TS SDK）
+- [ ] 先核实（探针）：四种适配器各自怎么挂我们的 MCP 工具（Claude SDK `mcpServers`、Codex MCP 配置、pi `--mcp-config`、ACP `session/new`）；Claude 读节点 settings 时 `canUseTool` 什么时候被调到；Codex 审批请求和 `turn/steer` 的参数；ACP agent 的 `session/load` / `unstable_resumeSession` 支持情况；acpx 的库入口和权限回调够不够用（不够就用 ACP TS SDK）
 - [ ] 节点程序（TS）：主动连主、设备密钥配对（复用 §触6.7）、上报 agent 和在线；`nodes` 表，新节点默认关
-- [ ] acpx 接入：一个任务一个 session，`tasks` 加 node / agent / session_ref / attempt；`progress.md` 回传
+- [ ] 适配器：Claude Code（Agent SDK，流式输入）、Codex（app-server）、pi（`--mode rpc`）、其余 ACP（acpx），对主是同一个接口；一个任务一个 session，`tasks` 加 node / agent / session_ref / attempt；`progress.md` 回传
 - [ ] MCP server：`submit_report`、`ask`、`send` 等给节点 agent；反向开放给任何 agent，默认关
-- [ ] ACP 权限请求和 `ask` → 看一眼卡 → 答案回同一个 session；派到主以外的节点发通知不等
-- [ ] 插话：owner 会话和 pi 任务用 `steer`；ACP 的排到下一轮
-- [ ] 停（取消这一轮）和取消（不要了）两个动作；去掉暂停的说法
+- [ ] 权限请求和 `ask` → 看一眼卡 → 答案回同一个 session；派到主以外的节点发通知不等；等看一眼时我发消息就先拒掉那条请求
+- [ ] 插话：owner 会话的 pi 和 Claude、Codex、pi 任务插进进行中的这一轮；ACP 的排到下一轮
+- [ ] 停（取消这一轮，未读的插话作废）和取消（不要了）两个动作；去掉暂停的说法
+- [ ] 空闲释放：默认 1 小时没动静放掉进程、留 session，有活或等待点时不放
 - [ ] 久没动静只显示、进"需要你处理"（默认 20 分钟，可改），不强停
 - [ ] 去掉上限：`tasks.ts` 的 `LANE_OPEN_MAX`、`GLOBAL_OPEN_MAX`、`MAX_AUTO_RUNS`、`MAX_TURNS`、超时和看门狗 abort；`deploy/worker` 的 `RuntimeMaxSec`（要手动跑 `install.sh`）；每台机器可选 `max_parallel`
 - [ ] 预算只告警：代理不再因预算 403，令牌无效和越档照旧 403；`daily_limit` 改 `daily_alert`，expert 超了照常把关
@@ -279,7 +280,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] 备份经节点连接存到任意节点，默认 Mac
 - [ ] 主可移植：systemd、`sbot-deploy`、bwrap、iptables 变成 Linux 可选件；主用单独账号；Mac、Windows 上能起核心
 - [ ] SDK worker 迁成服务器节点上的 Claude Code；Windows 微信机并进节点
-- [ ] 关掉 PR #15
+- [x] 关掉 PR #15（2026-11-26）
 
 ## 附3 里程碑
 

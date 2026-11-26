@@ -107,4 +107,5 @@ measure:
   restore_after: 2
   settle: { matter_quiet_days: 90, topic_days: 14, followup_days: 90, ledger_days: 90 }  # §寸4 沉降
   ease_flip: 2          # §寸6 切省心时翻几条养
+  infer_min_convs: 2    # §改1 推断的候选至少来自几场对话
 ```

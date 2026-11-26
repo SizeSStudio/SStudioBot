@@ -24,68 +24,58 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 | **收件箱** | 所有触发 run 的东西，持久化，是唯一的真相源 | `inbox` 表（§底1.2） |
 | **定时器** | 周期任务（schedule）+ agent 给自己设的 follow-up；到点**不直接跑**，而是往收件箱里投一条事件 | `timers` 表（§底4） |
 | **记忆** | 只存查不回来的东西 | `agent-home` git 仓库（§读1） |
-| **权限** | 每个工具调用：直接执行 / 拦截 / 提交审批；凭证在 agent 环境之外 | 代码里的闸门 + LLM 代理 + Unix 用户隔离（§底3） |
+| **权限** | 我们的工具：直接执行 / 拦截 / 提交审批；节点 agent 按自己的权限设置跑，来问转看一眼卡；SStudioBot 的密钥不进 agent 环境 | 代码里的闸门 + 看一眼卡 + LLM 代理 + 主用单独账号（§底3、§办3.3） |
 | **发件箱** | 所有对外消息先落库再投递；出口幂等 | `outbox` 表（§底3.3） |
 
-### 底1.1 总体拓扑
+### 底1.1 总体拓扑（2026-11-26 改成主 + 节点，§办3）
 
 ```
-                 ┌──────────────── VPS (single host) ─────────────────────────────────────────┐
-                 │ 用户 sbot（核心进程，systemd）                                               │
- 飞书 ◄─长连接──┤  feishu adapter（bot）  ┐                                                     │
- 飞书 ◄─轮询────┤  feishu observer（user） ├─► inbox ─► Dispatcher ─► run（主 agent / Triage / expert）
- Windows ◄─WS──┤  wechat bridge           ┘     ▲            │          CLI 子进程，无 shell、无写文件工具
-                 │  Scheduler（timers）──────────┘            │                                  │
-                 │  Sentinel（代码巡检）                       ├─► Task Engine ──────────────┐    │
-                 │  Gate + Approvals ─► 管理群卡片             │                             │    │
-                 │  Outbox Dispatcher ─► 飞书 / 微信           │                             │    │
-                 │  LLM 代理 127.0.0.1:7811 ─► 各档上游端点（key 只在这里）◄──────────────┼────┤
-                 │  控制台（Hono，unix socket，经 tailscale serve）                         │    │
-                 │  SQLite · /srv/sbot/config（配置仓库）· /srv/sbot/agent-home（记忆仓库） │    │
-                 ├──────────────────────────────────────────────────────────────────────────┼────┤
-                 │ 用户 sbot-w（worker，sandbox + iptables：只能访问 LLM 代理和出网代理）    ▼    │
-                 │  /srv/sbot-w/tasks/<id>/  worktree + progress.md + 独立 CLAUDE_CONFIG_DIR     │
-                 └───────────────────────────────▲──────────────────────────────────────────────┘
-                                                 │ Tailscale（边缘节点主动连核心；ACL + 连接令牌）
-                 ┌───────────────────────────────┴──── Windows 电脑（边缘节点）──────────────────┐
-                 │ 微信 4.0.x（SStudioBot 专属号，锁定版本）· wechat-reader（解密数据库轮询）    │
-                 │ wechat-sender（UIAutomation，唯一备注 + 窗口标题校验）· 健康上报              │
-                 └──────────────────────────────────────────────────────────────────────────────┘
+              ┌────────── 主（同一时间一台；Linux / Mac / Windows 都行）──────────────────┐
+ 飞书 ◄─长连接┤ 核心进程（单独账号）：inbox ─► Dispatcher ─► run（主 agent / Triage / expert，pi）│
+ 飞书 ◄─轮询──┤ Scheduler · Sentinel · Gate + Approvals + 看一眼卡 ─► 管理群卡片             │
+              │ Outbox ─► 飞书 / 微信 · Task Engine · 控制台 API                              │
+              │ LLM 代理（SStudioBot 的 key 只在这里）· SQLite · config · agent-home          │
+              └──────────────▲──────────────────────────▲──────────────────────▲──────────┘
+                             │ 节点主动连主（tailnet；设备密钥配对，新节点默认关）│
+       ┌─────────────────────┴────────┐   ┌────────────┴─────────────┐   ┌────┴───────────────────┐
+       │ 节点：主所在那台               │   │ 节点：Mac 和别的机器        │   │ 节点：Windows 微信机      │
+       │ Claude Code/Codex/pi/ACP     │   │ Claude Code/Codex/pi/ACP    │   │ 微信 4.0.x（专属号）      │
+       │ 对话里的命令（§办1.2）          │   │ 本机登录 · 备份副本          │   │ wechat-reader / sender   │
+       └──────────────────────────────┘   └──────────────────────────┘   └────────────────────────┘
 ```
 
-- **为什么分核心和边缘**：飞书和模型 API 都是纯网络接口，放 VPS 上没问题。个人微信只能靠 Windows 上真实登录的客户端来收发。边缘节点**主动**连核心，核心不对外暴露任何端口。
+- **为什么主和节点分开**：主只管状态和规则，数据只有一份。干活要的本机资源（登录、订阅、微信客户端、重构建）在各台节点。节点**主动**连主，主不连节点。
+- **现在线上**：主在一台 Linux VPS，它自己也是节点；Mac、Windows 微信机连上来。迁完之前，worker 仍是 SDK（§办1.3.1），Windows 仍走旧的 bridge（§触3）。
 - **技术栈**：
-  - 核心用 TypeScript（Node）、单进程加 SQLite。
-  - 边缘用 Python，和核心之间走 JSON over WebSocket。
+  - 核心和节点程序用 TypeScript（Node）；核心单进程加 SQLite。
+  - 微信那部分用 Python，和主之间走 JSON over WebSocket。
 
 ### 底1.2 收件箱与 run 的语义
 
 - **先落库再确认**：渠道 handler 只做"写入 inbox，再 ack"，越快越好。是否可信、有没有注入，这些判断放到 run 里去做。
 - **去重**：`UNIQUE(source, source_msg_id)`，用渠道给的消息 ID。定时器事件用 `timer_id:due_at` 作为 ID。
-- **lane**：每个会话（session key）或每个任务（task id）是一条 lane。**一条 lane 同一时刻只有一个 run**，不同 lane 之间可以并发，全局另设并发上限。
+- **lane**：每个会话（session key）或每个任务（task id）是一条 lane。**一条 lane 同一时刻只有一个 run**，不同 lane 之间可以并发，不设全局上限（§办3.4）。
 - **合批**：开始一个 run 时，把这条 lane 上所有 `received` 的事件一起取出（有上限），合成一轮输入。我连发三条只会得到一个回复。
-- **run 进行中来了新事件**：默认排队，等下一个 run 处理。我发 `/stop` 时调用 `interrupt()`。（往进行中的 run 里插话的 `/steer` 后置，见 §附3。）
-- **进程模型**：一个 run 就是一次 `query()`，起一个 CLI 子进程，`resume` 对应的 SDK session，跑完子进程退出。冷启动的开销在 P0 实测。
+- **run 进行中来了新事件**：我的消息能插就插（pi `steer`，2026-11-26 起不再后置）；插不进的和其他事件排队，等下一个 run。我发 `/stop` 时停这一轮（pi `abort`；节点任务见 §办3.4）。
+- **进程模型**：对话角色在核心进程里用 pi 跑；任务是节点上一个 agent 的 session（§办3.2）。lens 和迁完之前的 worker 是一次 `query()`，起一个 CLI 子进程。
 - **状态**：`received → processing → done | failed | dropped`。核心进程重启后：
   - `processing` 的 run，如果**没有记录到任何副作用**（没进发件箱、没提交审批、没开任务），就回到 `received` 自动重试。
   - 有副作用的标为 `interrupted`，并在这条 lane 里告诉我"上一轮做到 X 时被中断了，要继续吗"。**不自动重跑有副作用的 run。**
   - 副作用由工具层在 `runs.side_effects` 里计数。
+  - **崩溃熔断**：同一条输入让核心连着崩两次，就不再重试，标 `failed` 并告诉我。为了让主能起来，不算限制。
 - **resume 失败的兜底**：比如 transcript 已被清理。这时开一个新 session，带上 `sessions.summary` 和最近 K 条消息，接着处理。
 - **回复跟着输入走**：每个 run 带一个 `TurnContext`（来源渠道、chat、话题、消息 ID）。`reply` 投递到这个 run 的输入来源，不去猜"最近一条消息"。
 
-### 底1.3 部署：单机、轻量（2026-11-16 定）
+### 底1.3 部署：主 + 节点，轻量（2026-11-26 改；原来单机，2026-11-16 定）
 
-**一台机器**：核心和 worker 都放在同一台 VPS（实例是 4 核 / 6.7G 内存，已装好 tailscale）。
+**现在**：主在一台 VPS（4 核 / 6.7G 内存，已装好 tailscale），它也是一个节点。主可以换到 Mac 或 Windows（§办3.1）。
 
-不做远程 worker。核心和 worker 分放两台机器，就得做一套远程机制：闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。这些换来的只是更好的国内网络，不值得。`Runner` 里只留一个"worker 跑在哪台机器"的配置项。
+原来不做远程 worker，理由是闸门回调要跨机器、worker 要打隧道访问 LLM 代理、掉线要续跑、代码副本要同步。交给节点上现成的 agent 以后这些大都没了：权限由 agent 自己管，来问转看一眼卡；agent 用本机登录；掉线按 §办3.4；代码就在节点本地。PR #15 的 ssh 派活不再用。
 
 **怎么轻**
 - **对话角色不起子进程**：用 pi 时在核心进程里跑。实测一个 Claude Code CLI 子进程常驻 230～320 MB，每条消息都起一个会很重。
-- **worker 进程**：
-  - 同时最多 2 个，默认 1 个，多出来的排队。
-  - 每个放在一个 systemd scope 里，`MemoryMax=1G`，超了只杀这个 worker。
-  - 核心设 `OOMScoreAdjust=-500`。
-- **重构建不在 VPS 上跑**：比如 gradle，单次就要 2～4 GB。交给 Mac，或者提 PR 让 CI 跑。
+- **节点上的 agent**：同时几个不设上限，我可以按机器设（§办3.4）。主和节点在同一台时，核心设 `OOMScoreAdjust=-500`，内存紧时先杀干活的、不杀主（让主活着，不算限制）。不设 `RuntimeMaxSec`；迁完之前的 SDK worker 还在 systemd unit 里（§办1.3.1）。
+- **重构建派给 Mac 节点**：比如 gradle，单次就要 2～4 GB；或者提 PR 让 CI 跑。
 - **控制台**：`tailscale serve`，加一个公网 443 入口（和机器上已有的 nginx 共用，密码 + 会话 cookie，§触5.1）。
 - **目标**：空闲约 300 MB（核心约 150～250 MB）；2 个对话 run 加 1 个 worker 构建时，峰值 ≤ 2.3 GB。
 
@@ -107,7 +97,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
   - 所以 SQLite 不需要放在系统盘。
 - **S3 里只放不可变的文件和备份**：SQLite 和 git 仓库不能直接放进 S3。
 - **rustfs 凭证**：用 rustfs 的 IAM 给 sbot 单独建一个只能访问这两个桶的 key，放进 `secrets.env`，不用管理员 key（M0 做）。
-- **异地副本**：`sbot-backup` 和数据在同一块盘上，只防误删，不防坏盘。M3 前加一份异地副本，比如 Mac 每周拉一次，或者推到另一个对象存储。
+- **异地副本**：`sbot-backup` 和数据在同一块盘上，只防误删，不防坏盘。现在 Mac 经 `deploy/backup-mac` 拉一份（2026-11-17 起，校验 sha256 和完整性）。以后任何节点都能存一份，经节点连接传，默认 Mac；不用第三方存储（§办3.1）。
 - **国内网页**：SG 出口抓少数国内 CDN 会 403。遇到时只让这类请求走代理，不为此换机器。
 
 **上线（2026-11-17）**：代码在公开仓库，`main` 就是线上跑的东西。
@@ -123,6 +113,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 - 代码放在 root 拥有、核心服务写不到的目录里。核心被攻破也改不了自己的代码。之前代码在 `sbot` 自己的目录下，`sbot` 可以把整个目录换掉。
 - 只自动上线 `core/`。unit、`sbot-deploy` 本身、worker 沙箱这些 root 级的东西，改了要手动跑对应的 `install.sh`。
 - 打磨期合并即上线。稳定以后改成跟一个 release 分支（`/etc/sbot/deploy.env` 里设 `SBOT_DEPLOY_BRANCH`），或者关掉 timer 手动发。
+- 这套自动上线是 Linux 主上的可选件。主在 Mac 或 Windows 上时手动更新（§办3.1）。
 
 ### 底1.4 什么是核心，什么是插件
 **事（matter，§读3.1）是组织记录的轴，不是目的**（v0.24 改，原文是"人来找它，最后都是为了一件事"）。目的是 §0：陪我修自己、离苦得乐；办事是基本功，也是读懂我最真实的窗口。消息、审批、任务、看法、复盘都往一件事上挂，回头顺着一件事就能看到它从哪来、走到哪了、我在里面做了什么。生活里没起成事的部分，照样在时间线（§读5.3）和因缘（§读4）里。
@@ -179,16 +170,18 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 
 ## 底3 权限、闸门与审批
 
-**核心原则：限制写在代码和操作系统层面，不靠 prompt。**
+**核心原则：只留我说过的限制（§0.4）；留下的写在代码和操作系统层面，不靠 prompt。**
 
 ### 底3.1 动作分级
 
 | 级别 | 例子 | 处理方式 |
 |---|---|---|
 | L0 自由 | 回复当前 lane 里的我；读记忆；写 journal；搜索；以 user 身份读群消息 | 直接执行 |
-| L1 内部写 | worker 在自己的 worktree 里改代码、提交；建飞书文档草稿（bot 身份、仅自己可见） | 直接执行，事后汇报 |
-| L2 对外 / 以我名义 | 在群里回复；SStudioBot 给别人发微信；用 user token 发消息、改文档、建日程；push 代码 | **审批**；命中 auto 规则或 §底3.4 自动档时除外 |
-| L3 硬禁止 | 转账支付、删除他人内容、退群、改权限、读凭证 | 工具层根本不提供 |
+| L1 内部写 | 在工作目录里改代码、提交；建飞书文档草稿（bot 身份、仅自己可见） | 直接执行，事后汇报 |
+| L2 对外 / 以我名义 | 在群里回复；SStudioBot 给别人发微信；用 user token 发消息、改文档、建日程；核心代推代码（`git_push`） | **审批**；命中 auto 规则或 §底3.4 自动档时除外 |
+| L3 硬禁止 | 转账支付、删除他人内容、退群、改权限、读凭证 | 我们的工具根本不提供 |
+
+这张表管我们自己的工具。节点上的 agent 用它自己的工具和权限设置，来问时转看一眼卡（§办3.3）；以我名义发给别人仍只走 `send`。
 
 ### 底3.2 两种审批路径
 
@@ -199,7 +192,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
    - `send` 类：发件箱**原样发出批准时的那个草稿版本**，不经过模型。
    - `plan` 类：往原 lane 投一条 `approval` 事件，起一个新 run，带上批准的计划和新预算去执行。
 
-**B. 挂起式（worker 运行到一半需要做 L2 动作）**
+**B. 挂起式（迁完之前的 SDK worker 运行到一半需要做 L2 动作）**
 1. worker 调用 `git_push` 一类工具 → PreToolUse 返回 `defer` → run 以 `tool_deferred` 结束，任务进入 `waiting_approval`，发卡片。
 2. 等待期间不占用任何进程，其他 lane 照常运行。
 3. 我做出决定后，**不带 prompt** 地 resume 这个 session。同一个工具调用会再次触发 PreToolUse：
@@ -207,6 +200,8 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
    - **拒绝**：hook 返回 deny，附上我的意见。
    - 为什么批准时不返回 allow 让 CLI 去跑工具：P0 实测（`probes/worker-isolation.ts` W3）resume 时 CLI 总是报 `Deferred tool resume: tool 'mcp__sbot__…' is no longer available`（in-process MCP 还没连上），之后 allow 的调用约 15～25% 会变成"用户拒绝了这个操作"，**跟 sudo 无关**（不套包装脚本也一样），`MCP_CONNECTION_NONBLOCKING=false` 也没用。核心代执行 + deny 带结果：10/10 正常，动作也只执行一次（执行权本来就在核心，§办1.3）。
 4. 审批过期，按 deny 处理。
+
+**C. 看一眼（节点 agent，§办3.3）**：agent 的权限请求、`ask`、派到别的机器的通知都发看一眼卡。前两种是任务的等待点，答案原样回到同一个 session，不占进程；通知不等我点。
 
 ### 底3.3 审批状态机
 
@@ -229,7 +224,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 - **结果不确定时不重试**：微信 UI 自动化发完不一定知道成没成功，这时标为 `unknown`，等 reader 确认（§触3.2）。确认不了就告警由我处理，**绝不自动重发**。
 - **卡片内容**：渠道、发给谁、用谁的身份、草稿原文、触发来源、引用了哪些记忆、expert 意见、承诺检测结果。按钮：发送 / 拒绝 /（M5 起）以后这类自动。
 
-### 底3.4 他人发起的请求（简化后的工作量闸门）
+### 底3.4 他人发起的请求
 
 **适用范围**：会话的发起人不是 owner，包括 `wechat:dm`、群里 @、Triage 起草。
 
@@ -237,19 +232,18 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 
 | 档 | 条件（必须全部满足） | 处理 |
 |---|---|---|
-| **自动** | ① 这个 surface 允许自动（`wechat:dm` 的 known 人默认允许；群按 `reply: s_auto`）<br>② 在硬上限内完成：`maxTurns ≤ 6`、工具调用 ≤ 4 次（hook 计数）、token 在这个 run 的预算内（代理执行）<br>③ **承诺检测通过** | 直接回复 |
+| **自动** | ① 这个 surface 允许自动（`wechat:dm` 的 known 人默认允许；群按 `reply: s_auto`）<br>② **承诺检测通过** | 直接回复 |
 | **审批** | 任何一条不满足 | 卡片 |
 
-- **硬上限**：超过工具次数时，hook 拒绝这次调用，并提示模型"改为调用 `request_approval(plan)`"。代理预算超了，run 直接结束，由 Session Manager 提交一张"没做完"的卡片。
+- 原来的数字上限（`maxTurns ≤ 6`、工具调用 ≤ 4 次、他人请求共用日预算）2026-11-26 去掉（我定，§办3.5 限4）。他人会话的工具范围（§办1.2）不变。
 - **承诺检测**：自动发出前，代码用 light 档对草稿做一次结构化判断：有没有替我答应时间、金钱或事情，有没有代表我表态，有没有泄露 `shared/` 以外的私人信息。只要命中一项就转审批，卡片上显示命中原因。
 - **稳住对方**：转审批时，对方会收到一句**固定模板**（可在 `gate.yaml` 配置，不由模型生成），比如"收到～这个我得先跟 主人 确认一下"。审批超时也发固定模板。
-- **全局预算**：所有他人请求共用一个日预算，由代理执行；超了以后一律走审批。按人的预算后置。
 
 ### 底3.5 Auto 规则（M5，粒度：人 × 动作）
 - 只能由我在卡片上点"以后这类自动"生成，agent 没有任何写入途径。存在 `config/auto.yaml`（唯一真相源）。
   ```yaml
   - who: wife
-    action: wechat.reply      # 对老婆的回复：承诺检测命中也自动发（仍然受硬上限约束）
+    action: wechat.reply      # 对老婆的回复：承诺检测命中也自动发
   ```
 - 每周在管理群发一份"这周自动执行了什么"。
 
@@ -264,12 +258,13 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 | `/srv/data/sbot-h/{home,tasks}` | `sbot-h`（有完整 sudo） | host worker；核心在 `sbot-h` 组里，能读任务目录（推送时要 fetch） |
 | `/srv/data/sbot-shared`（skill 插件、`ssh_config`） | `sbot`，0755 | 核心写；两种 worker 都只读。不放密钥 |
 
+- **节点 agent**（§办3）：用节点自己的账号和登录（限6），SStudioBot 的密钥不给。主用单独账号跑，节点 agent 读不到主的 `secrets.env`；主和节点在同一台时，节点程序也不用主的账号。
 - **host worker 的边界**（v0.14）：网络和文件系统都没有隔离，sudo 也是完整的。还剩下的约束：
-  - 没有任何凭证：不给 lark-cli 和推送凭证，环境变量里只有一个按 run 签发、有预算上限的 LLM token；
-  - 推送和对飞书的动作仍然只走核心工具和审批；
+  - 没有 SStudioBot 的凭证：不给核心的 lark-cli 和推送凭证；它自己登录的 CLI 算它自己的（限6）；
+  - 以我名义发给别人只走核心工具和审批；
   - 核心守卫 + worker 规则，让它不去碰核心的文件；
-  - 每个 run 一个 unit，有内存和时长上限。
-  - **残余风险**：有 sudo，核心守卫就只是软边界，挡不住有意为之。被注入的指令可以读 `secrets.env`、登录 `ssh_hosts` 里的机器、在 tailnet 里横向移动。所以碰到不可信内容就用 sandbox。
+  - 每个 run 一个 unit（时长上限按 §办3.4 去掉）。
+  - **残余风险**：有 sudo，核心守卫就只是软边界，挡不住有意为之。被注入的指令可以读 `secrets.env`、登录 `ssh_hosts` 里的机器、在 tailnet 里横向移动。所以碰到不可信内容先问我，我说进沙箱就用 sandbox（§办3.3）；主换到单独账号也挡不住有 sudo 的它。
 - **sandbox worker 的网络**分两层（P0 已验证，`deploy/worker/netfilter.sh` + `probes/worker-isolation.ts`）：
   - **iptables，按 owner 匹配 `sbot-w`**（链 `SBOT_W`，只插 OUTPUT 第一条，不碰 ufw 和 docker 的链；`sbot-netfilter.service` 开机加载）：
     - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理）。
@@ -282,7 +277,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 - **worker 的内存**：每个 worker 一个 systemd scope，`MemoryMax=1G`、`MemorySwapMax=256M`、`TasksMax=256`、`OOMPolicy=continue`。CLI 的 `oom_score_adj` 是 -900，sandbox 里的命令经 `/usr/local/lib/sbot/bin/bwrap` 垫片设成 +800。实测 1.5G 的分配只杀掉那个命令，CLI 正常收尾。
 - **Ubuntu 的 AppArmor**：系统自带的 `bwrap-userns-restrict` 不允许 bwrap 里再建 user namespace，而 Claude Code 的 `apply-seccomp` 需要它，报错 `write /proc/self/setgroups … Permission denied`。处理办法：停用这个 profile，换成官方文档给的 `bwrap` profile（`flags=(unconfined) { userns, }`）。这会让本机所有用户的 bwrap 都能建 userns，在这台机器上可以接受。
 - **控制台**：两个 unix socket。`/run/sbot/console.sock`（目录 700，属主 `sbot`）由 `tailscale serve --https=8444` 代理进来（P0 已验证），校验 `Tailscale-User-Login`；`/run/sbot-web/console.sock`（目录 2750 `sbot:sbot-web`，只有 nginx 的 www-data 在组里）由公网 nginx 代理进来，只认密码登录后的会话 cookie（§触5.1）。
-- **主 agent / Triage / expert** 跑在 `sbot` 用户下，但它们没有 shell，也没有读写文件的工具，只能调用我们的 MCP 工具，而这些工具在核心代码里做了校验。
+- **主 agent / Triage / expert** 跑在核心进程里（`sbot` 用户）。Triage 和 expert 没有 shell，也没有读写文件的工具，只能调用我们的工具，这些工具在核心代码里做了校验。主 agent 在我发的消息触发的 run 里能跑命令、改文件，经本机节点以节点账号（服务器上是 `sbot-h`）执行，不在 `sbot` 下（§办1.2）。
 
 ### 底3.7 和闸门、记忆的边界
 - 前瞻、镜头结论、互参记录（`crosschecks`）、习气和节律、身体档案（`body_entries`）、复盘内容都**不参与任何闸门判断**，不影响审批、承诺检测和自动回复，也不出现在他人会话里。以我的名义发消息仍走审批卡片，不因为 §读5.1 的放开而改变。
@@ -304,15 +299,16 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 - run 结束时**可以什么都不发**，这本身就是正常结果，所以不再需要单独的 `quiet` 选项。
 - `jobs.yaml` 只放定义，`timers` 表只放运行状态（下次到期时间、上次运行时间），二者不重复。
 - 任务写 `enabled: false` 就暂停：不再触发，和删掉一样，但设置留在文件里，随时能打开（控制台的开关，§触5.6）。
+- **检查脚本**（2026-11-26）：schedule 可以挂一个 `check`。到点先在主所在的节点上跑它，它说没事就不叫模型，记 `skipped_by_check`；有事就把它的输出带进这次 run。不设时长和输出上限。
 
 ### 底4.2 Sentinel（代替 heartbeat，纯代码、不调模型）
 - 每 5 分钟巡检一次：
   - 审批过期
-  - 卡住的 run 或任务（无输出看门狗）
-  - Windows 和微信是否在线
+  - 久没动静的 run 或任务：只显示、进"需要你处理"，不强停（§办3.4）
+  - 节点和微信是否在线
   - lark-cli user token 是否健康
   - LLM 代理的错误率
-  - 预算余量
+  - 预算告警线（只告警，§办2.2）
 - 有问题就直接往发件箱写一条管理群告警，模板是固定的。
 - `HEARTBEAT.md` 删掉。主动性来自两处：agent 自己设的 follow-up，以及早报这个 schedule。
 
@@ -324,7 +320,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 |---|---|---|
 | 暂时的 | 429、500/502/503/504/529、过载、网络错误 | 退避 2、5、10、20、30、30… 分钟 |
 | 用量上限 | 报错说 weekly / usage limit、额度用完之类 | 报了恢复时间就排在恢复后 2 分钟；没报每 30 分钟看一次 |
-| 不重试 | 预算用完（§办2.2）、鉴权、请求本身有问题 | 按原来的失败处理 |
+| 不重试 | 鉴权（含 run 令牌无效）、请求本身有问题 | 按原来的失败处理 |
 
 - **截止时间**：原定时间后 2 小时（`jobs.yaml` 里 `retry_hours` 可改；月度镜头 12 小时，要赶在当晚月复盘前），并且不晚于下一轮同名任务前 10 分钟。截止时刻再试最后一次，这样我临时配了备用模型或加了额度还来得及；恢复时间在截止之后的，中间不再空打。
 - **放弃**：管理群一条消息，每次放弃只发一条，不补跑，也不去私聊打扰我。`job.<名字>.last` 记 `gave_up`。
@@ -348,20 +344,25 @@ inbox(id, lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status
       -- not_before：定时事件等上游恢复时，这个时间之前不取（§底4.3）
 runs(id, lane, session_key, sdk_session_id, role, tier, run_token_hash, status, stop_reason,
      side_effects, started, ended)
-tasks(id, parent_lane, goal, status, tier, workdir, budget, sdk_session_id, last_output_at,
-      started, ended, result_json, card_msg_id)
-      -- status: queued|running|waiting_approval|needs_input|interrupted|done|failed|cancelled
+tasks(id, parent_lane, goal, status, tier, node, agent, workdir, budget, session_ref, attempt,
+      last_output_at, started, ended, result_json, card_msg_id)
+      -- status: queued|running|waiting|waiting_node|interrupted|done|failed|cancelled
+      -- waiting：等我（问你 / 看一眼，§办3.3）；waiting_node：等这台机器（§办3.4）
+      -- 迁完之前的 SDK worker 还用 waiting_approval|needs_input，照认
+      -- 节点回传带 attempt，小于当前值的直接丢
 approvals(id, kind, origin_lane, run_id, requester_id, action, channel, target, as_identity,
           draft, draft_version, refs_json, checks_json, expert_json, trigger_msg_id,
           deferred_tool_json, status, superseded_by, expires_at, decided_by, decided_at,
           card_msg_id, card_thread_id)
-      -- kind: send|plan|deferred_tool
+      -- kind: send|plan|deferred_tool|glance|ask（glance = agent 的权限请求和通知，ask = agent 问我）
       -- status: pending|approved|rejected|expired|superseded|invalidated
 outbox(id, approval_id UNIQUE NULL, lane, channel, target, payload, status, attempts,
        send_by, sent_msg_id, ts)                           -- status: queued|sending|sent|failed|unknown|expired
 timers(id, kind, lane, cron NULL, due_at, payload_json, status, created_by, last_fired)
 expert_calls(id, ts, trigger, input_ref, verdict_json, cost)
-edge_nodes(id, kind, last_seen, status, wechat_version, logged_in)
+nodes(id, name, os, pubkey, enabled, agents_json, max_parallel NULL, last_seen, status, extra_json)
+      -- §办3.1；enabled 默认 0，我确认才开；max_parallel NULL = 不限
+      -- 原 edge_nodes 并入：微信机的 wechat_version、logged_in 放 extra_json
 usage(ts, run_id, task_id, tier, endpoint, requester_id, input_tokens, output_tokens, cost)
 config_changes(id, ts, file, diff, source)                 -- source: console|chat|card|command|upgrade|proposal|manual
 proposals(id, ts, origin_lane, target_file, patch, reason, status,

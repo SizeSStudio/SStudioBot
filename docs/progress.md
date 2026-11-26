@@ -260,6 +260,28 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] `memory_search` / `wiki_search` 第一行带完整度和原因（`wiki.ts` 现在 LIMIT 12 静默截断）
 - [ ] `crosschecks` 落地时带上取信规则（§参2）
 
+### 附2.17 办和底座第 4 批待实现（2026-11-26，§办3）
+- [ ] 先核实（探针）：四种适配器各自怎么挂我们的 MCP 工具（Claude SDK `mcpServers`、Codex MCP 配置、pi `--mcp-config`、ACP `session/new`）；Claude 读节点 settings 时 `canUseTool` 什么时候被调到；Codex 审批请求和 `turn/steer` 的参数；ACP agent 的 `session/load` / `unstable_resumeSession` 支持情况；acpx 的库入口和权限回调够不够用（不够就用 ACP TS SDK）
+- [ ] 节点程序（TS）：主动连主、设备密钥配对（复用 §触6.7）、上报 agent 和在线；`nodes` 表，新节点默认关
+- [ ] 适配器：Claude Code（Agent SDK，流式输入）、Codex（app-server）、pi（`--mode rpc`）、其余 ACP（acpx），对主是同一个接口；一个任务一个 session，`tasks` 加 node / agent / session_ref / attempt；`progress.md` 回传
+- [ ] MCP server：`submit_report`、`ask`、`send` 等给节点 agent；反向开放给任何 agent，默认关
+- [ ] 权限请求和 `ask` → 看一眼卡 → 答案回同一个 session；派到主以外的节点发通知不等；等看一眼时我发消息就先拒掉那条请求
+- [ ] 插话：owner 会话的 pi 和 Claude、Codex、pi 任务插进进行中的这一轮；ACP 的排到下一轮
+- [ ] 停（取消这一轮，未读的插话作废）和取消（不要了）两个动作；去掉暂停的说法
+- [ ] 空闲释放：默认 1 小时没动静放掉进程、留 session，有活或等待点时不放
+- [ ] 久没动静只显示、进"需要你处理"（默认 20 分钟，可改），不强停
+- [ ] 去掉上限：`tasks.ts` 的 `LANE_OPEN_MAX`、`GLOBAL_OPEN_MAX`、`MAX_AUTO_RUNS`、`MAX_TURNS`、超时和看门狗 abort；`deploy/worker` 的 `RuntimeMaxSec`（要手动跑 `install.sh`）；每台机器可选 `max_parallel`
+- [ ] 预算只告警：代理不再因预算 403，令牌无效和越档照旧 403；`daily_limit` 改 `daily_alert`，expert 超了照常把关
+- [ ] 他人自动回复：去掉 `maxTurns ≤ 6`、工具 ≤ 4、共用日预算，只留承诺检测
+- [ ] 主 agent 的 `bash` 和读写文件：只在我发的消息触发的 run，经本机节点以节点账号执行，核心守卫照旧；之后 seed 的 AGENTS 再加一行
+- [ ] 旧写入按 `attempt` 丢；失联显示"等这台机器"，我点名换机器时带 `progress.md` 开新 session
+- [ ] 崩溃熔断：同一条输入连崩两次就停、告诉我
+- [ ] `jobs.yaml` 的 `check` 脚本：没事不叫模型，记 `skipped_by_check`
+- [ ] 备份经节点连接存到任意节点，默认 Mac
+- [ ] 主可移植：systemd、`sbot-deploy`、bwrap、iptables 变成 Linux 可选件；主用单独账号；Mac、Windows 上能起核心
+- [ ] SDK worker 迁成服务器节点上的 Claude Code；Windows 微信机并进节点
+- [x] 关掉 PR #15（2026-11-26）
+
 ## 附3 里程碑
 
 | | 内容 | 验收标准 |
@@ -276,10 +298,10 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 | **M8 以事为轴** | 事件账本（kind × level × state，自动关）+ 话头和 matter keys + 信息源（飞书私聊、git、fetch、command 插件）+ 导入（格式、提示词、预览 / 应用 / 撤销）+ 控制台的事件、导入、信息源页（§读2） | 两个群加一个私聊在说同一件事 → 早报里它们在同一件事下面；要我回的那条，我在原处回了以后自己消失；从别的工具导出的总结一次导进来，事和人都在，撤销干净 |
 
 **后置（等前面的跑稳了，再看需不需要）**
-- 撤回时中断正在跑的 run 之外的细节、`/steer`、`forkSession`
+- 撤回时中断正在跑的 run 之外的细节、`forkSession`（`/steer` 2026-11-26 提前，§附2.17）
 - `audience` 维度、仅 bot 群（`observe_p2p` 已由 v0.13 的 `feishu.dm` 取代）
 - 每人预算、大部分 expert 触发场景（大任务审计划、连续失败诊断）、按事项类型细分的 auto 规则
-- 定时任务的前置检查脚本、模型预设方案、fallback 端点、多档 vision 降级链、控制台里的 8 项探针 UI
+- 模型预设方案、fallback 端点、多档 vision 降级链、控制台里的 8 项探针 UI（定时任务的检查脚本 2026-11-26 提前，§附2.17）
 
 **砍掉**
 - 边缘指令签名（改用 Tailscale ACL + 连接令牌）

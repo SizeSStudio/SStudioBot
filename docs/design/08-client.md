@@ -31,7 +31,7 @@
 
 - 「它自己」不算一环，从右上角进：提案（§进2）、节点和机器（含可清理的 worktree，§办3.4）、用量（含节点报的剩余额度）、配置和密钥、设备、连接、信息源。
 - 手机底部一排六项，桌面左边一栏同样六项，详情在右边按需打开。
-- 具体用哪些组件，动手时再定（§触6.3）。
+- 组件和库见 `docs/tech/07-clients.md`（2026-11-27 我定：coss ui 的变量、Uniwind + react-native-reusables）。
 
 由此定下四条设计原则：
 
@@ -83,7 +83,7 @@ clients/               npm workspace，自己的 lockfile
 
 - **同类**（《Agent 工作台产品设计与系统架构调研》，§附1 参考）：四款 TypeScript 产品都是 Electron 桌面加 Expo / RN 手机。Paseo 一个人维护，手机和 Web 用 Expo、桌面 Electron，一套界面，和我们最像；Orca、T3 Code、Cindy 是桌面 React、手机 RN 两套界面。
 - **好处**：手机上的长列表、手势、相机、Health Connect、以后的系统通知（D15）都走原生。
-- **代价**：markdown、diff、代码块要用 RN 控件渲染，Web 生态的现成组件大多用不上（Paseo 为此 fork 了一个 markdown 渲染包）。渲染包要能关掉原始 HTML 和远程图片（不可信内容，§触6.8）。具体用哪些组件，动手时再一起挑。
+- **代价**：markdown、diff、代码块要用 RN 控件渲染，Web 生态的现成组件大多用不上（Paseo 为此 fork 了一个 markdown 渲染包）。渲染包要能关掉原始 HTML 和远程图片（不可信内容，§触6.8）。2026-11-27 定了：markdown-it + cjk-friendly + remend，token → RN 组件的渲染器只做映射；diff 只在桌面用 `@pierre/diffs`，安卓看文件列表或去 git 上看；全表见 `docs/tech/07-clients.md`。
 - **不用 Expo 的云服务**：构建和更新见 §触6.2。推送直接发 FCM，不经 Expo 的推送服务（Paseo 是先发给 Expo，Expo 再转 FCM）；见下面的系统通知。
 - **传输**：WebSocket 上的加密通道（§触6.4、§触6.7）。RN 和 Electron 都自带 WebSocket，不用 `expo/fetch`；Noise 在 Hermes 上的速度 spike 里实测（§触6.9）。
 - **Electron**：`contextIsolation`、`sandbox` 开，`nodeIntegration` 关；只加载包里的文件；origin 用固定的自定义协议，第一次发版前定死（换了 origin，存着的设备密钥就没了）；严格 CSP；外链交给系统浏览器，先确认。
@@ -114,7 +114,7 @@ clients/               npm workspace，自己的 lockfile
 change_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, entity, ref, op)  -- op: upsert | delete
 ```
 
-写业务表的地方散在各处（飞书、定时器、任务、审批、客户端），靠每处记得发事件迟早漏。所以 `change_log` 只覆盖少数几张高频表，用触发器，和业务写入在同一个事务里：回滚就没有事件，提交就一定有；其余表在提交时显式发事件。具体哪几张见技术设计。核心是单连接同步写，`seq` 的顺序就是提交顺序。这张表只记「谁变了」，不存内容，保留 7 天。
+写业务表的地方散在各处（飞书、定时器、任务、审批、客户端），靠每处记得发事件迟早漏。所以 `change_log` 只覆盖少数几张高频表，用触发器，和业务写入在同一个事务里：回滚就没有事件，提交就一定有；其余表在提交时显式发事件。具体哪几张见 `docs/tech/04-schema.md` §10。核心是单连接同步写，`seq` 的顺序就是提交顺序。这张表只记「谁变了」，不存内容，保留 7 天。
 
 **发送**：进程里一个 pump，大约每 100 ms 读 `seq > 上次`，同一批里同一实体只算一次，**发送时**用和 API 相同的视图函数取最新内容，再按每个连接的角色过滤（§触6.7）。所以事件是「这个实体现在长这样」，重放是幂等的，中间状态可以被合并。被权限滤掉的事件不发，但心跳带最新 `seq`，游标照样前进。
 
@@ -143,7 +143,7 @@ type Reset   = { t: "reset" };                                                  
 | thread、设备 | `thread`、`device` | 新表 |
 | 服务状态 | `beat.status` | §触5.5 的共享计算 |
 
-看一眼进 `approvals`；通知（不拦人、不用我答）不进，只作 `run_items` 里 `notice` 一类的时间线项，走推的规矩（§触1.1）。触发器只覆盖高频表，其余表提交时显式发事件；具体哪几张见技术设计。
+看一眼进 `approvals`；通知（不拦人、不用我答）不进，只作 `run_items` 里 `notice` 一类的时间线项，走推的规矩（§触1.1）。触发器只覆盖高频表，其余表提交时显式发事件；具体哪几张见 `docs/tech/04-schema.md` §10。
 
 **时间线不重复存**：输入来自 `inbox`，审批、任务按 `run_id`、`origin_lane` 关联，`run_items` 只存现在没存的东西（一段回复、一次工具调用）。视图函数把它们合成统一的时间线项。
 
@@ -176,13 +176,13 @@ threads/:id/items { before }      → 翻历史
 - 主只往外连中继，用 Node 自带的 WebSocket 客户端，不用自己写 server，也不用改 nginx。
 - 凭据在握手里（§触6.7），原稿嫌 WebSocket「带不了自定义头」那条不再是问题。
 - 手机后台本来就会断连，所以「断了就用序号补」是主路径，不是异常路径。
-- 同机的（本机节点、本地 agent）走本地 unix socket，不绕中继；跨网才走中继。帧格式、信封这些协议细节见技术设计。
+- 同机的（本机节点、本地 agent）走本地 unix socket，不绕中继；跨网才走中继。帧格式、信封这些协议细节见 `docs/tech/02-protocol.md`、`06-relay.md`。
 
 **客户端状态**：按 `(entity, id)` 规范化存放，每条记着 `seq`，旧的不覆盖新的；组件只订阅自己用到的实体，一条事件只重画受影响的那一块。内容默认只在内存里，不落盘（`personal` 的内容不落盘是硬规则，其余以后按需要再定）。**例外**：安卓上交给浏览器的 agent HTML 放在 App 私有缓存目录，经 `FileProvider` 只读分享，24 小时后清掉。
 
 **写操作**
 
-- 每个写请求带 `client_op_id`，`client_ops(device_id, client_op_id, result_json, ts)` 和业务写入同事务，重试不会做两次；清理规则见技术设计。节点来的写入（工具调用结果这类）同样复用 `client_ops`，键是 `task_id:attempt:tool_call_id`。发消息直接用 `inbox` 现有的唯一键 `(source, source_msg_id)`，`source_msg_id` 取设备 ID 加 `client_op_id`。
+- 每个写请求带 `client_op_id`，`client_ops(device_id, client_op_id, result_json, ts)` 和业务写入同事务，重试不会做两次；清理规则见 `docs/tech/02-protocol.md`（30 天）。节点来的写入（工具调用结果这类）同样复用 `client_ops`，键是 `task_id:attempt:tool_call_id`。发消息直接用 `inbox` 现有的唯一键 `(source, source_msg_id)`，`source_msg_id` 取设备 ID 加 `client_op_id`。
 - 响应带这次写入对应的 `seq`。客户端先显示一层乐观状态，流追到这个 `seq` 再去掉，不闪；失败就撤掉并提示。
 
 | 类型 | 例子 | 怎么显示 |
@@ -321,14 +321,14 @@ thread 分 `work` 和 `personal`，沿用事的 `domain`。这一条要专门做
 - 中继默认自建在 VPS 上，地址是配置；主在 VPS 上时两个在同一台。主在公网机器上时，中继和主共用一个 443 入口。先看 Paseo 的 `relay/`（Apache-2.0）能不能直接用（P1.5）。
 - 每条连接先做一次 Noise NK 握手（`Noise_NK_25519_ChaChaPoly_SHA256`，同 Paseo）：客户端从配对码里拿到主的公钥，中继冒充不了主。之后每帧带计数器加密，重放和篡改都过不去。
 - 握手之后，设备在通道里用自己的私钥签主给的一次性挑战，主按 `devices` 表认出是哪台。一条通道只对应一台设备。
-- 中继按主的公钥路由，要防有人抢注册同一把公钥、防洪泛；具体做法见技术设计。
+- 中继按主的公钥路由，要防有人抢注册同一把公钥、防洪泛；具体做法见 `docs/tech/06-relay.md`。
 - 中继看得到 IP、时间、帧的大小、会话 id、主的公钥；看不到内容，也伪造不了。
 - FlClash 开着也能连：只是一条往外的 WSS，走代理还是直连照它的规则。
 - 直连（同一局域网、tailnet）以后要再加，同一套握手；走哪条路都不改变谁能做什么。
 
 **凭据**
 
-- 每台设备自己生成 ECDSA P-256 密钥对，私钥**不可导出**，不离开设备：安卓用 Keystore（原生模块 spike 里定）；Electron 先用 WebCrypto 存 IndexedDB，spike 里看要不要换系统钥匙串（IndexedDB 的「不可导出」只挡页面里的脚本，同一系统用户下的进程能读它的文件，§触6.8）。服务器只存公钥。
+- 每台设备自己生成 Ed25519 密钥对（2026-11-27 技术设计改，原稿 P-256），私钥不离开设备：安卓用 Keystore（不支持 Ed25519 时 Keystore 里一把不可导出的 AES 包着软件密钥）；Electron 在主进程生成，`safeStorage` 加密存（Mac 钥匙串、Windows DPAPI），渲染进程只能请求签名，取代原稿的 IndexedDB（同一系统用户下的进程仍能读，§触6.8、§底3.8）。服务器只存公钥。细节见 `docs/tech/06-relay.md`。
 - `device_id` 是公钥的 hash。设备名是自称的，界面上标明。
 - 密钥没了（卸载、清数据）就重新配对，不做导出和备份。
 - **节点也是设备**（§办3.1）：同一套配对、同一张表，角色是 `node`。
@@ -350,7 +350,7 @@ device_audit(id, ts, device_id, action, actor, ip_masked, detail)
 
 - 新设备扫码或打开链接，连上中继、握手、交出一次性密钥和自己的公钥，就配上了。不再在已配对设备上核对数字（原稿的确认码、飞书卡选数字都去掉）：拿到一次性配对码本身就是授权，所以它当密码看待。
 - 配节点用 `sbot pair --node`、`/pair node`，码里带 `role: node`。
-- `/pair` 链接用什么 scheme 唤起 App、远端节点怎么调主的 MCP 工具：见技术设计。
+- `/pair` 链接用什么 scheme 唤起 App、远端节点怎么调主的 MCP 工具：见 `docs/tech/06-relay.md`（`sstudiobot://`）、`02-protocol.md`。
 
 **权限**：配对过的设备和我同权（2026-11-27 我定）。没有 scope 表，也没有按入口的上限；生活、`self/`、命盘、配置、管设备，每台都能。同一台设备发起的审批，自己就能批。要收哪一条，写进 §触6.10 的否决单。
 
@@ -392,7 +392,7 @@ device_audit(id, ts, device_id, action, actor, ip_masked, detail)
 
 ### 触6.9 分阶段
 
-施工顺序和验收在技术设计里重排，下表留作需求参考。
+施工顺序和验收在 `docs/tech/09-waves.md` 里重排，探针在 `08-probes.md`；下表留作需求参考。
 
 每个阶段都能单独上线，也能单独停掉。冒烟测试在服务器上跑。P1 起安卓和 Mac 两端一起做（一套界面）。
 

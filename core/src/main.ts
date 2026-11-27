@@ -1,4 +1,4 @@
-// SStudioBot core (DESIGN §附3). M0: inbox + Dispatcher + pi Runner + tool layer + LLM proxy + Feishu DM + outbox.
+// SStudioBot core, frozen: replaced by hub/ at cutover (docs/tech/09-waves.md W7); milestones in progress.md §附3. M0: inbox + Dispatcher + pi Runner + tool layer + LLM proxy + Feishu DM + outbox.
 // M1: approvals + admin-group cards + observer + Triage/drafts. M2: Task Engine (workers) + follow-up timers + matters.
 // M3b: config console on a unix socket behind tailscale serve.
 // M3a: wiki index + full-text search, jobs.yaml (morning report, nightly dream + morning diff), sentinel, 先安静.

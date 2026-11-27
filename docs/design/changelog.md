@@ -2,6 +2,11 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### 技术设计（2026-11-27）
+新增 `docs/tech/`（索引 `tech/README.md`，决定表 T1–T47）：整体重写，新目录 `protocol/`、`hub/`、`node/`、`relay/`、`clients/`，`core/` 冻结、切换后删；W0 探针和 `sbot-deploy` 先行，W1–W6 在测试 home 里搭，W7 切换等我点头；数据不搬，从 seed、飞书和本地重读重建，旧库不动，副本上演练两次。
+- **我定**：round-1 九题（路线、目录、节奏、数据、pi 嵌入、节点适配、自建中继、节点升级、三系统当主）和十条直接定的；前端：coss ui 变量、Expo 一套界面、Uniwind + react-native-reusables、markdown-it + cjk-friendly + remend、lowlight、diff 只在桌面、Legend List、lucide、reanimated 一系、手写 store；数据逐类重建（§附2.21 交接表在 `tech/README.md` 末）。
+- **设计里跟着改**：§触6.1、§触6.3 的「动手时再定」改成指向 `tech/07-clients.md`；§触6.7 设备密钥改 Ed25519、Electron 私钥改 `safeStorage`（原 P-256、IndexedDB）；§底3.8 改同用户 Electron 一行、加 Mac/Windows 当主一行；§底5 由 `tech/04-schema.md` 取代；§底1.3 备份保留期定 14 日 / 8 周 / 12 月 ※；§办2.4 换模型时工具调用未完交给探针 P10；§0.6 不重设内核行数线 ※；§附2.21 标已交接；§触6.4、§触6.7、§触6.9 的「见技术设计」指到具体文件。
+
 ### v0.26 变更（评审修订，2026-11-27）
 多视角评审后只改设计文档，不改代码。下一步写技术架构设计，再开一个长程任务实现，可能整个重写；施工顺序和代码事实交给技术设计（§附2.21）。
 - **我定（D1–D4）**：

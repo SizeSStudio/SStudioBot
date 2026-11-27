@@ -1,0 +1,9 @@
+node_modules/
+app/dist/
+app/android/
+app/ios/
+app/.expo/
+desktop/web/
+out/
+*.apk
+*.aab

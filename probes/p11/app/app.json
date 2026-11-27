@@ -1,0 +1,17 @@
+{
+  "expo": {
+    "name": "SStudioBot P11",
+    "slug": "sbot-p11",
+    "version": "0.0.1",
+    "scheme": "sstudiobot",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "android": { "package": "app.sbot.p11" },
+    "web": { "bundler": "metro", "output": "single", "lang": "zh-CN" },
+    "plugins": [
+      ["expo-router", { "asyncRoutes": { "web": false, "default": false } }],
+      ["expo-camera", { "cameraPermission": "扫配对码", "microphonePermission": false, "recordAudioAndroid": false }]
+    ],
+    "experiments": { "typedRoutes": false }
+  }
+}

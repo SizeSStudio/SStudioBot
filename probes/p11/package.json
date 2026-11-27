@@ -1,0 +1,11 @@
+{
+  "name": "sbot-p11",
+  "private": true,
+  "workspaces": ["app", "desktop"],
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "test": "node --test 'app/test/*.test.ts' 'desktop/test/*.test.ts'",
+    "web": "npm -w app run export:web",
+    "desktop": "npm -w desktop start"
+  }
+}

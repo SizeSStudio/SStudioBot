@@ -1,0 +1,19 @@
+{
+  "name": "@sbot-p11/desktop",
+  "private": true,
+  "version": "0.0.1",
+  "productName": "SStudioBot P11",
+  "main": "main.ts",
+  "type": "module",
+  "scripts": {
+    "install-electron": "node ../node_modules/electron/install.js",
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
+  "devDependencies": {
+    "electron": "45.5.0"
+  }
+}

@@ -262,7 +262,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 附2.17 办和底座第 4 批待实现（2026-11-26，§办3）
 - [ ] 先核实（探针）：四种适配器各自怎么挂我们的 MCP 工具（Claude SDK `mcpServers`、Codex MCP 配置、pi `--mcp-config`、ACP `session/new`）；Claude 读节点 settings 时 `canUseTool` 什么时候被调到；Codex 审批请求和 `turn/steer` 的参数；ACP agent 的 `session/load` / `unstable_resumeSession` 支持情况；acpx 的库入口和权限回调够不够用（不够就用 ACP TS SDK）
-- [ ] 节点程序（TS）：主动连主、设备密钥配对（复用 §触6.7）、上报 agent 和在线；`nodes` 表，新节点默认关
+- [ ] 节点程序（TS）：经中继连主、配对同 §触6.7（`role = node`）、上报 agent 和在线；`nodes` 表只放状态
 - [ ] 适配器：Claude Code（Agent SDK，流式输入）、Codex（app-server）、pi（`--mode rpc`）、其余 ACP（acpx），对主是同一个接口；一个任务一个 session，`tasks` 加 node / agent / session_ref / attempt；`progress.md` 回传
 - [ ] MCP server：`submit_report`、`ask`、`send` 等给节点 agent；反向开放给任何 agent，默认关
 - [ ] 权限请求和 `ask` → 看一眼卡 → 答案回同一个 session；派到主以外的节点发通知不等；等看一眼时我发消息就先拒掉那条请求
@@ -295,11 +295,11 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 附2.19 客户端第 6 批 + 回头改待实现（2026-11-27，§触6、§触1.1、§办3）
 - [ ] 客户端按 §触6.9 分阶段；P1 之前先上 `sbot-deploy` 的「`core/` 没变不重启」
-- [ ] P1.5 spike：`expo/fetch` 流式、Keystore 不可导出密钥、中文输入法、切后台续上、Health Connect 包；Electron 跑通同一套界面；markdown 渲染包能关原始 HTML 和远程图片
+- [ ] P1.5 spike（加上 §附2.20 那几项）：Keystore 不可导出密钥、中文输入法、切后台续上、Health Connect 包；Electron 跑通同一套界面；markdown 渲染包能关原始 HTML 和远程图片
 - [ ] CI：`clients/` job；拿上一次发布的协议 schema 比，删字段、收窄类型就不过
 - [ ] 在场：客户端报前台和正在看哪一条；`gate.yaml` 的 `push.presence`；在看不推、在场只加「等你 N」、不在前台或 3 分钟没操作算走开，走开后推还没处理的
 - [ ] 事件流：工具调用的 delta 只发给展开了的连接
-- [ ] `devices` 加 `node` 权限，节点配对并进来；飞书确认不能授予 `node`
+- [ ] 节点配对并进 `devices`，角色按 §附2.20
 - [ ] 飞书：看一眼卡批和拒、任务话题里插话、停和取消节点上的任务
 - [ ] 适配器报能力（插话、续接、回退、权限请求、提问）；统一事件；`AskUserQuestion` 转「问我」
 - [ ] 看一眼：只认我答，别的 agent 的消息排到我答完；卡上命令、路径、参数完整显示，长的折叠
@@ -308,6 +308,21 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] 额度：认出订阅上限，显示恢复时间，到点续跑并通知；节点报剩余额度，进「它自己 › 用量」
 - [ ] 交接：代码按预算拼第一条要求、最近几轮、命令结果、`progress.md`，省掉的写明、可读回；原 session 不删
 - [ ] 节点：连上时报版本和能力，太旧提示升级；升级先排空
+
+### 附2.20 连接和设备第 7 批待实现（2026-11-27，§触6.7、§触6.4、§触6.6）
+- [ ] 中继：先看 Paseo 的 `relay/` 能不能直接用；VPS 上自建，地址是配置；只转发握手过的通道，限速
+- [ ] 主的 Curve25519 密钥（第一次启动生成，按 `secrets.env` 对待）；主不再在网络上监听 `/api/v1`
+- [ ] Noise NK 通道（`Noise_NK_25519_ChaChaPoly_SHA256`）+ 帧计数器；握手后设备签一次性挑战；`/api/v1` 跑在帧里，`client_op_id` 照旧
+- [ ] 配对：`device_invites`（一次性、10 分钟）；`sbot pair [--node]` 打二维码；已配对设备「加一台」；配对码放链接 `#` 后
+- [ ] `devices` 加 `role`、`push_token`、`removed_at`、`removed_by`，去掉 scope、过期和入口；`device_audit`；`nodes` 只放状态，身份在 `devices`
+- [ ] `node` 角色：批不了审批、答不了看一眼卡、不能发起对话、读不到 `self/` 和命盘；有测试
+- [ ] 删：当场断通道、排队的输入作废、发起的 run 停掉；新设备、删设备、新 IP 段在客户端和渠道通知一句
+- [ ] `console.yaml` 连中继的开关，打开走 `widening()`
+- [ ] agent 做的 HTML：对话里一行，点了交给系统浏览器；安卓先存文件再交
+- [ ] 飞书：`/pair [node]`、`/devices`、`/devices rm <id>`；回邮件起草 → 审批卡 → 批了发
+- [ ] 系统通知（D15，§触6.3）：FCM 令牌经通道交给主；主用 FCM HTTP v1 发（服务账号密钥按 `secrets.env`），`personal` 只发「有一条私人的」；FCM 收下了不推飞书，没令牌或令牌失效推飞书；安卓通知渠道按类别分；`console.yaml` 开关默认关；Electron 在后台经通道弹
+- [ ] spike（§触6.9 P1.5）：开着 FlClash 时 FCM 收得到、Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
+- [ ] P5：tailscale serve 和公网密码入口随旧控制台撤（`deploy/console-web/` 要手动收）
 
 ## 附3 里程碑
 

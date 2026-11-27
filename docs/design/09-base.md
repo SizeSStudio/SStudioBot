@@ -36,7 +36,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
               │ Outbox ─► 飞书 / 微信 · Task Engine · 控制台 API                              │
               │ LLM 代理（SStudioBot 的 key 只在这里）· SQLite · config · agent-home          │
               └──────────────▲──────────────────────────▲──────────────────────▲──────────┘
-                             │ 节点主动连主（tailnet；设备密钥配对，新节点默认关）│
+                             │ 节点主动连主（经中继、Noise 握手；设备密钥配对）   │
        ┌─────────────────────┴────────┐   ┌────────────┴─────────────┐   ┌────┴───────────────────┐
        │ 节点：主所在那台               │   │ 节点：Mac 和别的机器        │   │ 节点：Windows 微信机      │
        │ Claude Code/Codex/pi/ACP     │   │ Claude Code/Codex/pi/ACP    │   │ 微信 4.0.x（专属号）      │
@@ -76,7 +76,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 - **对话角色不起子进程**：用 pi 时在核心进程里跑。实测一个 Claude Code CLI 子进程常驻 230～320 MB，每条消息都起一个会很重。
 - **节点上的 agent**：同时几个不设上限，我可以按机器设（§办3.4）。主和节点在同一台时，核心设 `OOMScoreAdjust=-500`，内存紧时先杀干活的、不杀主（让主活着，不算限制）。不设 `RuntimeMaxSec`；迁完之前的 SDK worker 还在 systemd unit 里（§办1.3.1）。
 - **重构建派给 Mac 节点**：比如 gradle，单次就要 2～4 GB；或者提 PR 让 CI 跑。
-- **控制台**：`tailscale serve`，加一个公网 443 入口（和机器上已有的 nginx 共用，密码 + 会话 cookie，§触5.1）。
+- **控制台**：`tailscale serve`，加一个公网 443 入口（和机器上已有的 nginx 共用，密码 + 会话 cookie，§触5.1）。P5 随旧控制台撤；客户端和节点经中继（§触6.7）。
 - **目标**：空闲约 300 MB（核心约 150～250 MB）；2 个对话 run 加 1 个 worker 构建时，峰值 ≤ 2.3 GB。
 
 **放在哪**（全部在 4T 数据盘 `/srv/data`，xfs）
@@ -360,8 +360,8 @@ outbox(id, approval_id UNIQUE NULL, lane, channel, target, payload, status, atte
        send_by, sent_msg_id, ts)                           -- status: queued|sending|sent|failed|unknown|expired
 timers(id, kind, lane, cron NULL, due_at, payload_json, status, created_by, last_fired)
 expert_calls(id, ts, trigger, input_ref, verdict_json, cost)
-nodes(id, name, os, pubkey, enabled, agents_json, max_parallel NULL, last_seen, status, extra_json)
-      -- §办3.1；enabled 默认 0，我确认才开；max_parallel NULL = 不限
+nodes(device_id, os, agents_json, max_parallel NULL, status, extra_json)
+      -- §办3.1；身份和配对在 devices（role = node，§触6.7），这里只放节点的状态；max_parallel NULL = 不限
       -- 原 edge_nodes 并入：微信机的 wechat_version、logged_in 放 extra_json
 usage(ts, run_id, task_id, tier, endpoint, requester_id, input_tokens, output_tokens, cost)
 config_changes(id, ts, file, diff, source)                 -- source: console|chat|card|command|upgrade|proposal|manual

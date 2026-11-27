@@ -30,7 +30,7 @@
 - **在场**（客户端能用以后，2026-11-27 我定；借 Paseo、Orca）：在场按人算，不按设备：任何一台客户端在前台、3 分钟内有操作，就算在场。
   - 我在客户端正看着这一条：不推。
   - 在场，没在看这条：只在顶上「等你 N」里加一，不推飞书。
-  - 不在场（不在前台，或 3 分钟没操作）：照上面的规矩推飞书；我走开时还没处理的，那时再推。
+  - 不在场（不在前台，或 3 分钟没操作）：照上面的规矩推；我走开时还没处理的，那时再推。手机 App 有 FCM 令牌就推成系统通知，FCM 收下了就不推飞书；没令牌或发失败推飞书（D15，§触6.3）。
   - 夜里、暂缓照旧。在客户端看过、处理过的，飞书里不再出现；要在飞书找，用 `/approvals`、`/todo` 拉。
 - **早上一次**：整理 08:15 照跑、先不发；08:30 先发早报，紧跟整理卡（早报是模型写的，放不了按钮）。记忆 diff 同时发管理群，早报里一句“昨晚记忆改了 N 处”。
 - **暂缓**：“等你”卡底部三档：今晚（20:00 单推一次，占 1 条额度；过了 20:00 不显示）、明早、下周一（并进那天早报，不占额度）。截止早于暂缓时间的档不显示；到 `send_by` 照旧作废（§底3.3）。
@@ -165,6 +165,7 @@ tailscale serve --https=8444                         nginx :443（Let's Encrypt�
   - 写操作除了原有的 `x-sbot-console: 1`，还要 `Origin` 等于 `web.origin`。为此这个入口的 `Referrer-Policy` 是 `same-origin`（`no-referrer` 下浏览器同源写请求会带 `Origin: null`）；tailnet 入口仍是 `no-referrer`。
 - **为什么两个 socket**：tailscaled 会换掉客户端伪造的 `Tailscale-User-Login`，nginx 不会。两个入口如果共用一个 socket，从公网进来的人自己塞这个头就能过。所以 nginx（www-data）连不上 tailnet 的 socket（目录 700），公网 socket 上完全不看这个头；反过来公网的 cookie 在 tailnet 入口也不算数。www-data 下别的进程能连公网 socket，但那里除了 cookie 什么都不信，所以没用；X-Real-IP 它可以伪造，因此限流另有一个总量上限。
 - **部署**：`deploy/console-web/`（tmpfiles 建 `/run/sbot-web`、sbot-core 的 drop-in 放开这个目录的写权限、nginx 站点模板、`install.sh <host>` 申请证书并启用）。核心启动时这个目录存在才开公网 socket。
+- **P5 撤掉**（2026-11-27）：公网入口当初只为控制台；旧控制台下线时 tailscale serve 和公网入口一起撤，客户端经中继连（§触6.7）。
 - P0 实测（2026-11-16，tailscale 1.104.5）：
   - 控制台**单独用一个端口**（实例里是 8444），不和本机已有的 serve 配置抢路径，也不改它们。
   - 经 serve 进来的请求带 `Tailscale-User-Login` / `Tailscale-User-Name` / `X-Forwarded-For`；客户端自己塞的同名头会被换掉，伪造不了。

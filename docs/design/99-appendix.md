@@ -27,12 +27,13 @@
 | 预算 | 只告警，不停（2026-11-26）；改进的回放评测也一样（§进3.3）。令牌无效、越档回 403，不用 429（429 会让 CLI 重试约 3 分钟，§办2.2） |
 | 客户端 | App，不做网页端：Expo（RN + RN Web）出安卓，Electron 出 Mac、Windows，一套界面，像同类；具体组件动手时再定。首页是和它的对话，顶上一条「等你 N」；分区按五环加对话。客户端开着时按在场推，在看就不推（2026-11-27，§触6.1、§触6.3、§触1.1） |
 | 派活的细节 | 同一仓库已有任务在跑才开 worktree，我点了才清；PR 的 CI 红了叫醒同一个 session 接着修，评论只认我的，不设次数上限；额度用完到点自动接着跑（2026-11-27，§办3.4） |
+| 连接和设备 | 客户端和节点都经端到端加密的中继连主（Noise NK，二维码当信任锚，照 Paseo），不靠 tailnet；配对过的设备和我同权、不过期，在主上删；节点的角色是 `node`，批不了审批；权限尽可能大，除非我否决；agent 做的 HTML 用系统浏览器看；手机通知直接发 FCM（不经 Expo），私人的只说一句；飞书是一个渠道，最要紧的是从它收信息（2026-11-27，§触6.7、§触6.6、§触6.10） |
 
 ### 仍然未决
 - 月前瞻按公历月还是节气月：先做成 `config/self.yaml` 里的一个选项。
 - §进2 的信号定义（D 级）：worker 那一行怎么对应节点 agent；我改事件级别和归属（§读2.7）、改人物关系（§读4.8）算不算信号。
 - 改进机制的两条 D 级（2026-11-27 先不定）：C 级的 PR 上卡前，另找一家 agent 只读审一遍（Cindy 的 `/review`、Paseo 的互审）；我说「把这次学下来」时从这个任务提炼一个 skill，走 B 级提案卡（Cindy 的 `/learn`）。
-- 设备和安全的 D 级：§触6.10 第 7 批。
+- 渠道插件：飞书抽成插件，接口另起一批（§触6.6）。
 - §读4 因缘的后续：dream / 分拣从对话里顺手记关系（推测，等我认）；周复盘里带一段因缘；AGENTS.md 里约定人物页互相用 `[[people/…]]` 链接（AGENTS.md 是我改的）；数据大了以后改成增量构建。
 
 ## 附：参考
@@ -45,8 +46,8 @@
 - OpenClaw / NanoClaw / nanobot / Hermes Agent：见 v0.6 附录。OpenClaw 用 acpx 接外部 harness，`openclaw mcp serve` 把自己的工具给 Claude Code、Codex 用，是 §办3.2 反向开放的参考。
 - **ACP**（Agent Client Protocol）：JSON-RPC，agent 一般作为子进程走 stdio。`session/new`、`session/prompt`、`session/cancel`、`session/load`（可选）、`session/request_permission`；没有轮中插话。适配：`claude-agent-acp`、`codex-acp`、`pi-acp`。§办3。
 - **acpx**（openclaw/acpx，npm `acpx`，MIT，alpha）：无界面的 ACP 客户端；session 持久、忙时排队、权限模式、NDJSON 输出；库入口 `acpx/runtime`。§办3.2 用它接 ACP agent，锁版本。
-- **Paseo**（getpaseo/paseo，Apache-2.0，2026-11 是 0.17）：每台机器一个 daemon 管 agent，手机、桌面、网页连进来。Claude 走 Agent SDK、Codex 走 app-server、pi 走 RPC，其余走 ACP（`packages/server/src/server/agent/providers/`）。借了：等权限时发消息先拒掉请求（`docs/glossary.md` Steer）、空闲释放进程留 session（`docs/agent-lifecycle.md`）、ACP 续接的三档。没借：每台机器一个独立 daemon（和"一个主"不合）、端到端加密中继（我们走 tailnet）。客户端的排队条和按在场推，§触6 重做时借了（§触6.5、§触1.1）。
-- **《Agent 工作台产品设计与系统架构调研》**（微信公众号，2026-11，mp.weixin.qq.com/s/Z2lq1l7mU4-UkPTO7m3-OA）：拆了 Orca、T3 Code、Cindy、Paseo、Herdr。借了：按在场推（Paseo、Orca）；等你按该谁动排（Herdr）；适配器报能力、不认名字（T3 Code）；每家一个翻译层（Cindy）；折起来的输出不推流（T3 Code）；交接由代码按预算拼（T3 Code、Cindy）；看一眼只认人答（Herdr）；卡上显示全（Cindy）；协议只加不减、CI 拦破坏性改动（Paseo、Herdr）；升级先排空（Herdr、Orca）；CI 红了叫醒接着修（T3 Code）；额度到点续跑（Cindy）；Expo 加 Electron（四款同类）。没借：首页放 agent 列表；新任务默认全自主（节点 agent 照自己的设置）；端到端中继和隧道（公网第 7 批定）；无人值守修复的次数上限；从工单、Slack、群里接活。§触6、§办3。
+- **Paseo**（getpaseo/paseo，Apache-2.0，2026-11 是 0.17）：每台机器一个 daemon 管 agent，手机、桌面、网页连进来。Claude 走 Agent SDK、Codex 走 app-server、pi 走 RPC，其余走 ACP（`packages/server/src/server/agent/providers/`）。借了：等权限时发消息先拒掉请求（`docs/glossary.md` Steer）、空闲释放进程留 session（`docs/agent-lifecycle.md`）、ACP 续接的三档。没借：每台机器一个独立 daemon（和"一个主"不合）；推送先经 Expo 再到 FCM（我们直接发 FCM，少一家，§触6.3）。第 7 批借了它的中继：Noise NK、二维码当信任锚、配对信息放在 `#` 后（§触6.7）。客户端的排队条和按在场推，§触6 重做时借了（§触6.5、§触1.1）。
+- **《Agent 工作台产品设计与系统架构调研》**（微信公众号，2026-11，mp.weixin.qq.com/s/Z2lq1l7mU4-UkPTO7m3-OA）：拆了 Orca、T3 Code、Cindy、Paseo、Herdr。借了：按在场推（Paseo、Orca）；等你按该谁动排（Herdr）；适配器报能力、不认名字（T3 Code）；每家一个翻译层（Cindy）；折起来的输出不推流（T3 Code）；交接由代码按预算拼（T3 Code、Cindy）；看一眼只认人答（Herdr）；卡上显示全（Cindy）；协议只加不减、CI 拦破坏性改动（Paseo、Herdr）；升级先排空（Herdr、Orca）；CI 红了叫醒接着修（T3 Code）；额度到点续跑（Cindy）；Expo 加 Electron（四款同类）；端到端加密中继（Paseo，第 7 批）。没借：首页放 agent 列表；新任务默认全自主（节点 agent 照自己的设置）；隧道（T3 Code，TLS 在 Cloudflare 边缘终止）；无人值守修复的次数上限；从工单、Slack、群里接活。§触6、§办3。
 - T3 Code：thread / delegate / task notification / queue 的交互模型。
 - **graphify**：把代码和资料建成知识图谱。借了这几条：边分 EXTRACTED / INFERRED，路径取最弱一跳；只用代码构建；邻居、最短路径、解释三种查询；社区自动分、不靠模型命名；名字有歧义就拒绝并列候选。§读4 按它设计，没有引入依赖。
 - **HappyClaw**（riba2534/happyclaw）：技术栈和场景跟我们最接近，不 fork，只借设计：

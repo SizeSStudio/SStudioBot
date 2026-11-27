@@ -19,7 +19,7 @@
 - Claude 开的 PR：CI 过了、相关冒烟测试过了，可以自己合并并部署。SStudioBot 自己开的 PR 一律等主人合并。
 - 检查：`bash scripts/leak-guard.sh`；`node --check <file>`。冒烟测试在服务器上跑，每次用一个新的一次性 home（`core/test/vps-test-home.sh` 顶部有用法）；端口 7829–7831 可以并行；不要删 testhomes。
 - 上线：合并到 `main` 后几分钟内服务器自己部署（`sbot-deploy.timer`），想马上上线就 `bash scripts/deploy.sh`，回滚用 `--ref <sha>`。核心起不来会自动退回上一个版本，管理群会收到通知。只有 `core/` 会自动上线；`deploy/` 下的东西（unit、沙箱、`sbot-deploy` 本身）合并后要手动在服务器上跑对应的 `install.sh`，PR 描述里写明。`clients/` 单独发布，不随核心上线（DESIGN §触6.2）；在 `sbot-deploy` 改成「`core/` 没变就不重启」并装到服务器之前，不要往 `main` 合 `clients/` 的提交。
-- 加工作相关的能力时，对照 DESIGN §触6.6：飞书必须够得着。生活、`self/`、命盘这类进控制台和主人的飞书私聊，不进群和工作台（DESIGN §读5.1）。
+- 加工作相关的能力时，客户端必须够得着；飞书是渠道，按它能接的接（DESIGN §触6.6）。生活、`self/`、命盘这类进控制台和主人的飞书私聊，不进群和工作台（DESIGN §读5.1）。
 
 ## 底线
 

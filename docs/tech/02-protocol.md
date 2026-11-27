@@ -16,7 +16,11 @@
 ## Noise（`protocol/noise/`）
 
 - 模式 `Noise_NK_25519_ChaChaPoly_SHA256`：发起方是设备或节点，响应方是主；主的静态公钥从配对码来（06）。prologue 固定为 `sbot-noise/1`。
-- 实现：先看 Paseo 的 Noise 实现能不能照搬（Apache-2.0，保留版权头）；不行就照 Noise 规范第 5 节写状态机，用 noble 的 x25519、chacha20poly1305、sha256/hkdf。必须过规范的公开测试向量（cacophony）。
+- 实现：状态机照搬 Paseo 的 Noise（Apache-2.0，保留版权头；P1 改了失败即断、清掉的状态抛错），sha256/hkdf 用 noble。必须过规范的公开测试向量（cacophony），每个后端都跑一遍。
+- ChaCha20-Poly1305 和 X25519 在接口后面（`Aead`、`Dh`），启动时按平台选一次（P1：Hermes 上 noble 的 64 KiB 加解密 35 ms、吞吐 1.8 MB/s，不过）：
+  - 安卓（Hermes）：`react-native-quick-crypto`（原生，接口同 `node:crypto`）；随机数也从它来。
+  - 主、节点：`node:crypto` ※（理由：同一接口，OpenSSL，比 noble 快 5 倍）。
+  - 网页、Electron 渲染进程、测试对照：noble。
 - 握手：
   - `→ e, es`，载荷 `{ v, role: "client"|"node", purpose: "auth"|"pair" }`
   - `← e, ee`，载荷 `{ v, challenge: 32 字节随机, hub_time }`

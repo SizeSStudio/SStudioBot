@@ -42,7 +42,7 @@
 |---|---|---|
 | T10 | Node 24 + type stripping；只有 `clients/` 有构建；`node:sqlite` | 01 |
 | T11 | 一套帧协议：RPC、事件、带 `chunk_seq` 的流 + 快照兜底；大载荷拉取；zod schema 在 `protocol/`；CI 管只加不减 | 02 |
-| T12 | `Noise_NK_25519_ChaChaPoly_SHA256`（noble）；本机节点走 unix socket / named pipe，不加密，靠文件权限 | 02 |
+| T12 | `Noise_NK_25519_ChaChaPoly_SHA256`（状态机照搬 Paseo；AEAD、X25519 按平台：Hermes 原生、主和节点 `node:crypto`、网页 noble，P1）；本机节点走 unix socket / named pipe，不加密，靠文件权限 | 02 |
 | T13 | 一个渠道插件接口，插件可跑在主上或节点上 | 03 |
 | T14 | command 插件和排盘脚本是子进程、stdio 上的 JSON；Linux 上以 `sbot-w` 跑 | 03 |
 | T15 | Expo + expo-router 出安卓；Electron 经自定义协议加载 `expo export -p web` 产物；钥匙串只在 Electron 主进程，经窄 `contextBridge` | 07 |
@@ -101,7 +101,7 @@
 | 在 | 条目 |
 |---|---|
 | 01 | Windows 用计划任务开机启动；`relay` 单元只看 `relay protocol/envelope.ts` |
-| 02 | `client_ops` 留 30 天；blob 没人引用 1 天后删 |
+| 02 | `client_ops` 留 30 天；blob 没人引用 1 天后删；主和节点的 AEAD 用 `node:crypto` |
 | 03 | 一次最多处理 50 条批量输入；`channels.yaml` 取代 `feishu.yaml`；`worker.yaml` 挪到节点；节点上的渠道插件经代理插件接主；本机节点不配对；`check` 非零照跑 + 告警；节点排空默认 30 分钟；代理令牌不过期；备份保留 14 日 / 8 周 / 12 月 |
 | 04 | `life_notes`、没到点的 follow-up 带过去；同一 PR 第 3 次红 CI 进通知不发卡 |
 | 05 | 定稿 diff 超 16 KB 走 blob；不在 `workdirs` 里的照样能派只是标出；远端节点收到 exec 回 403；worktree 清理不删分支；Windows 节点私钥用 DPAPI |

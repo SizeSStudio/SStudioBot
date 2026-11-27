@@ -39,7 +39,7 @@ docs/tech/           这套文件
   |---|---|---|
   | `zod` 4.x（落地 4.6.7） | 全部 | schema 只写一次（工具、协议、配置） |
 | `typescript` 7.x（落地 7.0.2）、`@types/node` 24 | 开发 | 只做类型检查（`tsc -p tsconfig.json`），平台二进制是可选依赖，没有 install 脚本 |
-  | `@noble/curves`、`@noble/ciphers`、`@noble/hashes` | protocol | Noise、Ed25519；纯 JS，Hermes 能跑 |
+  | `@noble/curves`、`@noble/ciphers`、`@noble/hashes` | protocol | Noise 的 sha256/hkdf、Ed25519，网页端的 AEAD 和 X25519；Hermes 上 AEAD 和 X25519 太慢，换原生（02、07，P1） |
   | `ws` 8.23.x | relay（hub、node 视 P1 结果） | 中继服务端；Node 自带的 WebSocket 只有客户端 |
   | `yaml` | hub | 配置（沿用） |
   | `@earendil-works/pi-coding-agent`、`pi-ai` | hub | 主 agent 嵌入（锁版本，升级先跑探针） |

@@ -39,6 +39,7 @@ clients/                 npm workspace，自己的 lockfile；Node 24 构建（E
 | 状态 | 不引库 | 手写 store + `useSyncExternalStore` |
 | 推送 | expo-notifications | 只用 `getDevicePushTokenAsync()` 拿 FCM 令牌，不用 Expo 推送服务 |
 | 扫码 | expo-camera | 配对码 |
+| 加密 | react-native-quick-crypto 1.1.10 + react-native-nitro-modules 0.37.2（只安卓） | Noise 的 ChaCha20-Poly1305、X25519 和随机数走原生（P1：Hermes 上 noble 太慢）；没有 install 脚本（只有 `prepare`，从 registry 装不跑）；要 prebuild |
 | 桌面壳 | electron（锁版本，CI 显式装二进制并校验 checksum） | |
 
 - 每加一个包：查 install 脚本、查有没有运行时去网上拉东西（字体、主题、wasm、CDN）；有就不收或关掉。
@@ -47,7 +48,7 @@ clients/                 npm workspace，自己的 lockfile；Node 24 构建（E
 ## 连接（`src/conn/`）
 
 1. 读本地存的配对信息（主公钥、中继地址、`device_id`）。没有就进 `pair.tsx`。
-2. `new WebSocket(<中继>/v1/peer?hub=…)`（RN 和 Electron 渲染进程自带）→ Noise NK 握手（`protocol/noise`，Hermes 上的速度 P1 实测）→ `auth`（签名在 `src/device/`）。
+2. `new WebSocket(<中继>/v1/peer?hub=…)`（RN 和 Electron 渲染进程自带）→ Noise NK 握手（`protocol/noise`；安卓上 AEAD 和 X25519 走 quick-crypto，02）→ `auth`（签名在 `src/device/`）。
 3. `POST /api/v1/bootstrap` → 灌进 store → `POST /api/v1/stream { after: seq }`。
 4. 断了按 1、2、5、10、30 秒退避重连，`after` 用 store 里最新的 seq；收到 `reset` 清 store 重来；关闭码 4404 显示「等主上线」。
 5. 协议版本比 `min` 旧：整屏提示升级，不连。

@@ -31,7 +31,37 @@
   - 改一个字节 → 断开；配对码里换主公钥 → 握手失败；拿别的通道的 `auth` 帧重放 → 失败。三条都 10/10。
 - 不过：Paseo 不能照搬 → 自己写（02 已按规范写好）；Hermes 太慢 → ChaCha20-Poly1305 和 X25519 换原生实现（`react-native-quick-crypto` 一类，先查 install 脚本），Noise 状态机不变。
 
-结果：
+结果（2026-11-28；代码在分支 `probe/p1` 的 `probes/p1/`，README 有每项的重跑方法，原始数字在 `probes/p1/results/`）：
+
+- **Paseo**：许可证 Apache-2.0（另有第三方组件按各自许可）。
+  - Noise **照搬**：`packages/relay/src/noise/` 三个文件约 400 行，逐 token 执行 NK，自带向量测试，依赖就是 noble。改了四处：import 换 `.ts`；解密失败一次整个 CipherState 作废（02 的「失败即断」），清掉的状态再调一律抛错（原来 key 为空会原样返回明文）；AEAD 抽成接口（见下）；去掉 vitest。保留版权头，`noise/NOTICE.md` 写了改动。外面包一层 `channel.ts`（145 行）：prologue、JSON 握手载荷、1 字节分片标志、1 MiB 上限、任何错误都销毁通道。
+  - `relay/` **不照搬，自己写了**（`relay.ts` 228 行）。Paseo 的中继是 Cloudflare Durable Object（`cloudflare-adapter.ts` 614 行），按 `role=server|client&serverId&connectionId` 配对 socket，v2 是主给每个客户端另开一条数据 socket，不是 06 的「一条 WS 多路复用 + 信封」；上面还叠着它自己的 `encrypted-channel`、`secure-channel`（1400 多行，含 tweetnacl 老协议）。改成 06 等于重写。社区另有 Go、Elixir 的自托管版，也不是 Node。
+- **向量**：cacophony 里 `Noise_NK_25519_ChaChaPoly_SHA256` 只有 1 条（握手 2 条 + 传输 4 条 + 握手 hash），noise-c 的同名向量和它逐字节一样；过了。变异检查：把 HKDF 的 `0x02` 改成 `0x03`，向量测试挂。另有失败即断、重放、反射、乱序、低阶点、错主公钥、错 prologue、nonce 用尽、乱序调用、分片边界（0、1、65518、65519、64 KiB、1 MiB）、超 1 MiB 两端都拒、50 次随机翻位，`node --test` 13 条全过；把 AEAD 换成 node:crypto 再跑一遍，13 条也全过。
+- **依赖**：`@noble/curves`、`@noble/ciphers`、`@noble/hashes` 2.4.0，`ws` 8.23.0，都锁死；lockfile 里没有 `hasInstallScript`，`npm ci --ignore-scripts` 装全。
+- **门槛**：
+
+| 项 | 门槛 | 结果 | 过 |
+|---|---|---|---|
+| 经中继多出的往返中位 | ≤ 30 ms | 服务器本机回环：中继 2.15、直连 0.97，逐次配对差的中位 **+1.1 ms**。Mac 经 `ssh -L` 隧道（两条路走同一条隧道）：中继 378.5、直连 381.3，配对差中位 −0.9 ms，被 ~430 ms、抖动很大的公网淹没 | 过 |
+| 20 连接 × 10 条/秒，主事件循环 p99 | ≤ 50 ms | **2.5 ms**（p50 1.1，最大 17.1；按 1 ms 采样，含采样间隔本身）。跑 120 秒，收到 23963/24000 条（差的是各连接计时器的起止），事件延迟 p50 1 ms、p99 3 ms | 过 |
+| 中继 RSS | ≤ 100 MB | 空载 89.0，满载最高 **94.3 MB**。空载那 89 MB 是这台服务器上 Node 本身的底数，20 个会话只加了 5 MB | 过（余量薄，大头是 Node 底数） |
+| 主增量 RSS | ≤ 50 MB | **+6.9 MB**（总 101.8） | 过 |
+| 改一个字节 → 断开 | 10/10 | 恶意中继角色的代理在握手 1/2、`auth`、`req`、`res` 里随机翻一位：上行 **10/10**、下行 **10/10** | 过 |
+| 配对码换主公钥 → 握手失败 | 10/10 | **10/10**（主读不出第一条握手消息） | 过 |
+| 别的通道的 `auth` 重放 → 失败 | 10/10 | 明文重放（A 的 `auth` 帧在 B 通道发）**10/10**；密文重放（A 的加密 `auth` 注进 B 通道，中继能做的事）**10/10** | 过 |
+| Hermes 完整握手（设备一侧） | ≤ 50 ms | Hermes 0.13 CLI，Mac（Apple M5）：**22–23 ms**；手机 **真机待测** | Mac 上过 |
+| Hermes 64 KiB 加密 + 解密 | ≤ 5 ms | 同上：**35 ms**；Node 24 同一份代码 0.42 ms | **不过** |
+| Hermes 持续吞吐 | ≥ 5 MB/s | 同上：1 MiB 帧加密 + 解密 **1.8 MB/s**，只解密 3.6 MB/s；Node 160 / 323 MB/s | **不过** |
+
+- 测法：中继、主跑在服务器的临时目录（`/opt/node` 的 Node 26），只绑 `127.0.0.1` 的 7830、7831，防火墙没开这几个口，从 Mac 经 `ssh -L` 连；20 连接那项当时 Mac 到服务器很慢（建隧道里的连接超时），客户端改在服务器本机回环上跑（20 个 socket、每秒 200 条，客户端开销很小，服务器 4 核、负载 6 左右）。测完进程都杀了，临时目录删了。
+- Hermes：手机不在，安卓模拟器要先出一个 RN release 包，超出一小时的预算，没做。用的是 facebook/hermes 官方发布的 0.13.0 CLI（对应 RN 0.75），esbuild 打包、Babel 降 class（Hermes 0.13 不认 class，RN 的 Babel 预设也是这么做）、`hermesc -O` 出字节码，跑三次数字一致。Mac 的 M5 比手机快，手机只会更慢；新版 Hermes 会快一些，但差 7 倍（64 KiB）补不上。CLI 里没有 `crypto.getRandomValues`、`TextDecoder`，探针里垫了只供计时的替身。
+- **走「不过」一栏**：ChaCha20-Poly1305 和 X25519 在 Hermes 上换原生，Noise 状态机不变（02 已改）。
+  - 选 `react-native-quick-crypto` 1.1.10（依赖 `react-native-nitro-modules` 0.37.2）：有 C++ 的 `chacha20-poly1305` 和 `crypto.diffieHellman`（X25519），接口照 `node:crypto`；registry 包没有 install 脚本（只有 `prepare`，从 registry 装不跑）；要 prebuild，07 本来就有本地模块。07 依赖表加了一行。
+  - 探针里已经把 AEAD 抽成接口：`cipher-state.ts` 的 `Aead` + `useAead()`，默认 noble；`aead-node.ts` 用 `node:crypto` 实现（quick-crypto 是同一套调用）。换上它向量和全部测试照过，Node 上 64 KiB 0.09 ms、吞吐 750 / 1600 MB/s（noble 的 5 倍）。X25519 按同样的办法抽 `Dh` 接口，W1b 做。
+  - 握手在 Mac 的 Hermes 上过了，X25519 也换是因为「不过」一栏写的是两个一起换，而且手机慢几倍后 50 ms 没把握。
+  - 主和节点也用 `node:crypto` 的 AEAD ※（理由：同一个接口，OpenSSL 常数时间比 tag，快 5 倍；noble 留给网页、Electron 渲染进程和测试对照）。
+  - 真机拿到后照 `bench/crypto-speed.ts` 在 release 包里重测三项，填进本节；原生版也不过再回来找我。
+- W2 要顺带确认：RN 里 `TextDecoder` 支持 `fatal`（`decodeJson` 用），随机数走 quick-crypto 的 `getRandomValues`。
 
 ## P2 FlClash 下的 WSS 和 FCM（安卓）
 

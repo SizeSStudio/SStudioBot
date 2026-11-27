@@ -37,7 +37,8 @@ docs/tech/           这套文件
 - 首批服务端依赖：
   | 包 | 谁用 | 为什么 |
   |---|---|---|
-  | `zod` 4.x | 全部 | schema 只写一次（工具、协议、配置） |
+  | `zod` 4.x（落地 4.6.7） | 全部 | schema 只写一次（工具、协议、配置） |
+| `typescript` 7.x（落地 7.0.2）、`@types/node` 24 | 开发 | 只做类型检查（`tsc -p tsconfig.json`），平台二进制是可选依赖，没有 install 脚本 |
   | `@noble/curves`、`@noble/ciphers`、`@noble/hashes` | protocol | Noise、Ed25519；纯 JS，Hermes 能跑 |
   | `ws` 8.23.x | relay（hub、node 视 P1 结果） | 中继服务端；Node 自带的 WebSocket 只有客户端 |
   | `yaml` | hub | 配置（沿用） |
@@ -66,6 +67,8 @@ docs/tech/           这套文件
 - Linux 专属件（`sbot-deploy`、bwrap、iptables `SBOT_W`、systemd scope 内存上限）是可选件；别的系统上没有就照跑，状态页写明缺哪件。
 
 ## CI（GitHub Actions）
+
+落地（W1a）：leak、server、protocol、core、shell 都是同一个必过的 `check` job 里的步骤，每个 PR 都跑（几十秒，省得按路径拆 job 后必过检查对不上）；clients 以后单独一个 job。`protocol-check` 的快照在 `protocol/snapshot.json`，出 App 时 `node scripts/protocol-check.ts --write`；`import-check` 也扫 `core/`（只查方向，不查 `.ts` 后缀）。
 
 | job | 什么时候跑 | 做什么 |
 |---|---|---|

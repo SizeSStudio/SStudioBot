@@ -1,0 +1,20 @@
+{
+  // Type check only (CI and locally); Node runs the .ts files directly by type stripping (docs/tech/01).
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "nodenext",
+    "moduleResolution": "nodenext",
+    "lib": ["es2024"],
+    "types": ["node"],
+    "strict": true,
+    "noEmit": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": false,
+    "skipLibCheck": true,
+    "noUncheckedIndexedAccess": true
+  },
+  "include": ["protocol/**/*.ts", "scripts/**/*.ts"],
+  "exclude": ["node_modules", "core", "clients"]
+}

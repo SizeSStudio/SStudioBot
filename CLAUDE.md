@@ -8,7 +8,8 @@
 - 存储是 `node:sqlite`。
 - `core/` 不引前端框架、不加构建。旧控制台 `core/console/` 仍是原生 ES modules，只维护，不再加新页面，等 `clients/` 替换（DESIGN §触6）。
 - `clients/` 可以用框架和构建：依赖尽量少、锁版本、`npm ci --ignore-scripts`；构建只在 CI 和本机，不在服务器上跑；产物里不嵌实例地址。
-- 依赖方向只有一条：`clients/` 可以 import `core/protocol/`，`core/` 不 import `clients/`。`/api/v1` 内协议只做加法。
+- 整体重写在新目录 `protocol/`、`hub/`、`node/`、`relay/`、`clients/`（`docs/tech/`）；`core/` 冻结，只修线上故障，W7 切换后删。
+- 依赖方向：`hub/`、`node/`、`relay/`、`clients/` 只 import `protocol/`，彼此不 import；`relay/` 只 import `protocol/envelope.ts`；`core/` 和新目录互不 import（`scripts/import-check.ts` 查）。`/api/v1`、`/node/v1` 内协议只做加法（`scripts/protocol-check.ts` 查）。
 - 客户端把 agent 输出、消息、邮件、diff 都当不可信内容：不渲染原始 HTML，不加载远程资源。
 - 注释写“为什么”，简短。
 

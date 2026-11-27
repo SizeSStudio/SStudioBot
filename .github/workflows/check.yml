@@ -15,6 +15,24 @@ jobs:
           node-version: 24
       - name: leak guard
         run: bash scripts/leak-guard.sh
+      # server side of the rewrite (docs/tech/01 CI: server + protocol). Cheap, so it runs on every PR in this one
+      # required job instead of path-filtered jobs.
+      - name: server deps (no install scripts)
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: server syntax (erasable TypeScript only)
+        run: |
+          set -e
+          for f in $(git ls-files 'protocol/*.ts' 'hub/*.ts' 'node/*.ts' 'relay/*.ts' 'scripts/*.ts'); do
+            node --check "$f" || { echo "::error file=$f::syntax"; exit 1; }
+          done
+      - name: typecheck
+        run: npx tsc -p tsconfig.json
+      - name: import direction
+        run: node scripts/import-check.ts
+      - name: protocol only grows
+        run: node scripts/protocol-check.ts
+      - name: server tests
+        run: npm test
       - name: syntax (TypeScript is run by type stripping, so only erasable syntax is allowed)
         run: |
           set -e

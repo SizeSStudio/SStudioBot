@@ -7,25 +7,18 @@
     - 换新进程按 session id resume 能续上；interrupt 之后再 resume 也行
     - 开 thinking 时两次相互依赖的工具调用都对。CLI 把 `thinking` 统一改成 adaptive，模型名认识的给 effort medium，不认识的（`sbot-*`）给 high。adaptive 下模型可以不想，所以 thinking 块不一定出现。haiku 想了以后签名照样能续传；codex 经转换层不回 thinking 块，也不影响续传
     - `interrupt()` 要用流式输入；调用后约 30 ms 结束，工具不会再被调用。**迭代器是抛错（"[ede_diagnostic] … stop_reason=tool_use"），不是给一条 `result`** → 核心把 interrupt 之后的抛错记成"已中断"，不要当失败
-  - ✅ **`defer` → `tool_deferred` → 用空字符串 prompt resume → hook 再次触发并 allow / deny**（2026-11-16，Mac，本地端点）
+  - ⚠️ 已弃用（VPS 上 15～25% 被当成拒绝，改成核心代执行 + deny 带结果，见 worker 隔离那条）：**`defer` → `tool_deferred` → 用空字符串 prompt resume → hook 再次触发并 allow / deny**（2026-11-16，Mac，本地端点）
   - ✅ 并行调用：defer 不会被忽略、会静默丢一个 → 改用"每个 session 只允许一个 defer"的锁，已验证
   - ✅ `onFailure: "block"`；✅ `tools: []` + `disallowedTools` 后只剩 `mcp__sbot__*`
-  - ✅ 经 VPS 代理接真实上游（2026-11-16）：chat 档用 claude-sonnet-5-5 和 codex/gpt-6.1-sol **都 7/7 通过**。codex 的工具 id 是 `call_…`，defer / resume 照样能用 → SDK 这一侧对厂商是中立的
-  - ✅ Claude Code 内部是否还会请求 `sbot-*` 以外的模型名：在 `ANTHROPIC_DEFAULT_*` 全部设成别名、并关闭非必要流量的前提下，**一个都没有**（共 25 次调用，全是 `/v1/messages`）
+  - ✅ 经 VPS 代理接真实上游（2026-11-16）：chat 档用 claude-sonnet-5-5 和 codex/gpt-6.1-sol **这两个模型都 7/7 通过**。codex 的工具 id 是 `call_…`，defer / resume 照样能用 → 就这两个模型来看，SDK 这一侧对厂商是中立的
+  - ✅ Claude Code 内部是否还会请求 `sbot-*` 以外的模型名：在 `ANTHROPIC_DEFAULT_*` 全部设成别名、并关闭非必要流量的前提下，**一个都没有**（共 25 次调用，全是 `/v1/messages`；不含 WebFetch，它会直连目标和 api.anthropic.com，见 WebSearch / WebFetch 一条）
   - ✅ 冷启动：VPS 上首条消息 0.8～1.6 s，一次 defer run 7～9 s；上游单次调用 p50 约 5 s
   - ✅ `PostCompact` 能拿到 `compact_summary`（2026-11-16，`/compact` 触发，约 16 s；摘要是模型自己写的，我们插不进锚点）
   - ✅ `settingSources: []` 加 `plugins` 能加载 skills（2026-11-17，`probes/lens-skills.ts`）；CLI 自带的 skill 要靠 `skills` 白名单藏掉（§办1.3）
   - ✅ `settings` 选项能传 `cleanupPeriodDays`（2026-11-17，`probes/cleanup-period.ts` 3/3）：传 365 时，40 天的转录保留、400 天的被删。更要紧的是：**`settingSources: []` 且不传 `cleanupPeriodDays` 时，CLI 直接跳过清理**（日志 "userSettings source is disabled … no enabled source provides cleanupPeriodDays"），默认的 30 天根本不生效。清理在启动约 5 s 后才开始，跑得更短的 run 不会清理 → worker 不传这个设置，转录的保留和删除由核心的任务目录 GC 统一管
   - ✅ WebSearch / WebFetch（2026-11-17，`probes/web-tools.ts`，worker 路径，sonnet 和 haiku 两档都过）：WebSearch 发的是 `web_search_20250305` 服务端工具，上游原样支持（返回 `web_search_tool_result`）；WebFetch 在关闭非必要流量后能用，但会直连目标和 api.anthropic.com → 用 `skipWebFetchPreflight` + `settings.env.HTTPS_PROXY` 收进核心出网代理（§底3.6）。codex 档的 WebSearch 没测（对话角色在 pi 上，本来就要自定义搜索工具）
-- [x] **pi 对比（对话角色）** → **用 pi**（2026-11-16，VPS，`probes/harness-compare.ts`）：pi 11/11、SDK 8/9。pi 轮次延迟 p50 3.8 s 对 5.2 s，自身固定开销约 0.45k 对 0.9k token，进程树峰值 195 MB（1 个进程）对 333 MB（每个并发 run 多一个约 220 MB 的子进程）；压缩时我们自己写的摘要生效，压缩后不调工具也答得出发心和本月留意；诱饵扩展、`AGENTS.md` 都没有被加载；代理里 0 个 UNMAPPED。原先的比较项：用同一组工具、同一个 chat 档模型，跑三段脚本对话：私聊派活、起局（问发心）、周复盘加下周前瞻（要用到时间线）。分别在 SDK 和 pi 上跑，比较：
-  - 冷启动耗时、每轮固定 token 开销
-  - 我选的 chat 模型在两边的工具调用稳定性
-  - 会话持久化和续接；自定义压缩能否保住发心、本月留意这些锚点
-  - 能否关掉 `~/.pi`、`.pi/` 的扩展和 skills 自动发现；能否指向 LLM 代理（自定义 baseUrl + 临时令牌）
-  - 锁定的版本号，以及两边的代码量和可读性
-
-  **判定**：pi 这几项都过，对话角色就从 M0 起用 pi；有一项不过，全部用 SDK。不管选哪个，`Runner` 接口和工具层都一样。
-- [x] **LLM 代理**（2026-11-16，VPS，`probes/llm-proxy.ts`）：✅ 流式透传；✅ `usage` 计量（SSE 和 JSON 两种）；✅ 上游 Bearer（该端点也接受 x-api-key），run 令牌两种头都能用；✅ 别名换模型，非 `sbot-*` 的模型名会记成 UNMAPPED；✅ 超预算时：429 → CLI 退避重试约 3 分钟，**403 → 立刻失败**，所以选 403（见 §办2.2）
+- [x] **pi 对比（对话角色）** → **用 pi**（2026-11-16，VPS，`probes/harness-compare.ts`）：pi 11/11、SDK 8/9。pi 轮次延迟 p50 3.8 s 对 5.2 s，固定开销约 0.45k 对 0.9k token，进程树峰值 195 MB（1 个进程）对 333 MB（每个并发 run 多一个约 220 MB 的子进程）；压缩时我们写的摘要生效，压缩后不调工具也答得出发心和本月留意；诱饵扩展、`AGENTS.md` 都没有被加载；代理里 0 个 UNMAPPED。判定：这几项 pi 都过，对话角色从 M0 起用 pi；不管选哪个，`Runner` 接口和工具层都一样。
+- [x] **LLM 代理**（2026-11-16，VPS，`probes/llm-proxy.ts`）：✅ 流式透传；✅ `usage` 计量（SSE 和 JSON 两种）；✅ 上游 Bearer（该端点也接受 x-api-key），run 令牌两种头都能用；✅ 别名换模型，非 `sbot-*` 的模型名会记成 UNMAPPED；✅ 超预算时：429 → CLI 退避重试约 3 分钟，**403 → 立刻失败**，所以当时选 403（见 §办2.2）。v0.26 改成只告警，代理不再因预算 403（§附2.17）
 - [x] **worker 隔离**（2026-11-16，VPS，`probes/egress-check.sh` + `probes/worker-isolation.ts`，安装文件 `deploy/worker/`，细节见 §办1.3、§底3.2B、§底3.6）：
   - ✅ 以 `sbot-w` spawn：`spawnClaudeCodeProcess` → `sudo -n worker-exec` → systemd scope（MemoryMax 1G）→ `setpriv`。in-process MCP 和 hook 照常工作
   - ✅ sandbox（bubblewrap）：要先把 Ubuntu 的 `bwrap-userns-restrict` 换成官方 `bwrap` profile，否则 `apply-seccomp` 失败、所有 bash 命令 exit 1
@@ -37,29 +30,32 @@
 - [x] **飞书**：
   - ✅ 外部群标记：`+chat-list` 的 `external`（布尔值）
   - ✅（2026-11-16，只读部分）轮询方式改为全局搜索，见 §读2.2
-  - ✅（2026-11-16，写入部分，全部 bot 身份）建了正式管理群「SStudioBot 管理」（私有普通群，主人是群主、bot 是管理员）。话题回复：搜索能看到，`chat-messages-list` 只嵌在根消息里；`--reply-in-thread` 可用；bot 自己的消息不回推事件；不 @bot 的群消息也会推；卡片回调 `operator_id` 就是点击人的 open_id，连点会来多次，要取第一次并立刻更新卡片（§底3.2B）；token 延迟更新卡片可用
-- [x] **lark-cli 在 VPS 上单独授权**（2026-11-16）：✅ 和 Mac 并存；✅ refresh token 7 天滚动；✅ 30 秒一轮、12 分钟 288 次调用无限流；❌ `+chat-list` 不返回 `active_time`，只能排序 → 改用全局搜索（§读2.2）
+  - ✅（2026-11-16，写入部分，全部 bot 身份）建了正式管理群「SStudioBot 管理」（私有普通群，我是群主、bot 是管理员）。话题回复：搜索能看到，`chat-messages-list` 只嵌在根消息里；`--reply-in-thread` 可用；bot 自己的消息不回推事件；不 @bot 的群消息也会推；卡片回调 `operator_id` 就是点击人的 open_id，连点会来多次，要取第一次并立刻更新卡片（§底3.2B）；token 延迟更新卡片可用
 - [x] **镜头 skill**（2026-11-17，VPS，`probes/lens-skills.ts`，打包 `deploy/lens/`）：6/6
   - ✅ ziwei-chart 没有 npm 运行时依赖（只用 node 内置模块），node 22 / 26 都能跑；VPS 和 Mac 同一输入的 `chart.txt` / `chart.json` 逐字节一致；HTML 没有外链，断网渲染没问题
   - ✅ worker 路径（sbot-w + sandbox + 出网白名单为空）：模型调 `Skill(sbot-lens:ziwei-chart)` → 沙箱里跑 CLI → 产物落在任务目录，和直接跑的结果一致；全程 0 次出网尝试
   - ✅ ziwei-natal 能读插件里的 kb（立场声明、断事方法），没有权限错误；kb 后来整份带上（星曜/宫位/四化/格局，约 800K），因为解读时会去找星曜页
   - ✅ `skills` 白名单生效（模型列表只剩白名单；白名单外的 skill 调用被拒）
   - 注意：worker 在沙箱里能 `find /` 读到全盘可读的文件（这次模型就为了找星曜页跑了一次），沙箱只限制写和网络。敏感内容只能靠文件权限挡，这一点 W4 已经验证过
+- [x] **tailscale serve**（2026-11-16，临时挂一个端口测完已撤，配置和测前逐字一致）：✅ HTTPS + MagicDNS；✅ `Tailscale-User-Login` 注入且客户端伪造会被替换；✅ 能代理到 unix socket，700 目录挡住其他本地用户；控制台单独用一个端口，不动本机已有的 serve 配置（§触5.1）
+
+**运维记录（一次性，不是可重跑的探针）**
+
+- [x] **lark-cli 在 VPS 上单独授权**（2026-11-16）：✅ 和 Mac 并存；✅ refresh token 7 天滚动；✅ 30 秒一轮、12 分钟 288 次调用无限流；❌ `+chat-list` 不返回 `active_time`，只能排序 → 改用全局搜索（§读2.2）
 - [x] **VPS 资源和环境**（2026-11-16 搭好，§底1.3）：
   - 可用内存 2.2～3 GB → 改成单机轻量方案（对话角色不起子进程、worker ≤ 2 且各限 1G）
   - 系统自带的 `nodejs` 没有 TS 支持 → 官方 Node v26.13.1 装在 `/opt/node`（sha256 校验过），`process.features.typescript = strip`
   - 用户 `sbot`、`sbot-w` 已建（系统用户、nologin，不在 docker 和 sudo 组）。目录在数据盘上，`/srv/sbot`、`/srv/sbot-w` 是软链
-  - 数据盘延迟实测够 SQLite 用
+  - 数据盘延迟够 SQLite 用（当时没留数字）
   - rustfs 已建 `sbot-raw`、`sbot-backup` 两个桶，读写删都试过；sbot 专用的受限 key 留到 M0 建
   - 剩下的：worker 和核心同时跑时的真实内存，等 M0 跑起来用 `systemd-cgtop` 实测
-- [x] **tailscale serve**（2026-11-16，临时挂一个端口测完已撤，配置和测前逐字一致）：✅ HTTPS + MagicDNS；✅ `Tailscale-User-Login` 注入且客户端伪造会被替换；✅ 能代理到 unix socket，700 目录挡住其他本地用户；控制台单独用一个端口，不动本机已有的 serve 配置（§触5.1）
 
 ### 附2.1 M0 进度（2026-11-17）
 
 代码在 `core/`（TS，Node 直接跑，不编译；`node --check` 过；strip-only 模式不支持构造函数参数属性，别写 `constructor(private x)`）。部署文件在 `deploy/core/`。
 
 - [x] 核心 11 个模块：`config` `db` `proxy` `memory` `tools` `runner`（pi，每轮独立 ModelRuntime + run token，并发 lane 不共享 env）`dispatcher` `commands` `feishu` `outbox` `main`；另有 `backup`
-- [x] seed：`core/seed/agent-home/{SOUL,AGENTS,USER,MEMORY}.md`（红尘里修的立场和分寸，**初稿，等 主人 过目**）；`core/seed/config/{models,people}.yaml` 模板
+- [x] seed：`core/seed/agent-home/{SOUL,AGENTS,USER,MEMORY}.md`（红尘里修的立场和分寸，**初稿，等我过目**）；`core/seed/config/{models,people}.yaml` 模板
 - [x] 冒烟（`core/test/smoke.ts`，VPS 上用临时 SBOT_HOME，`core/test/vps-smoke.sh`）全过：真模型回复、第二轮续上同一会话、用量入库、light token 要 expert → 403、吊销 token → 401、无副作用 run 重启后重跑且只回一次、有副作用 run 重启后标 interrupted 并通知一次
 - [x] 飞书 bot 身份给 sbot：`/opt/sbot/bin/lark-cli`（root 所有）；`/srv/sbot/lark/` 下只有 bot 的 app 配置（`users: []`、appsecret、master.key），**没有用户 token**；`auth status` bot ready
   - 事件流字段和 `Incoming` 一致；`event consume` 会先查远端在线实例数（`online_instance_cnt`），>0 时核心打日志（同一应用多个消费者会分流事件）。Mac 和 dev 上都别跑这个应用的 `event consume`
@@ -69,29 +65,29 @@
 - [x] rustfs 受限 key：用户 `sbot-core` + 策略 `sbot-core-rw`，只能对 `sbot-raw`、`sbot-backup` 读、写、列，**不能删**（核心被攻破也删不掉备份），其他桶不可见。工具是 rustfs 自己的 `rc`（MinIO 的 `mc` 官方下载已下线，410）。注意管理员 secret 以 `-` 开头，命令行要加 `--`
 - [x] systemd：`sbot-core.service`（sbot、`sbot.slice`、`OOMScoreAdjust=-500`、`MemoryMax=1500M`、`KillMode=control-group`、`TimeoutStopSec=30`、ProtectSystem=strict 只放开 `/srv/data/sbot`）；`sbot-backup.timer` 每天 03:30（UTC+8）
 - [x] 备份：`VACUUM INTO` 快照 + `config`、`agent-home` 的 git bundle → `sbot-backup/<日期>/`，带 manifest；下载回来做过恢复验证（integrity ok、bundle 能 clone）
-- [x] E2E（2026-11-17）：主人 01:44 实测私聊、`/usage`、长问题都正常回复。kill 测试在核心层面注入 inbox 行（Mac 的用户 token 没有 `im:message.send_as_user`，不为测试扩权限），`core/test/vps-killtest.sh <延迟> <文本>`：
+- [x] E2E（2026-11-17）：我 01:44 实测私聊、`/usage`、长问题都正常回复。kill 测试在核心层面注入 inbox 行（Mac 的用户 token 没有 `im:message.send_as_user`，不为测试扩权限），`core/test/vps-killtest.sh <延迟> <文本>`：
   - A：run 开始 1 秒杀（卡片发出前）→ 重启后标 `restart_retried`，重跑一次，只发 1 张卡片
   - B：卡片发出后杀 → 不重跑，`interrupted`；卡片补上「（被重启打断了）」并关掉流式；通知 1 条。数据库核对无重复（`core/test/state.js`）
 - [x] **流式卡片**（`card.ts`、`feishu-api.ts`）：每轮一张卡片，首个字或工具事件时建卡（3 秒没动静先显示「思考中…」）；正文推全文、飞书打字机式显示增量；正文下一行灰字状态（🔍 搜索中…）；结束时整卡更新去掉状态、关流式。**先写 outbox（kind=card）+ side_effects 再发**，崩溃不会出第二张卡片；重启时关掉遗留的流式卡片。>20k 字的部分另发一条。`SBOT_STREAM_CARDS=0` 关掉
   - 接口：`POST /cardkit/v1/cards` → `POST /im/v1/messages/:id/reply`（`uuid` 幂等）→ `PUT /cardkit/v1/cards/:id/elements/:eid/content`（`sequence` 严格递增）→ `PUT /cardkit/v1/cards/:id` 整卡更新（`streaming_mode:false`）。流式模式 10 分钟自动关；单卡片 10 QPS（流式更新豁免）
-  - **慢**：lark-cli 每次 ~3 秒（海外到国内新建 TLS ~1 秒 + 每次重新取 token），卡片更新很粗。`secrets.env` 里加上 `FEISHU_APP_SECRET` 后核心自己取 tenant token、长连接直连（预计 ~0.3 秒/次，更新间隔 250ms），不用重启（secrets 按 mtime 重读）。**待 主人 提供**
+  - **慢**：lark-cli 每次 ~3 秒（海外到国内新建 TLS ~1 秒 + 每次重新取 token），卡片更新很粗。`secrets.env` 里加上 `FEISHU_APP_SECRET` 后核心自己取 tenant token、长连接直连（预计 ~0.3 秒/次，更新间隔 250ms），不用重启（secrets 按 mtime 重读）。**待我提供**
   - lark-cli 没有 cardkit 命令，fallback 用 `lark-cli api`；拿不到 tenant token
 - [x] owner DM chat_id 已知（`kv feishu.owner_dm_chat`，bot 按 open_id 发消息时拿到的）
 - [x] worker 的 scope `MemoryMax`：`worker-exec` 用 `systemd-run --scope -p MemoryMax=1G`，M2 已接上
 
 ### 附2.2 M1 / M2 进度（2026-11-17）
 
-新模块：`approvals`（状态机、卡片、过期清扫）、`observer`（以 主人 身份轮询他的群、群列表过目卡、`/group`）、`triage`、`routes`（管理群 / 工作台 / 卡片回调）、`tasks`（Task Engine）、`egress`（worker 出网代理）、`timers`（follow-up）、`matters`（事、起局 playbook）。
+新模块：`approvals`（状态机、卡片、过期清扫）、`observer`（以我的身份轮询我的群、群列表过目卡、`/group`）、`triage`、`routes`（管理群 / 工作台 / 卡片回调）、`tasks`（Task Engine）、`egress`（worker 出网代理）、`timers`（follow-up）、`matters`（事、起局 playbook）。
 
 - [x] **M2 端到端**（`core/test/m2-smoke.ts`，按 sbot-core 同款 systemd 沙箱跑，核心临时停）全过：worker 以 sbot-w 在 bwrap 里 clone bundle → 改 → 提交 → `git_push` 被 PreToolUse 挂起 → 审批 pending、提交钉在镜像的 `refs/sbot/pending/…` → expert 审「可以推」→ 批准 → 核心从镜像推那个 sha 到 `sbot/…` 分支（main 不动）→ resume worker → 报告 → done；只推一次；origin lane 收到完成事件；follow-up 到点进 lane；事的页面写入。light 档一个小任务约 $0.05
 - [x] **systemd 收紧项和 worker 冲突**，已从 `sbot-core.service` 去掉：`NoNewPrivileges` / `RestrictSUIDSGID`（要 `sudo -n worker-exec`）、`ProtectKernelTunables`（/proc 下的覆盖挂载让 bwrap 在 userns 里挂不了新的 proc：`Can't mount proc on /newroot/proc: Operation not permitted`）；`ReadWritePaths` 加 `/srv/data/sbot-w`（worker 继承核心的挂载命名空间）
-- [x] worker 交报告带 `outcome`（done / partial / blocked）；blocked 记 failed。实测沙箱坏掉时 worker 没有试图绕开，如实交了 blocked
-- [x] 配置：`feishu.yaml`（管理群 + 工作台话题群「SStudioBot 工作台」，bot 建、主人 在群里、bot 是管理员）；`repos.yaml` 里一个演示仓库 `demo` → `/srv/sbot/repos/demo-remote.git`
-- [x] **主人 的用户授权**（VPS 上的 lark-cli `auth login --domain im --scope im:message.send_as_user`，11-17 完成）：过目卡发出，主人 选了「按这个开始」（默认全部进 Triage）。修了一个坑：`+messages-search` 的 `--start/--end` 带毫秒（`.000Z`）会报 99992402 field validation failed，改成整秒 `+00:00`。首轮 12 条 → Triage 分出 archive / notify / draft，草稿成了审批 #2
-- [x] 验收 M2（实机）：私聊派活到 demo → 工作台话题 → 推送卡 → 主人 批准 → `5b0fd4f` 推到 demo 远端 → 完成报告；「10 分钟后提醒我」按时到点
-- [ ] 验收 M1（工作群有人 @主人 → 草稿卡 → 发送；先自己回了 → 作废）：等 主人 的用户授权（要租户审批）
+- [x] worker 交报告带 `outcome`（done / partial / blocked）；blocked 记 failed。冒烟里走通了 `blocked` 上报
+- [x] 配置：`feishu.yaml`（管理群 + 工作台话题群「SStudioBot 工作台」，bot 建、我在群里、bot 是管理员）；`repos.yaml` 里一个演示仓库 `demo` → `/srv/sbot/repos/demo-remote.git`
+- [ ] **我的用户授权**（待在机器上核对，此条和下面第 92、108 行互相对不上）：（VPS 上的 lark-cli `auth login --domain im --scope im:message.send_as_user`，11-17 记为完成）：过目卡发出，我选了「按这个开始」（默认全部进 Triage）。修了一个坑：`+messages-search` 的 `--start/--end` 带毫秒（`.000Z`）会报 99992402 field validation failed，改成整秒 `+00:00`。首轮 12 条 → Triage 分出 archive / notify / draft，草稿成了审批 #2
+- [x] 验收 M2（实机）：私聊派活到 demo → 工作台话题 → 推送卡 → 我批准 → `5b0fd4f` 推到 demo 远端 → 完成报告；「10 分钟后提醒我」按时到点
+- [ ] 验收 M1（工作群有人 @我 → 草稿卡 → 发送；先自己回了 → 作废）：等我的用户授权（要租户审批；授权状态待在机器上核对）
 - [ ] 真仓库的推送凭证（GitHub）还没配；目前只有本地演示仓库
-- 已知：各任务目录都归 sbot-w，任务之间能互相读（先接受）
+- 已知：各任务目录都归 sbot-w，任务之间能互相读（先接受）。重审条件：节点化以后任务不在 VPS 上跑，这条可能直接不适用；任务回到 VPS 上跑，或任务里带了别人的内容时重审
 
 ### 附2.3 M3a 进度（2026-11-17）
 
@@ -104,10 +100,10 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] **Dream**（§读1.3 由代码执法）：只能 `memory_patch` USER.md / MEMORY.md / people/ groups/ projects/ topics/；每处必须引用 journal 行，按行上的 src 判：USER/MEMORY 只收 owner 和 owner 会话的收尾；别人说的要写成「X 说」；web 只进 projects/ 且带链接；USER.md 改动先过 expert；4000 字上限；一晚最多 12 处，一处一个 commit。管理群回「回滚 <sha>」撤销
 - [x] **先安静**：没人说话触发、且带 quota 的事件（follow-up 到点、任务完成/失败通知）计数；当天超过 `gate.yaml proactive_daily_cap`（默认 6）就压下，并进第二天早报。任务来问话、早报本身不计
 - [x] **巡检**（纯代码，5 分钟一次，同一项 6～24 小时内不重复）：审批等超 2 小时、对话轮卡 20 分钟、任务 20 分钟没输出、outbox 失败、代理 30 分钟错误率 > 30%、当日花费到预算 80%（`gate.yaml daily_budget_usd`，默认 $10）、飞书用户授权不在、定时任务失败
-- [x] `core/test/m3-smoke.ts`（临时 home + 独立代理端口，核心不用停）全过；`--live` 跑一次真 dream：3 处修改（USER.md 过了 expert），群里「老王说 主人 同意了周五上线」只进了群页面且标注未确认，约 $0.06
-- [x] 已部署；第一次巡检就报了「飞书用户授权不在」（预期，每 24 小时提醒一次）
+- [x] `core/test/m3-smoke.ts`（临时 home + 独立代理端口，核心不用停）全过；`--live` 跑一次真 dream：3 处修改（USER.md 过了 expert），群里「老王说我同意了周五上线」只进了群页面且标注未确认，约 $0.06
+- [x] 已部署；第一次巡检就报了「飞书用户授权不在」（当时预期，每 24 小时提醒一次；授权现状待在机器上核对）
 - [ ] 资料 ingest 到 rustfs 推后
-- [ ] 第一次真实早报和 dream：明天 08:25 / 08:30 看
+- [ ] 第一次真实早报和 dream：2026-11-18 08:25 / 08:30 看（结果待补）
 
 ### 附2.4 M3b 进度（2026-11-17）
 
@@ -119,7 +115,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] **密钥只写**：原子写 `secrets.env`（0600）。接口只返回名字、是否已设、谁在用；管理群收到 🔑 通知，不带值；值不进日志、不进 git
 - [x] 实测：没带头 / 别的用户 / PUT 没带 CSRF 头都是 403；YAML 写错、schema 不符、hash 过期、把自己移出 owners、空密钥、非法模型名都被拒，配置仓库没被弄脏
 - [x] 顺手修：observer 的 `+messages-search` 时间不能带毫秒（99992402），改成整秒 `+00:00`
-- [x] 主人 在「模型 → 密钥」填 `FEISHU_APP_SECRET`
+- [x] 我在「模型 → 密钥」填 `FEISHU_APP_SECRET`
 - [x] 端口：控制台用 8444；客户端如果开了 TUN 类代理，要绕过 `*.ts.net`、`100.64.0.0/10`
 - [x] **公网入口**（v0.17）：两个入口各一个 socket、各信各的身份证明；`core/test/console-web-smoke.ts` 55 项全过（公网入口带伪造的 `Tailscale-User-Login`、没 cookie、mac 错、别的 key、过期、未来时间都被拒；登录要本站 Origin，按 IP 和总量限流；写操作要 cookie + Origin + CSRF 头；密码哈希和会话密钥不能从控制台写；没 `web.origin` 时 404；tailnet 入口行为不变）
 - [x] 公网入口上线（2026-11-18）：Cloudflare 加灰云 A 记录、`install.sh <host>`（Let's Encrypt、nginx、`/run/sbot-web`）、`console-passwd`、经控制台写 `web.origin`。从公网实测：HTTP/2、证书有效，没登录跳登录页 / 接口 401，伪造 `Tailscale-User-Login` 读写都是 401，外站提交登录 403。同一台 Mac 上 8 次请求：tailnet 1.1～5.3 s（中位约 2.7 s），公网 1.1～2.9 s（中位约 1.5 s）
@@ -127,31 +123,31 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 附2.5 M3c 进度（2026-11-17）
 
-原 §15 陪伴的大部分 + §进2 A 级。复盘和前瞻不另起进程：定时任务（或事收）把代码整理的事实和 skills/ 里的方法塞进主人 DM lane，主 agent 开口，他的回话在同一个会话里接着聊。
+原 §15 陪伴的大部分 + §进2 A 级。复盘和前瞻不另起进程：定时任务（或事收）把代码整理的事实和 skills/ 里的方法塞进我的 DM lane，主 agent 开口，我的回话在同一个会话里接着聊。
 
-- [x] **时间线**：`timeline` 视图（他私聊说的、他在群里说的、随手记、代发、审批、任务、事、前瞻、回看、复盘），`timeline_query` 按时间 / 事 / 领域 / 关键词查。日历没进（要飞书日历 scope，等 主人 点头）
+- [x] **时间线**：`timeline` 视图（我私聊说的、我在群里说的、随手记、代发、审批、任务、事、前瞻、回看、复盘），`timeline_query` 按时间 / 事 / 领域 / 关键词查。日历没进（要飞书日历 scope，等我点头）
 - [x] **随手记** `note_add`（life_notes，带领域 work/family/friends/body/mind，同时写 journal）
 - [x] **前瞻** `outlook_submit` / `outlook_revisit`：日 1 条、周 / 月 / 事 3 条，写下不改，回看单独追加；周、月写 `self/outlooks/<期>.md`。早报加「今日留意」（最多 1 条，挂在周 / 月前瞻下）
-- [x] **复盘** `review_submit`：日（21:30，安静的日子不发；周日 / 1 号并进周 / 月复盘）、周（周日 20:30，+ 下周前瞻）、月（1 号 20:00，+ 本月前瞻；1/4/7/10 月加季度清理提问）、事收（matter_close → closing 时排进这件事的 lane，复盘写回事的页面，状态 reviewed）。没有他的原话就记「未聊」，agent 的对照丢掉。问题反馈记 `review_question` 信号
-- [x] **习气 / 节律**：`self_items` 表，代码生成 `self/habits.md`、`self/rhythms.md`（visibility: owner）。dream 用 `self_candidate` 提候选（只写行为；他的原话 1 条就够，推断的至少 2 条；一夜最多 6 处）；只有他能认（`self_mark` 要 `owner@` 来源 + 原话）
-- [x] **谁先看见 / 送一程**：noticings 表；记成他先看见必须引他这次的原话；连续 3 次他先看见 → 送一程（不再主动提）；送一程后 agent 连续 2 次先看见 → 问他要不要再提醒。参数在 `config/self.yaml`
-- [x] **风格笔记 + 例子库（§进2 A）**：审批改稿意见、草稿被他自己回复作废都记 journal（owner@approval）；dream 可写 `style/*.md`、`self/guidance-notes.md`（只认他的话）；Triage 起草前带上 style/general.md + 匹配群名的笔记 + 这个群最近 3 条批准稿 + 他最近 5 条发言
+- [x] **复盘** `review_submit`：日（21:30，安静的日子不发；周日 / 1 号并进周 / 月复盘）、周（周日 20:30，+ 下周前瞻）、月（1 号 20:00，+ 本月前瞻；1/4/7/10 月加季度清理提问）、事收（matter_close → closing 时排进这件事的 lane，复盘写回事的页面，状态 reviewed）。没有我的原话就记「未聊」，agent 的对照丢掉。问题反馈记 `review_question` 信号
+- [x] **习气 / 节律**：`self_items` 表，代码生成 `self/habits.md`、`self/rhythms.md`（visibility: owner）。dream 用 `self_candidate` 提候选（只写行为；我的原话 1 条就够，推断的至少 2 条；一夜最多 6 处）；只有我能认（`self_mark` 要 `owner@` 来源 + 原话）
+- [x] **谁先看见 / 送一程**：noticings 表；记成我先看见必须引我这次的原话；连续 3 次我先看见 → 送一程（不再主动提）；送一程后 agent 连续 2 次先看见 → 问我要不要再提醒。参数在 `config/self.yaml`
+- [x] **风格笔记 + 例子库（§进2 A）**：审批改稿意见、草稿被我自己回复作废都记 journal（owner@approval）；dream 可写 `style/*.md`、`self/guidance-notes.md`（只认我的话）；Triage 起草前带上 style/general.md + 匹配群名的笔记 + 这个群最近 3 条批准稿 + 我最近 5 条发言
 - [x] **办事体检卡**（周一 09:05，管理群）：起草五种结局、平均改几轮、分拣分布、「可能漏了」、任务、主动消息、专家、出错 run、复盘聊 / 未聊、按请求方花费，各带上周对比；只有指标
-- [x] **隐私（§读5.1）**：飞书里 memory_read 读不了 self/habits.md、rhythms.md、charts/（用 self_list；v0.23 起他私聊里亲手问的可以读，§读5.1）；管理群 dream diff 对 self/ 只报候选数
-- [x] `test/m3c-smoke.ts` 33 项全过；已部署，jobs.yaml / self.yaml 已提交
+- [x] **隐私（§读5.1）**：飞书里 memory_read 读不了 self/habits.md、rhythms.md、charts/（用 self_list；v0.23 起我私聊里亲手问的可以读，§读5.1）；管理群 dream diff 对 self/ 只报候选数
+- [x] `core/test/m3c-smoke.ts` 33 项全过；已部署，jobs.yaml / self.yaml 已提交
 - [x] 顺手修：lark 用户 token 进入 `needs_refresh` 时 observer 当成「没授权」停了调用，于是永远不会刷新（每 2 小时停一次）。现在 refresh token 有效就照常调用，调用时自动刷新
 - [ ] 没做：节气月（self.yaml `month: solar_term` 先按公历月）、日历进时间线、控制台的时间线 / 习气 / 前瞻页面、lens-notes（M6）
-- [ ] 第一次真实日复盘今晚 21:30；周复盘周日（11-22）20:30；体检卡下周一 09:05
+- [ ] 第一次真实日复盘 2026-11-17 21:30；周复盘周日（11-22）20:30；体检卡 11-23（周一）09:05（三项结果待补）
 
 ### 附2.6 M6 进度（2026-11-17）
 
 - [x] **镜头插件** `/opt/sbot/plugins/sbot-lens` v0.2.0（root 只读）：紫微（chart / natal / zhanbu）+ 六爻（liuyao-guanxiang）。跑在密封 worker 里：sbot-w、空 egress（没网）、只给 Bash/Read/Write/Glob/Grep/Skill，显式 skills 白名单，15 分钟、60k 预算
-- [x] **解读账本**：`readings`（写下不改，带 profile_version = 镜头 + 设置 + 出生信息 + 插件版本的 hash）、`reading_revisits`（只记他的原话）。盘冻结在 `self/charts/<lens>/<版本>/`
-- [x] 工具 `lens_reading`（L1，主人）、`readings_query`、`reading_revisit`（只认 owner@）。同一件事同一门镜头只看一次（渎则不告），事情变了写明原因才再看；月视图写下就冻结
+- [x] **解读账本**：`readings`（写下不改，带 profile_version = 镜头 + 设置 + 出生信息 + 插件版本的 hash）、`reading_revisits`（只记我的原话）。盘冻结在 `self/charts/<lens>/<版本>/`
+- [x] 工具 `lens_reading`（L1，我）、`readings_query`、`reading_revisit`（只认 owner@）。同一件事同一门镜头只看一次（渎则不告），事情变了写明原因才再看；月视图写下就冻结
 - [x] 出生信息只在 `config/self.yaml`（控制台填，保存时管理群只报行数）；飞书里不问出生时间，不贴盘
-- [x] 复盘接上：周复盘带本周到期的 claim，月复盘带上月 / 本月看法和 `self/lens-notes/`，事收带这件事的看法；dream 只从他的回看原话写 lens-notes，不打分
-- [x] `lens_month` 每月 1 号 06:00 排流月；`test/m6-smoke.ts` 离线全过，`--live` 一卦六爻真跑通（$0.14）
-- [x] v0.23：生辰表单、`self_profile`、`self_page`、六爻日周月例行看法；`test/self-profile-smoke.ts`
+- [x] 复盘接上：周复盘带本周到期的 claim，月复盘带上月 / 本月看法和 `self/lens-notes/`，事收带这件事的看法；dream 只从我的回看原话写 lens-notes，不打分
+- [x] `lens_month` 每月 1 号 06:00 排流月；`core/test/m6-smoke.ts` 离线全过，`--live` 一卦六爻真跑通（$0.14）
+- [x] v0.23：生辰表单、`self_profile`、`self_page`、六爻日周月例行看法；`core/test/self-profile-smoke.ts`
 - [ ] 没做：控制台的看法 / 盘页面；节气月
 
 ### 附2.7 M7 进度（2026-11-17）
@@ -159,14 +155,14 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 §进2 B 级的闭环骨架：信号 → 回放样本 → 提案 → 回放 → 一张卡 → 生效 → 两周回看 → 一键回滚。
 
 - [x] **可调文件**（`src/tuning.ts`）：`tuning/triage.md`、`tuning/draft.md`、`tuning/main.md`（追加到分拣 / 起草 / 主 agent prompt 末尾）、`skills/review/SKILL.md`、`skills/outlook/SKILL.md`。都在 agent-home（git），visibility 默认 owner。主 run 和起草 run 的 `versions_json` 记每个文件的版本
-- [x] **回放样本** `eval_cases`（代码收，期望答案都是他的）：批准稿的最终文本、他自己回复作废的那条、触发草稿的消息（批准 / 自己回 → raise，拒绝且说「不用回」→ no_draft）、分拣漏（判归档 / 忽略后 2 小时内他自己在群里说话）
+- [x] **回放样本** `eval_cases`（代码收，期望答案都是我的）：批准稿的最终文本、我自己回复作废的那条、触发草稿的消息（批准 / 自己回 → raise，拒绝且说「不用回」→ no_draft）、分拣漏（判归档 / 忽略后 2 小时内我自己在群里说话）
 - [x] **improve 任务**（每天 02:30 检查）：≥ min_signals（10）个新信号且离上次 ≥ 7 天，或满 28 天；有待批提案卡就不跑。`/improve` 强制跑一次，`/improve status` 看样本和提案
 - [x] 一次 expert 调用（无工具）出 ≤ 3 条提案；代码校验：文件白名单、每条 ≥ 2 个真实证据 id、确有改动、SKILL.md 不能丢 frontmatter、和 8 周内被拒的太像就丢
-- [x] **回放**：分拣 → 新旧 prompt 各判一遍，比漏 / 多起草；起草 → 新旧各写一稿，expert 盲评（A/B 顺序按 hash 打乱）对照他实际发的。花费按 run id 前缀累计，到 `gate.yaml improve_budget_usd`（默认 $3）就停，改大会在管理群单独提醒
+- [x] **回放**：分拣 → 新旧 prompt 各判一遍，比漏 / 多起草；起草 → 新旧各写一稿，expert 盲评（A/B 顺序按 hash 打乱）对照我实际发的。花费按 run id 前缀累计，到 `gate.yaml improve_budget_usd`（默认 $3）就停，改大会在管理群单独提醒
 - [x] **一张卡**（approvals kind=proposal，72 小时）：问题、改动、证据、回放结果、逐行 diff、花费。批准 → 写文件 + 提交 agent-home + 14 天后回看；期间文件被改过的不覆盖（conflict）。拒绝 / 过期都记下；话题里回复 = 改一下（expert 按意见重写、重新回放，卡片 v+1），以「拒 / 不要 / 算了」开头算拒绝并记理由
 - [x] **两周回看**（每天 09:10）：按文件选体检指标，前后各 14 天对比 → kind=rollback 卡（回滚 / 保留，不理就保留）；回滚只在文件还是批准时那版时才自动做
 - [x] 顺手修：体检把 Triage 发出提醒后的 `notified` 也算进「提醒你」，「可能漏了」也不再把已提醒的当成没提醒
-- [x] `test/m7-smoke.ts` 离线 30 项全过；`--live` 一次真跑：从种子数据提了 1 条 tuning/triage.md（社交类 @我 只提醒不起草），回放多起草 1 → 0，$0.09。已部署，jobs.yaml 已提交
+- [x] `core/test/m7-smoke.ts` 离线 30 项全过；`--live` 一次真跑：从种子数据提了 1 条 tuning/triage.md（社交类 @我 只提醒不起草），回放多起草 1 → 0，$0.09。已部署，jobs.yaml 已提交
 - [ ] 没做：C 级（代码 PR 提案）、按角色换档位的提案、worker 返工信号、控制台的提案 / 回看页面
 
 ### 附2.8 M8 进度（2026-11-17）
@@ -180,8 +176,8 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] **导入**（`src/importer.ts`、`import/PROMPT.md`、`import/example.json`）：`sbot-import/1` 直接导；其他材料由 work 档分块整理（≤ 6 块，3 块并发）。预览显示哪些是新的、哪些并进已有的事 / 人；导入后管理群一句话；撤销按 `[src=import:<id>]` 找回去
 - [x] 工具：`matter_open` 可带 topic / keys，`matter_link`（L1）、`matter_events`（L0）、`event_update`（L1），都只给 owner；早报加「等你回 / 拍板」「按事」「可能该起局」三段；时间线多了「事件」
 - [x] 控制台：待办、生活 › 事 / 导入、它自己 › 信息源（§触5.2）
-- [x] `test/m8-smoke.ts` 离线全过（分拣、自动关、话头、信息源三种 kind + 插件密钥规则、导入预览 / 应用 / 合并 / 撤销）；`--live` 真跑分拣 3 个地方和一次原始材料导入，$0.05；m7 回归全过
-- [ ] 没做：微信侧的事件（等微信接入）；控制台里编辑 sources.yaml 之外的插件管理（插件只能主人在服务器上装）；我纠正事件级别 / 归属算不算 §进2 的信号（D 级，等我定）
+- [x] `core/test/m8-smoke.ts` 离线全过（分拣、自动关、话头、信息源三种 kind + 插件密钥规则、导入预览 / 应用 / 合并 / 撤销）；`--live` 真跑分拣 3 个地方和一次原始材料导入，$0.05；m7 回归全过
+- [ ] 没做：微信侧的事件（等微信接入）；控制台里编辑 sources.yaml 之外的插件管理（插件只能我在服务器上装）；我纠正事件级别 / 归属算不算 §进2 的信号（D 级，等我定）
 
 ### 附2.9 因缘进度（2026-11-18）
 
@@ -192,14 +188,14 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] **圈子**：带权标签传播；名字取大家最常在的群。**因缘**：初见（在哪、同场有谁、我在不在）、最近一次、每月往来
 - [x] **纠正**：改名、分圈子、隐藏、合并、拆开叫法、记关系 / 认 / 去掉；people.yaml 字节不变
 - [x] 工具 `person_lookup` / `person_path`（L0）、`person_relate`（L1，只能记推测），只给 owner；控制台 生活 › 人 / 因缘（§触5.2）
-- [x] `test/graph-smoke.ts` 离线全过（登记、各类边和可信度、self/ 不进图、圈子、初见、路径不经过我、借机观察、纠正、工具权限）
+- [x] `core/test/graph-smoke.ts` 离线全过（登记、各类边和可信度、self/ 不进图、圈子、初见、路径不经过我、借机观察、纠正、工具权限）
 - [ ] 没做：从对话里自动记关系；周复盘里的因缘段；增量构建（见「仍然未决」）
 
 ### 附2.10 注意力窗口进度（2026-11-18）
 
 - [x] `gate.yaml attention`（校验、热加载、按地方覆盖、缩短时醒目通知）；notify / draft 等窗口，escalate 默认不等（§读2.4）
 - [x] 「我回应了」一条规则，分拣前后说的话都算（§读2.5）；不用回的提醒按已读过滤、受每日上限约束，超出的进早报（§寸2）
-- [x] `test/attention-smoke.ts` 离线全过；m7、m8、triage-address 回归全过
+- [x] `core/test/attention-smoke.ts` 离线全过；m7、m8、triage-address 回归全过
 - [ ] 没做：飞书里在某条消息下新开话题回复时，那条消息记录上没有 thread_id，对不上，这种情况会多提醒一次
 
 ### 附2.11 飞书邮箱进度（2026-11-18）
@@ -209,7 +205,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] **读取**（`src/source-mail.ts`）：收件箱和已发送，只用三个读接口；基线、分页、去重、敏感主题跳过
 - [x] **判定和清洗**：`to_me` / `from_me`、一个邮件会话一个地方、去引用、去签名、截断
 - [x] **分拣围栏**：外面的文字写不出 `<untrusted>` 标记；群消息升级给主 agent 时也包着；信息源不升级，封顶到提醒
-- [x] `test/mail-smoke.ts` 离线全过（假 `lark-cli` 和虚构邮件）；m7、m8、graph、attention、triage-address 回归全过
+- [x] `core/test/mail-smoke.ts` 离线全过（假 `lark-cli` 和虚构邮件）；m7、m8、graph、attention、triage-address 回归全过
 - [ ] 没做：自定义文件夹；附件；邮件的「打开」链接
 
 ### 附2.12 主线与每日整理进度（2026-11-18）
@@ -217,15 +213,17 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [x] 主线 / 子事 / 合并、改动账本和撤销（§读3.1）；事件、keys、话头、页面、图谱跟着走
 - [x] Triage、早报、提醒、控制台按主线；导入按主线总结，预览给数量和提醒（§读2.6）
 - [x] 每日整理（§读3.2）：卡片、控制台、主 agent 工具三个入口，走同一套操作
-- [x] `test/matter-review-smoke.ts` 全过；m7、m8、mail、graph、attention、triage-address、console-web、m3c 回归全过；迁移在线上库的副本上演练过，副本已删
+- [x] `core/test/matter-review-smoke.ts` 全过；m7、m8、mail、graph、attention、triage-address、console-web、m3c 回归全过；迁移在线上库的副本上演练过，副本已删
 - [ ] 没做：卡片在真实飞书里的显示和点击，上线后第一张卡才验证得到
 
 ### 附2.13 seed 同步进度（2026-11-20）
 
 - [x] `memory.ts`：启动时按 `seed.state` 比对；没动过的换上（一个提交），它的规则等「更新 seed」，改过的只报一次；通知和上线通知合成一条（§底1.5）
-- [x] 线上实例先手动同步到 v0.24 的 SOUL、AGENTS 和两份方法（比对过都等于旧 seed，没有手改；主人授权），之后由这套机制接管
-- [x] `test/seed-smoke.ts` 全过
+- [x] 线上实例先手动同步到 v0.24 的 SOUL、AGENTS 和两份方法（比对过都等于旧 seed，没有手改；我授权），之后由这套机制接管
+- [x] `core/test/seed-smoke.ts` 全过
 - [ ] 没做：控制台里看哪些在等我点头；通知没理之后不再提醒
+
+> v0.26 七批的清单是按讨论日期记的需求，不是施工顺序。施工顺序、代码事实、验收都在技术设计里重排（2026-11-27 评审后我定：先修设计，再写技术架构设计，再开一个长程任务实现，可能整个重写）。下面留作需求清单，已知的错写在 §附2.21。
 
 ### 附2.14 触点第 1 批待实现（2026-11-22，§触1.1）
 - [ ] `gate.yaml` 加 `push`（默认值见 §触1.1）、schema、表单描述（§触5.6），放宽项进 `widening()`
@@ -239,13 +237,13 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 
 ### 附2.15 分寸第 2 批待实现（2026-11-23，§寸）
 - [ ] `self.yaml` 加 `measure`（§寸8）、schema；`selfConf()` 先读 `measure`，旧顶层键照认
-- [ ] 淡了的计时：`noticings` 里 agent 先提、他只附和且无新事实的，不重置（`life.ts` 淡了判断）
+- [ ] 淡了的计时：`noticings` 里 agent 先提、我只附和且无新事实的，不重置（`life.ts` 淡了判断）
 - [ ] dream prompt：情绪当下的自我否定不提炼进 USER.md
 - [ ] `self_items` 加 `side: drain | nourish`（耗、养），`life.ts` 渲染分组；`self_list` 可按 side 筛；切省心时翻 `ease_flip` 条认可的养
 - [ ] 驳回指纹：建议、前瞻条目、习气候选记驳回指纹，代码挡；出建议前 light 档比对最近驳回；新证据再提一次的标记
 - [ ] 沉降层：matters、话头、follow-up、readings、crosschecks 按 §寸4 判沉降，默认输入只取活跃层，检索不过滤，有新动静回活跃层
-- [ ] `VOICE.md`：seed 加文件，口吻默认值从 SOUL 挪过去；runner 在他在的会话加载、他人会话不带；dream 不可写
-- [ ] 口吻起头：首次私聊长聊或填完出生信息后，起一次 lens（口吻一面），拟稿等他点头；月度看法加口吻一面，月复盘末尾 ≤1 条口吻调整
+- [ ] `VOICE.md`：seed 加文件，口吻默认值从 SOUL 挪过去；`systemPrompt()`、`promptFiles()` 在我自己的会话（我亲手发消息的那一轮）加载，别人的会话不带；dream 不可写
+- [ ] 口吻起头：首次私聊长聊或填完出生信息后，起一次 lens（口吻一面），拟稿等我点头；月度看法加口吻一面，月复盘末尾 ≤1 条口吻调整
 
 ### 附2.16 读参改第 3 批待实现（2026-11-26）
 - [ ] runner：owner 会话每轮带 `self/practice.md`（截短）和本月、本周前瞻要点（§读1.2 早写了，代码没做）
@@ -253,7 +251,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] 关键时刻提功课：主 agent prompt 一行；“这类时候别提”存成偏好
 - [ ] `self_candidate`：推断的证据至少来自 `measure.infer_min_convs` 场不同对话
 - [ ] `self_items` 加“对不上”标记，引用时跳过；周、月复盘带上待问的；回答写成范围
-- [ ] `forget`：主 agent（他亲手那一轮）、控制台、dream 共用；archive + 90 天清；dream 删改比例和净增上限、没日期的行不删；绕开 forget 少掉的行放回；写失败保旧
+- [ ] `forget`：主 agent（我亲手那一轮）、控制台、dream 共用；archive + 90 天清；dream 删改比例和净增上限、没日期的行不删；绕开 forget 少掉的行放回；写失败保旧
 - [ ] “彻底删”：清 archive、journal 行、改写 agent-home 历史、处理含它的备份，私聊回报清了哪几处
 - [ ] 来源排除名单（群、人、邮箱），读取时代码卡住
 - [ ] `memory_patch` 逐条改、比对出处数；dream 和控制台的改动在下一轮消息前面带“记忆改了”
@@ -324,7 +322,63 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] spike（§触6.9 P1.5）：开着 FlClash 时 FCM 收得到、Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
 - [ ] P5：tailscale serve 和公网密码入口随旧控制台撤（`deploy/console-web/` 要手动收）
 
+### 附2.21 交给技术设计（2026-11-27 评审）
+
+评审（总报告 R/Y/IZ/IC 编号）里属于施工和代码事实的条目，在技术设计里落实；设计文件这次不改。
+
+- **R2 施工波次**：
+  - 每波写明前置、端到端验收、要手动跑的 `install.sh`、复用哪些模块、做完删哪条旧轨
+  - 漏排的前置：省心模式、`crosschecks`、`body_entries`、`matters.paused`、已读状态
+  - 第 4 批依赖第 7 批（中继、Noise、`devices`）
+  - P1.5 收成 4 项探针，挪到 P1 前面，每项写数字门槛和不过时的退路：Noise + Paseo relay；FlClash 下的 WSS 和 FCM；RN Web 进 Electron；Keystore 和 `safeStorage`
+  - 安卓 HTML 的 `localStorage`（IC-14）、Electron 私钥放钥匙串（DC-16）并进上面的探针
+- **R3 解开写死飞书**：
+  - 6 处：`main.ts:51`、`outbox.ts:48`、`timers.ts` 的 `ownerTurn()`、`dispatcher.ts:40–42`、`life.ts:25`、`dream.ts:32`
+  - `retry.ts`、`approvals.ts`、`sentinel.ts` 只往 `admin_chat` 发，一并解开
+  - `sbot-deploy` 改成比较 `git rev-parse "$sha:core"`，并记下检查过的 sha；改完手动跑 `deploy/core/install.sh`。这件事做完之前，不往 `main` 合 `clients/`
+- **R1 代码部分**：
+  - `dispatcher.ts:171` 的 `src` 一律是 `owner@`，改成按 `ownerTyped` 给
+  - `self_mark`、`reading_revisit` 只看来源前缀，改查 `ownerDirect`
+  - `memory_read` 的 `self/` 守卫只在飞书渠道、只盖了三个路径
+  - 工具守卫一律按 §底3.1 三列表来
+- **R7 代码事实**：
+  - 令牌无效回 401（`proxy.ts:135`），越档回 403
+  - 没有 `daily_limit` 这个键。真实的键：`models.yaml` 的 `budgets.daily_cost`、`budgets.run_output_tokens`，`gate.yaml` 的 `daily_budget_usd`、`expert_daily_limit`；写明旧键怎么兼容
+  - `budget_exhausted` 的联动：`dispatcher.ts` 194/196/236、`tasks.ts` 391/417、`commands.ts:57`
+  - 去掉 `MAX_CONCURRENT`；`MAX_WORKERS=1` 按 D2 去掉；`DEFAULT_BUDGET` 一起处理
+  - §附2.17 写的「他人自动回复」改成「M5 还没做，做的时候直接按新规则」
+  - 加载 `VOICE.md`、`practice.md` 要改的是 `dispatcher.ts` 的 `systemPrompt()` 和 `memory.ts` 的 `promptFiles()`，不是 `runner`
+  - 检索工具是 `memory_search`，它在 `wiki.ts` 有三处截断，都要报完整度
+  - 和待批提案卡去重时按 `target` 比（`improve.ts:269`）
+  - 主机模式的 `MemoryMax=6G` 留着
+- **Y2 协议细节**：
+  - `node/`、`relay/` 在仓库里放哪，能不能 import `core/protocol/`，归不归 `sbot-deploy` 管
+  - 一套帧格式；大载荷的拉取
+  - 中继的域名和 TLS，防人抢注册、防洪泛，多路复用
+  - `/pair` 唤起 App 用的 scheme
+  - 远端节点怎么调主的 MCP 工具
+  - `client_ops` 的清理规则
+- **Y5 表和列**：
+  - `self_items.side` 和旧行的默认值；「对不上」标记；`usage` 的来源列；`proposals` 的 `tier` 等列
+  - `proposals` 的默认状态：代码里是 `'proposed'`，§底5 写的是 `'pending'`
+  - 沉降层怎么算（`matters` 没有 `last_activity_at`）
+  - `jobs.yaml` 的 `check` 契约
+  - 来源排除名单放在哪个 yaml
+- **Y6**：§底5 按代码重写。
+- **Y8**：写一段量级估算，包括后台任务每天的花费、`requests` 留 7 天的大小、SQLite 一年涨多少。
+- **Y11 代码同步**：
+  - 改配置键时同步 `config-form-specs.ts` 和 `widening()`
+  - 打开 FCM 开关要走 `widening()`
+  - 表单里的 `min_days` 删掉
+  - 改 seed 里的 `jobs.yaml` 不会动线上配置
+  - 新加只读工具时同步 `READ_ONLY_TOOLS`
+- **IZ-10**：协议 schema 比对的 CI，等真有外面的旧版 App 再做。
+- **`core/src/main.ts:1`**：注释里引用了 §附3，跟着改。
+- **IC-11**：工具调用进行到一半时换模型怎么处理，做个探针。
+
 ## 附3 里程碑
+
+M0–M8 是历史里程碑，以后的施工顺序见技术设计。
 
 | | 内容 | 验收标准 |
 |---|---|---|
@@ -334,7 +388,7 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 | **M2 任务与事** | Task Engine + `sbot-w` 隔离 + 挂起式审批 + 工作台话题 + follow-up 定时器 + 三档路由 + matter（事）+ 起局（事实盘点、问发心、检查点，暂不带镜头） | 私聊派活 → 工作台开话题 → worker 申请 push → 卡片批准 → 推送成功；"周三提醒我"到点就提醒 |
 | **M3 记忆与控制台** | journal 来源标签 + **知识库**（raw 入 `sbot-raw`、ingest、`index.md` / `log.md`、`pages_fts` + `wiki_search`、好答案回收、visibility）+ 备份异地副本 + dream + 晨间 diff + schedule（早报）+ Sentinel + 先安静 + 控制台（状态、模型、群、记忆、用量）+ 复盘（事收、日、周）+ 前瞻（早报里的今日留意、周前瞻；只用事实、习气、节律，不带镜头）+ 时间线视图 + 随手记 + `self/` 档案 + 习气和节律候选 + guidance-notes + 风格笔记和范例库（§进2 A 级）+ 每周一张"办事体检"卡（只有指标，不出提案）+ `noticings` 记录和"送一程"（复盘顺序的调整后置到 M7） | 一周后 MEMORY.md 里有内容，而且都是我认可的；手机上能切群开关和模型；一件事收尾后，agent 先给事实初稿，再用几个问题引我说出当时的想法和感受；周日晚收到"回看本周 + 看下周"，下个周日它会把上周的建议拿出来问我 |
 | **M4 微信读** | Windows 边缘 + reader + owner 会话 + 微信群 Triage + 摘要 | 能在微信里跟它聊；每晚收到群摘要 |
-| **M5 微信写与他人** | sender（唯一备注 + 标题校验 + 发送确认）+ 他人会话（工具范围、硬上限、承诺检测）+ auto 规则 + 剩下的控制台页面 | 老婆问日程自动回；让它查资料整理表格时先弹审批卡；点"以后自动"后同类事情不再问我 |
+| **M5 微信写与他人** | sender（唯一备注 + 标题校验 + 发送确认）+ 他人会话（现在只留承诺检测，§底3.4）+ auto 规则 + 剩下的控制台页面 | 老婆问日程自动回；让它查资料整理表格时先弹审批卡；点"以后自动"后同类事情不再问我 |
 | **M6 镜头与月前瞻** | lens 角色 + 统一输出格式（含 horizon / period）+ 解读账本（看法先记下、到时回看、我说感受）+ lens-notes + 紫微接入（现有 skill，流月）+ 月复盘加月前瞻 + 季度心得过目；六爻 skill 单独做好后接入；八字后续。不依赖微信，可以提到 M4 之前做 | 起局时能起一卦，月初能看流月，看法自动记下；到了时间，在复盘里被拿出来回看；一个月后 lens-notes 和 guidance-notes 里有基于我回看感受的笔记，下个月的前瞻明显引用了它们 |
 | **M7 自我改进** | improve run（按信号量触发的体检，含 wiki lint 的重活）+ 陪伴信号 + 复盘顺序随熟练度调整+ 评测集自动攒 + 回放评测 + B 级提案卡 + 上线带版本 + 两周复查和一键回滚 | 一个月里至少有一条提案带着新旧对比被我批了；上线两周后卡片告诉我指标是变好还是变差；回滚一键生效 |
 | **M8 以事为轴** | 事件账本（kind × level × state，自动关）+ 话头和 matter keys + 信息源（飞书私聊、git、fetch、command 插件）+ 导入（格式、提示词、预览 / 应用 / 撤销）+ 控制台的事件、导入、信息源页（§读2） | 两个群加一个私聊在说同一件事 → 早报里它们在同一件事下面；要我回的那条，我在原处回了以后自己消失；从别的工具导出的总结一次导进来，事和人都在，撤销干净 |
@@ -343,10 +397,11 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - 撤回时中断正在跑的 run 之外的细节、`forkSession`（`/steer` 2026-11-26 提前，§附2.17）
 - `audience` 维度、仅 bot 群（`observe_p2p` 已由 v0.13 的 `feishu.dm` 取代）
 - 每人预算、大部分 expert 触发场景（大任务审计划、连续失败诊断）、按事项类型细分的 auto 规则
-- 模型预设方案、fallback 端点、多档 vision 降级链、控制台里的 8 项探针 UI（定时任务的检查脚本 2026-11-26 提前，§附2.17）
+- 模型预设方案、多档 vision 降级链、控制台里的 8 项探针 UI（定时任务的检查脚本 2026-11-26 提前，§附2.17）
+- fallback 端点：原列在后置，已经做了（`proxy.ts` 199–210）
 
 **砍掉**
-- 边缘指令签名（改用 Tailscale ACL + 连接令牌）
+- 边缘指令签名（现在走端到端加密的中继，§触6.7）
 - 由模型驱动的 heartbeat 和 HEARTBEAT.md（改成 Sentinel + follow-up）
 - `declare_work`（改成硬上限 + `request_approval(plan)`）
 - 工作量 S / M / L 三档（合并成自动 / 审批两档）

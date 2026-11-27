@@ -4,7 +4,7 @@
 |---|---|
 | 老婆和朋友私聊的回复策略 | 承诺检测通过就自动回，其余审批（§底3.4）；原来的数字上限 2026-11-26 去掉 |
 | 各档用什么模型 | 留好配置；2026-11-17 定四档：chat opus、work sonnet、light haiku、expert opus（§办2.1） |
-| 私人内容出现在工作飞书里 | 可以接受 |
+| 私人内容和工作飞书 | 私人内容（`self/`、命盘、出生信息、生活）不进工作飞书、群和工作台；我的飞书私聊和客户端可以（§读5.1、§触6.1）。原来写的「出现在工作飞书里可以接受」作废 |
 | harness | 干活交给节点上现成的 agent：Claude Code（Agent SDK）、Codex（app-server）、pi（RPC）走官方接口，别的走 ACP，客户端 acpx（2026-11-26，§办3.2）；lens 和迁完之前的 worker 用 Claude Agent SDK；对话角色用 pi（P0 对比后定）；我们的工具和闸门写成与 harness 无关的一层（§办1.1） |
 | 群里要不要自动回 | 按群开关，默认全部审批 |
 | 搜索 | 优先用模型自带的；兜底工具在 P0 准备好 |
@@ -36,12 +36,35 @@
 - 渠道插件：飞书抽成插件，接口另起一批（§触6.6）。
 - §读4 因缘的后续：dream / 分拣从对话里顺手记关系（推测，等我认）；周复盘里带一段因缘；AGENTS.md 里约定人物页互相用 `[[people/…]]` 链接（AGENTS.md 是我改的）；数据大了以后改成增量构建。
 
-## 附：参考
+### 否掉的方案
+一行一条，方案 → 为什么否，谁定的，日期。
+
+- 紧急推送要回执 → 安卓在后台时回执本身不可靠，FlClash 一断 FCM 也会静默丢；紧急类每次 FCM 和飞书一起发；我定，2026-11-27
+- VPS 默认并发 1～2、按内存准入 → 我没说过要限并发；每个 worker 自己的内存上限已经防住拖垮整机；我定，2026-11-27
+- 远端节点走主的 LLM 代理 → 要配一整套隧道；节点用自己的登录和额度；我定，2026-11-27
+- 收窄定时 run 的工具 → 定时和我亲手发拿到一样的工具，§读5.1 的禁区照旧；代价记进 §底3.8；我定，2026-11-27
+- 做网页端、复用 443 加 Web 代替自建中继和 App → App 不做网页端，端到端加密中继另做；我定，2026-11-27（第 6 批）
+- 砍范围 → 多 agent、主可移植、客户端都是我定的（第 4、6 批），先后在技术设计里排；2026-11-27 评审
+- 去掉 `sbot-h` 的 sudo → 完整 sudo 是我放开的（v0.14 worker 默认上宿主机，2026-11-18），残余风险写进 §底3.8；2026-11-27 评审
+- 三条主线合成一条 → thread 各自独立、状态共享是我定的（§触6.5，第 6 批）；2026-11-27 评审
+- 恢复配对确认码 → 我不要确认码；我定（第 7 批），2026-11-27 评审又提过
+- 一律开 worktree → 同一仓库已有任务在跑才开是我定的（§办3.4，第 6 批）；2026-11-27 评审
+- 通用两段式 run → 被 D4（不收窄定时 run 的工具）和 R1（来源标签）取代；2026-11-27 评审
+- 尾窗打码状态机 → 被 R6（按批在行或空白边界整段打码）取代；2026-11-27 评审
+- 新建执行账号 → 被 R5（复用 `sbot-w`，插件各自出网）取代；2026-11-27 评审
+- 自由 Markdown 页面加行级日期、出处语法 → 被 Y5（逐条存 SQLite）取代；2026-11-27 评审
+- Web 先、Tauri 壳 → 改成 App，不做网页端（v0.26 第 6 批）；我定，2026-11-27
+- 经 Expo 推安卓通知 → Expo 也转给 FCM，多一家还要交出 Firebase 密钥，直接发 FCM；我定，2026-11-27
+- 被拒的提案 8 周内不再提 → 不设期限，有新证据可再提一次（§进3.3）；我定，2026-11-26
+- 有待批的卡就不跑体检 → 照跑，新发现并进已有的卡（§进3.3）；我定，2026-11-26
+- 回放评测单独上限、到了就停 → 只记账告警（§办3.5 限5）；我定，2026-11-26
+
+## 附4 参考
 - T3 Code 远程访问（§触6.7 的设备配对参考）：github.com/pingdotgg/t3code，`docs/user/remote-access.md`
 - 六爻：zhouyi-qigua.pages.dev（之后单独做 skill 时以它为准）
 - **《Building always-on agents》**（claude.com，William Hu）：五件套（收件箱、定时器、记忆、权限、发件箱）；run 周期；定时器只往收件箱里投事件；"只存查不回来的东西"；凭证代理；defer 加卡片审批；先安静、再争取注意力。§底1、§办2.2、§底3.2、§读1、§底4、§寸2 都按这篇文章调整过。
 - Claude Agent SDK 文档：permissions（评估顺序、`dontAsk`、allowedTools 和 canUseTool 的关系）、hooks（`onFailure`、超时、`defer`、PostCompact）、TypeScript Options（`env`、`tools`、`settingSources`、`sandbox`）。
-- **pi**（badlogic/pi-mono → earendil-works/pi）：极简 agent harness，内置只有 read / write / edit / bash，没有 MCP 和权限系统；`createAgentSession` 可以嵌进 Node 进程；扩展事件 `tool_call`（可拦截）、`context`、`before_agent_start`、`session_before_compact`；会话是带分支的 JSONL；支持 Agent Skills；多厂商。§办1.1 的对话角色候选。
+- **pi**（badlogic/pi-mono → earendil-works/pi）：极简 agent harness，内置只有 read / write / edit / bash，没有 MCP 和权限系统；`createAgentSession` 可以嵌进 Node 进程；扩展事件 `tool_call`（可拦截）、`context`、`before_agent_start`、`session_before_compact`；会话是带分支的 JSONL；支持 Agent Skills；多厂商。§办1.1 的对话角色，已定用 pi（P0 对比后定）。
 - **LayerFS**（Ephemeral-AI-Lab/layerfs）：候选思路是 worker 每次写操作一个 checkpoint（影子分支），以及 dream 在分支上整理再合并；还没写进正文，也不引入依赖。
 - OpenClaw / NanoClaw / nanobot / Hermes Agent：见 v0.6 附录。OpenClaw 用 acpx 接外部 harness，`openclaw mcp serve` 把自己的工具给 Claude Code、Codex 用，是 §办3.2 反向开放的参考。
 - **ACP**（Agent Client Protocol）：JSON-RPC，agent 一般作为子进程走 stdio。`session/new`、`session/prompt`、`session/cancel`、`session/load`（可选）、`session/request_permission`；没有轮中插话。适配：`claude-agent-acp`、`codex-acp`、`pi-acp`。§办3。

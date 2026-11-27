@@ -1,0 +1,9 @@
+{
+  "name": "@sbot/protocol",
+  "private": true,
+  "type": "module",
+  "description": "Shared by hub, node and clients: frames, envelope, version, schemas (docs/tech/02). No runtime state.",
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

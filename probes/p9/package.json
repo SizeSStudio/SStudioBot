@@ -1,0 +1,11 @@
+{
+  "name": "sbot-probe-p9",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "scripts": { "test": "node --test p9.test.ts" },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.77.0",
+    "ws": "8.23.0"
+  }
+}

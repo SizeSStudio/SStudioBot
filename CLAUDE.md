@@ -1,6 +1,6 @@
 # SStudioBot：给在这个仓库里干活的 agent
 
-设计在 `docs/DESIGN.md`（索引和版本变更），正文按骨架分层拆在 `docs/design/`，进度和里程碑在 `docs/progress.md`；编号带层前缀（`DESIGN §触6.6` 这类，层见索引），旧的纯数字号（v0.26 之前）查 `docs/design/renumber-v026.md`。改行为之前先读对应章节；设计变了，在同一个 PR 里把对应文件和索引一起改。
+设计在 `docs/DESIGN.md`（索引和术语表；版本变更在 `docs/design/changelog.md`），正文按骨架分层拆在 `docs/design/`，进度和里程碑在 `docs/progress.md`；编号带层前缀（`DESIGN §触6.6` 这类，层见索引），旧的纯数字号（v0.26 之前）查 `docs/design/renumber-v026.md`。改行为之前先读对应章节；设计变了，在同一个 PR 里把对应文件、索引和变更记录一起改。
 
 ## 代码
 

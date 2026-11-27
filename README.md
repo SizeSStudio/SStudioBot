@@ -43,7 +43,7 @@ deploy/
   worker/       worker 沙箱：bwrap、AppArmor、iptables、sudoers
   lens/         只读的“镜头”插件（紫微、六爻）打包与安装
   backup-mac/   把每晚备份拉回本地 Mac 的 launchd 任务
-docs/DESIGN.md  设计文档索引和版本变更；正文按章节拆在 docs/design/
+docs/DESIGN.md  设计文档索引和术语表；正文按章节拆在 docs/design/，变更记录在 docs/design/changelog.md
 ```
 
 ## 运行要求

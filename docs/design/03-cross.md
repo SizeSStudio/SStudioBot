@@ -60,11 +60,13 @@
   - 说不清的挂成“有争议：A（出处、日期）对 B（出处、日期）”，有新证据才收，收时写明是哪条。
 - **如何越参越贴**：回看时以我的原话为准，不给镜头或互参打分。我说过"哪类事拿哪几面一起看最管用""哪种对照方式太绕"，由 dream 记进 `self/crosscheck-notes.md`（§进1）；互参提示词本身的改动属 B 级，提 proposal 经我批才变（§进2.3）。
 
-## 参3 Reflect 与 Lens（陪伴相关的两个角色，§参、§觉）
-- **reflect**（chat 档；月前瞻、月复盘和大事起局可以走 expert）：负责前瞻、起局、复盘和回溯，没有文件工具，只在 owner lane 里跑。
+## 参3 Reflect 与 Lens（陪伴相关的两件事，§参、§觉）
+- **reflect**：不是独立角色，是主 agent 换了个场景。复盘、前瞻、起局由 job 或事收往我的主对话 lane 放一个事件，附上代码整理好的事实和 `skills/` 里的方法，主 agent 在那场对话里做，我的回复接在同一个 session 里（`core/src/reflect.ts`）。档位：chat；月前瞻、月复盘和大事起局可以走 expert。
   - 读事实的工具：`timeline_query`（§读5.3）、messages、outbox、approvals（包括我改过的草稿和拒绝理由）、日历、matter 文件，以及 `self/` 里允许读的部分。
-  - 写的工具：`outlook_submit`、`matter_update`、`review_submit`、`followup_set`、`habit_propose` 和 `rhythm_propose`（都只能提候选）。
-- **lens**（受限 worker）：排盘要执行脚本，所以按 worker 的方式跑在 `sbot-w` 下，套 sandbox。
-  - **网络全关**：它手上可能有出生信息，不能有任何外传通道。
-  - 输入：需要生辰的方法才拿到 `config/self.yaml`（含换算好的 `chart_input`）和 `self/charts/` 的只读副本；都有对应镜头的 skill 和 `self/lens-notes/<lens>.md`。
-  - 输出：用 `submit_reading` 交回统一格式的结果（§参1）。
+  - 写的工具（按代码里的名字）：`outlook_submit`、`review_submit`、`followup_set`、`matter_note`、`self_candidate`（习气和节律都用它提候选，`kind` 分 `habit`/`rhythm`；只能提候选）。
+- **lens**：三件套。※ 不再依赖 Claude SDK 和 Linux 沙箱：只给只读工具就没有外传通道，全平台都能断网跑。
+  - **确定性脚本排盘**：八字、紫微、六爻的盘由脚本算，不让模型算。
+  - **pi 解读**：pi 拿盘面、`self/lens-notes/<lens>.md` 和镜头的 skill 写解读。
+  - **只读 `kb_read`**：唯一的工具，读 `self/charts/` 和 `lens-notes/`；没有 bash、没有文件写、没有网络。
+  - **断网**：它可能拿到出生信息，不能有任何外传通道。需要生辰的方法才拿到 `config/self.yaml`（含换算好的 `chart_input`）。
+  - 输出：用 `submit_reading` 交回统一格式的结果（§参1）。无特权的活复用 `sbot-w`（R5）。

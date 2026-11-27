@@ -44,7 +44,7 @@ docs/tech/           这套文件
   | `ws` 8.23.x | relay（hub、node 视 P1 结果） | 中继服务端；Node 自带的 WebSocket 只有客户端 |
   | `yaml` | hub | 配置（沿用） |
   | `@earendil-works/pi-coding-agent`、`pi-ai` | hub | 主 agent 嵌入（锁版本，升级先跑探针） |
-  | `@larksuiteoapi/node-sdk` 或 lark-cli | hub/channels/feishu | P9 定 |
+  | `@larksuiteoapi/node-sdk` 1.77.0 | hub/channels/feishu | bot 身份的长连接、卡片回调、发消息、CardKit（P9 暂定 ※，待测试应用实测确认；lark-cli 不进 lockfile，08） |
   | `age-encryption` | hub | 备份公钥加密（纯 TS） |
   | `@anthropic-ai/claude-agent-sdk`、`@agentclientprotocol/sdk` 或 `acpx` | node | 适配器（P5–P8 定版本） |
 - codex、pi、claude 的 CLI 是节点机器上已装的程序，不进 lockfile；节点 hello 时报版本（05）。

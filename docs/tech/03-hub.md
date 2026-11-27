@@ -124,7 +124,8 @@ interface ChannelPlugin {
 ```
 
 - 插件跑在主上（飞书：用主自己的登录），或跑在节点上（以后微信在 Windows 节点）：节点上的插件经 `/node/v1/channel/*`（02）和主往返：收到的走 `ingest` 上来，主要发的走 `send` 下去；主侧是一个代理插件 ※。主只看 `caps`。
-- 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；按 `event_id` 去重；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /tasks /approvals /todo /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。官方 Node SDK 还是 lark-cli，W0 的 P9 定。
+- 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；消息按 `message_id`、卡片回调按 `event_id` 去重（04）；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /tasks /approvals /todo /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。
+- 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。user 身份轮询、查已读和邮箱 ※ 先照旧走主机器上装的 lark-cli，W1e 开工前定。
 
 ## sources（SourcePlugin）
 

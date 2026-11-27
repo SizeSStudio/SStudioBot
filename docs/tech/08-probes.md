@@ -83,7 +83,22 @@
   - 网页上关异步路由后包能出、能跑。
 - 不过：协议或 CSP 的问题在 `protocol.handle` 里修；RN Web 整体跑不起来 → 回来找我（会改「一套界面」）。
 
-结果：
+结果（2026-11-28；代码在分支 `probe/p11` 的 `probes/p11/`，README 有每项的重跑方法）：
+
+- 环境：Mac（Apple M5，24 GB，macOS 27.0.1）；Electron 45.5.0（Chrome 156、Node 24）；Expo 58.1.0、expo-router 58.0.33、RN Web 0.21.4、Uniwind 1.14.0 + Tailwind 4.3.5。检查由 `desktop/probe.ts` 在真窗口里自动跑，结果写 JSON。
+
+| 项 | 门槛 | 结果 | 过 |
+|---|---|---|---|
+| 路由直达、刷新 | 不 404 | 18 条（六个 tab、`/self`、`/self/devices`、`/pair`、`/item/demo-ref`、`/item/v1.2`、`/probe/*`）直达、刷新都到原路由，0 个 404 | 过 |
+| 路径逃逸 | （07） | `..`、`%2e%2e`、`%2e%2e%2f`、`..%5c`、`/_expo/../../main.ts`、`%00` 共 6 条都 404；单测另查符号链接出根、别的 host | 过 |
+| CSP 报错 | 0 | 07 的 CSP 下 **0** | 过 |
+| 去掉 `style-src 'unsafe-inline'` | 能去就去 | **去不掉**，见下 | 记下原因 |
+| 冷启动到首屏 | ≤ 1.5 s | 起进程到首屏中位 **352 ms**（5 次 337–358）；主进程起来到首屏中位 242 ms。系统缓存是热的 | 过 |
+| 关异步路由 | 包能出、能跑 | `asyncRoutes: { web: false, default: false }`，产物里没有路由分块，上面各项都在这个包上测 | 过 |
+
+- `'unsafe-inline'` 去不掉的原因：RN Web 运行时建 `<style id="react-native-stylesheet">`，用 CSSOM `insertRule` 往里塞规则；没有 `'unsafe-inline'` 时 CSP 拦掉「Applying inline style」，规则数 −1，布局全坏（屏幕成 `display: block`、该竖排的横排）。Uniwind 也注入 `<style id="uniwind-dynamic-styles">`。`script-src` 保持 `'self'`，脚本不受影响。
+- Expo 默认模板在 `index.html` 里带一段内联 `<style>`（根节点重置）。换成自定义 `public/index.html`（不带内联样式），重置挪进 `global.css`；这和 `'unsafe-inline'` 无关，但以后哪天 RN Web 不再运行时注入，CSP 就能直接收紧。
+- 07 已改：CSP 那行写明原因；`public/index.html` 不带内联样式。
 
 ## P4 设备密钥
 
@@ -93,7 +108,22 @@
 - Electron：Mac 上 `safeStorage` 后端是钥匙串；Windows 上 DPAPI；重启、升级 App 后还在。故意让后端是 `basic_text`（Linux 无钥匙环环境）时拒绝配对。
 - 不过：Keystore Ed25519 不行 → 包裹路线（06 已写）；包裹也不行 → 回来找我。
 
-结果：
+结果（2026-11-28；Electron 部分，代码同 P3）：
+
+| 项 | 结果 | 过 |
+|---|---|---|
+| Mac 后端 | `keychain`；钥匙串里一条「SStudioBot P11 Safe Storage」；`device.key` 是 `v10` 开头的密文，权限 0600 | 过 |
+| 重启后还在 | 同一个 `userData` 重启，公钥相同，签名过 `@noble/curves` 验签 | 过 |
+| 升级后还在 | `version` 0.0.1 → 0.0.2 再启动，公钥相同 | 过 |
+| `basic_text` 拒绝 | 强制后端为 `basic_text`：生成密钥、配对都拒，不写任何文件 | 过 |
+| Ed25519 | `node:crypto` 生成，PKCS8 DER 加密后存；签名 = `sbot-auth/1` 或 `sbot-pair/1` ‖ 握手 hash ‖ challenge；`device_id = sha256(公钥)`；noble 验签过 | 过 |
+| 配对后 CSP 带中继 | 虚构配对链接（`relay.example`）配对后重载，CSP 多出 `connect-src wss://relay.example`；坏链接拒（报 `version`） | 过 |
+| 渲染进程拿不到密钥 | 渲染进程没有 `require`，`process` 只剩 `{env}`；bridge 只有 07 列的那几个函数 | 过 |
+| Windows DPAPI | **待测**（没有 Windows 机器） | 待测 |
+
+- Electron 45 把同步的 `safeStorage.isEncryptionAvailable` / `encryptString` / `decryptString` 标了废弃，换 `isAsyncEncryptionAvailable` / `encryptStringAsync` / `decryptStringAsync`（返回 Promise，解密结果另带 `shouldReEncrypt`）。探针用的同步版能用；W2 直接写异步版（07 已改）。
+- `getSelectedStorageBackend()` 只在 Linux 有意义（返回 `basic_text`、`gnome_libsecret`、`kwallet*`）；Mac、Windows 按平台判定（07 已改）。
+- 安卓：**待测**（Keystore 模块没写；手机到了按本节门槛测）。
 
 ## P5–P8 适配器
 
@@ -163,4 +193,52 @@
 
 §触6.9 P1.5 的余项一起过：扫码配对；切后台再回来能续（P2）；杀进程后密钥还在（P4）；agent 的 HTML 交给系统浏览器能开、页面里 localStorage 存得住；Health Connect 的包能读到（只测能读，功能默认关）；`@pierre/diffs` 运行时不去网上拉语法和主题。
 
-结果：
+结果（2026-11-28；代码同 P3）：
+
+- 桌面：同 P3 的 Mac 和 Electron。安卓：**模拟器**（pixel_7 配置、Android 15 / API 35 arm64，跑在同一台 Mac 上），release 包、Hermes、新架构，只装 arm64；下面安卓的数字都是模拟器的，手机 **真机待测**。
+- 自动化：桌面由 `desktop/probe.ts` 驱动（`webContents.debugger` 发 CDP 事件，读 DOM）；安卓用 deep link 打开检查页，结果从 logcat 的 `PROBE {json}` 读，点击用 `adb shell input`。
+
+| 检查 | 桌面 | 安卓（模拟器） | 过 |
+|---|---|---|---|
+| ① 明暗 | 色块 light ↔ dark 都对（背景 255 → 10，primary 23 ↔ 250） | 对（截图） | 过 |
+| ① hover | `hover:bg-accent` 255 → 245 | 触屏，不适用 | 过 |
+| ① 弹出层 | 按钮底 224.5、内容 y 230.5，左边都是 24（`sideOffset` 6）；暗色背景对 | 按钮底 229.0、内容 y 235.0，左边都是 24；暗色对 | 过 |
+| ② 帧率 | 中位 60，最大单帧 19 ms，p95 18 ms，> 100 ms 的 0 帧 | 中位 60，最大 27 ms，p95 21 ms，0 帧 | 过 |
+| ② 贴底 / 不拽回 | 离底始终 0；上翻后位置不变 | 同 | 过 |
+| ② 跨消息选字 | 一次选中 127 字，跨多条消息 | （门槛只要网页） | 过 |
+| ③ 外部请求 | 0（开 CSP）；关 CSP 只看渲染器也是 0，正对照被记录器看到 | 渲染过；抓包 **没能证明**，见下 | 桌面过，安卓待测 |
+| ④ 加粗 4 种 | 都加粗；跨行一度渲染成「跨 行」，修了，见下 | 同一套渲染器 | 过 |
+| ④ 行高 | 三种字体 clientH 24 = scrollH 24，行盒 26，不裁 | 三种字体都是 24（asc 19、desc 5） | 过 |
+| ④ 组字时回车 | CDP 模拟组字：组字中回车发出 0 条，上屏后回车发出 1 条 | 没自动化 | 桌面自动化过；Gboard、搜狗、macOS 拼音 **待测** |
+| ⑤ 400 行高亮 | 7 ms（首次 11） | 热 **85–109 ms**；冷启动后第一次 92–237 ms | 热的过；冷的首次超 |
+| ⑤ 2000 行 diff 文件列表 | 69 ms（`@pierre/diffs`） | **49–55 ms** | 过 |
+| ⑥ 包大小 | 首屏 5 个文件 6506 KiB / gzip **1204 KiB**；全部 346 个文件 14.3 MiB / gzip 2.9 MiB | APK（只 arm64）**36.7 MiB**（38 520 112 字节） | 只记 |
+
+- ③ 样本：07 的恶意样本集落成 `src/probe/evil.ts` 27 条（远程图片、`<img>`、`<script>`、iframe、CSS `url()`、`javascript:` / `vbscript:` / `data:` / `file:` 链接、超长 URL、链接文字和地址不一致等），域名都是 `evil.example`；同一套样本是 `app/test/render.test.ts` 的单测（每条：只出白名单节点、危险协议的链接 `ok: false`、树里没有能发请求的节点）。桌面 27 个链接都要先确认才开；`@pierre/diffs` 打开 diff 时 shiki 的分块从 `sbot-app://` 本地加载，没有 CDN。
+- ③ 安卓抓包：模拟器 `-tcpdump` 抓到的 DNS 里没有 `evil.example`，但正对照（模拟器里 `ping` 一个域名）也没出现，抓包文件运行中不落盘、连 Chrome 首次启动的流量都没有；Android 15 默认私有 DNS 走 853，明文 DNS 也看不到。所以这个 0 不算数。渲染器两端是同一份代码，原生上没有 `Image`、WebView，样本只能变成文字。真机用 mitm 代理或路由器抓包补，**待测**。
+- ⑤ 走「不过」一栏 ※：Hermes 上热的过、冷的首次超。另测到一处更要紧的：同一页放一个 400 行代码块，**整块一个 `<Text>`（几千个 span）时安卓 UI 线程卡 22–24 s**，改成每行一个 `<Text>` 后整页 0.72–0.78 s，不放代码块 0.05 s；字体串对结果没影响。选：
+  - 每行一个 `<Text>`（必须，07 已改）；
+  - 安卓折叠阈值 400 → 200 行，仍先显示前 80 行 ※（理由：按 400 行的数字折算，80 行高亮约 20 ms、渲染约 0.15 s，没单测；展开是用户自己点的；网页 7 ms，不改）；
+  - 没做分段高亮：热的已过，冷的首次是 Hermes 刚起来的开销，真机再测。
+- ④ 修的两处（07 已改）：
+  - 中文之间的软换行（源文本里的换行）RN 渲染成空格，「跨行加粗」成了「跨 行」。渲染器里两侧都是中文的软换行丢掉。
+  - 组字判断用 `isComposing || keyCode === 229`。不能 `{...e.nativeEvent}` 展开 DOM 事件：这些字段是原型上的 getter，展开后是 `undefined`，判断永远是「不在组字」。RN Web 自己的 `onSubmitEditing` 组字时也不触发。
+- ② 网页上 Legend List 都过，不换 `@tanstack/react-virtual`（07 已改）。
+- ⑥ 体积里最大的是 `@shikijs/langs` 3.6 MB（`@pierre/diffs` 带进来的全部语法）。lowlight 的入口顺带 import 了 highlight.js 全部语言（1.5 MB 源码），Metro 里把 `lowlight` 指到 `lib/index.js`，自己注册 16 种后 87 KB（07 已改）。W2 试把 `DiffView.web` 拆成按需加载。
+- 安卓另外踩到的（07 已改）：
+  - Android 15 强制 edge-to-edge，不留顶部安全区时标题压在状态栏下，顶部的按钮点不到。根布局用 `useSafeAreaInsets` 留出来；`react-native-safe-area-context` 的 `SafeAreaView` 是第三方组件，Uniwind 不映射它的 `className`，写了 `className="flex-1"` 会塌成 0 高、整屏空白。
+  - 状态栏图标颜色跟应用的主题（`expo-status-bar` 按 Uniwind 主题设），不跟系统。
+
+§触6.9 P1.5 余项：
+
+| 项 | 结果 |
+|---|---|
+| 扫码配对 | 配对链接的解析和校验有单测（只收 `wss`、主机名字符、32 字节公钥和密钥、角色、过期）；桌面经链接配对过（P4）。扫码 **真机待测** |
+| 切后台再回来能续（P2） | **真机待测** |
+| 杀进程后密钥还在（P4） | 桌面过；安卓 **待测** |
+| agent 的 HTML 交给系统浏览器 | 桌面：写 `<temp>/sbot-html/<sha>.html`，`shell.openPath` 打开系统浏览器；localStorage 两次打开计数 1 → 2。安卓（模拟器）：App 缓存目录 + `FileProvider` 的 `content://` 地址 + `ACTION_VIEW`，Chrome 打开，计数 1 → 2。系统选择框里还有一个「HTML Viewer」（系统自带，只能看），W2 优先交给默认浏览器 |
+| Health Connect 能读 | **真机待测**（模拟器没装数据，没测） |
+| `@pierre/diffs` 不上网拉语法和主题 | 过（见 ③） |
+
+- 回来找我：没有触发。※ 的只有 ⑤ 的安卓折叠阈值。
+- 单测 46 条全过：`node --test`，跑 `probes/p11` 下的 `npm test`。

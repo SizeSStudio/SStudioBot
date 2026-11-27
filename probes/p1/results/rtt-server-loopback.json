@@ -1,0 +1,17 @@
+{
+ "n": 300,
+ "relay_ms": {
+  "median": 2.15,
+  "p90": 3.48
+ },
+ "direct_ms": {
+  "median": 0.97,
+  "p90": 1.96
+ },
+ "extra_median_ms": 1.18,
+ "extra_paired_median_ms": 1.1,
+ "connect_ms": {
+  "relay": 301.26,
+  "direct": 54.04
+ }
+}

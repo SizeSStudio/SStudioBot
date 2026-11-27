@@ -1,0 +1,27 @@
+{
+ "tamper_up": {
+  "pass": 10,
+  "of": 10,
+  "failures": []
+ },
+ "tamper_down": {
+  "pass": 10,
+  "of": 10,
+  "failures": []
+ },
+ "wrong_hub_key": {
+  "pass": 10,
+  "of": 10,
+  "failures": []
+ },
+ "replay_auth_plain": {
+  "pass": 10,
+  "of": 10,
+  "failures": []
+ },
+ "replay_auth_cipher": {
+  "pass": 10,
+  "of": 10,
+  "failures": []
+ }
+}

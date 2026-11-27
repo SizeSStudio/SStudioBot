@@ -1,0 +1,14 @@
+{
+ "handshake_device_ms": {
+  "median": 1.38,
+  "max": 1.47
+ },
+ "frame64k_seal_open_ms": {
+  "median": 0.4,
+  "max": 0.43
+ },
+ "throughput_MBps": {
+  "seal_and_open": 164.42,
+  "open_only": 331.5
+ }
+}

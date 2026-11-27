@@ -1,0 +1,22 @@
+{
+ "devices": 20,
+ "rate_per_device": 10,
+ "seconds": 120,
+ "events_received": 23963,
+ "expected_events": 24000,
+ "hub_eld_ms": {
+  "p50": 1.086463,
+  "p99": 2.531327,
+  "max": 17.104895
+ },
+ "hub_rss_mb": 101.8,
+ "hub_rss_increase_mb": 6.9,
+ "relay_rss_mb": {
+  "before": 89,
+  "max": 94.3
+ },
+ "event_lag_ms": {
+  "p50": 1,
+  "p99": 3
+ }
+}

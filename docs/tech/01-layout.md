@@ -6,7 +6,8 @@
 protocol/            三端共用（主、节点、客户端），没有运行时状态
   envelope.ts        中继唯一看得懂的部分（06）
   frames.ts          通道里的应用帧（02）
-  noise/             Noise_NK_25519_ChaChaPoly_SHA256（02）
+  noise/             Noise_NK_25519_ChaChaPoly_SHA256（02）；node-crypto.ts 只给主和节点，客户端不 import
+  fragment.ts        应用帧分片（不依赖 zod，noise 和客户端都用）
   api/               /api/v1 的实体和路由，zod schema
   node/              主 ↔ 节点的指令和回报，zod schema
   version.ts         PROTOCOL = { current, min }

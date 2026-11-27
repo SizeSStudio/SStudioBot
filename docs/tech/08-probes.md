@@ -120,7 +120,52 @@
   - 依赖：官方 SDK 的依赖树里有没有 install 脚本、有多大。
 - 选：两边都过选依赖少、不起子进程的那个；只有一边过就选它；都不过 → 回来找我。
 
-结果：
+结果（2026-11-28；**没有测试应用，只做了依赖审计、读源码和测试架子，真测都在最后一条「等测试应用」**；代码在分支 `probe/p9` 的 `probes/p9/`，README 有跑法）：
+
+- **暂定官方 SDK（`@larksuiteoapi/node-sdk` 1.77.0，精确锁）※ 待测试应用实测确认**。纸面上点击和 CardKit 两项它过，依赖里没有原生模块，不起子进程；lark-cli 的 CardKit 一项按旧耗时推算不过，确认又发在落库之前，不合 03 的「写 `inbox`、提交、确认」。按纸面结果套 08 的规则（只有一边过就选它）。用法有几条必须照做，见下。
+- ※ **要我拍板**：断网一项，卡片回调飞书不重投，两个后端都补不回来。这里把回调单列（断线期间的点击算丢，卡片还在、恢复后再点）；如果「期间的事件」要含点击，就是两边都不过，按 08 回来找我。
+- **范围**：这个选择只管 bot 身份的收事件、卡片回调、发消息、CardKit。user 身份轮询群（§读2.2）、查已读、飞书邮箱，旧代码靠 lark-cli 的 user 登录（`--as user`），P9 没测。※ 这部分先照旧用主机器上装的 lark-cli（已装程序，不进 lockfile）；SDK 能带 user token 调接口（`withUserAccessToken`），但授权和续期要自己做，换不换在 W1e 开工前定。
+
+依赖（`npm install --ignore-scripts`，临时目录；SDK 在 Node 24.22.3 和 25.8.1 下都能被 `.ts` 具名导入）：
+
+| | `@larksuiteoapi/node-sdk` 1.77.0 | `@larksuite/cli` 1.0.100 |
+|---|---|---|
+| 包数 | 52 个（直接依赖 qs、ws、axios、protobufjs、lodash.merge/pickby/identity） | 7 个（npm 壳，经 `@clack/prompts`）；干活的是 Go 二进制 |
+| 大小 | 40.2 MB、830 个文件；SDK 自己 30.3，protobufjs 3.1，`@types/node` 2.6，axios 2.2，qs 0.5，ws 0.15（MB） | 壳 0.33 MB；二进制压缩包 14.3 MB（darwin-arm64）、14.7 MB（linux-amd64）；本机装的 1.0.98 二进制 47.7 MB |
+| install 脚本 | 整棵树只有 protobufjs 一处 `postinstall`（只打印版本号方案的警告，跳过无影响）；axios 清单里的 `prepare: husky` 从 registry 装不会跑。没有原生模块、`binding.gyp`。**`--ignore-scripts` 下装得完整**，符合 01 的收录条件 | `postinstall` 下载 Go 二进制（GitHub，失败走镜像）并校验 SHA-256。`--ignore-scripts` 下没有二进制，首次运行才由 `run.js` 补下载 |
+| 其他 | `npm audit` 0；许可 MIT 40、BSD-3 11、Apache-2.0 1；CJS 入口；导入约 47 ms，RSS 94 MB（空进程 45 MB）；带的 ws 是 8.23.0（01 给 relay 定的是 8.23.x） | MIT；本机 1.0.98：`--version`、`api --dry-run` 中位 10 ms（npm 壳 57 ms），`--version` 的 RSS 33 MB。真调接口旧代码记录从 SG 每次约 3 s（每个进程新 TLS + 取令牌） |
+
+纸面对照门槛：
+
+| 门槛 | SDK | lark-cli |
+|---|---|---|
+| 点击 50 次：3 秒内确认、有 `operator_id`、更新成功 | 纸面过：确认在处理函数返回之后，处理函数只落库；`operator.open_id` 在；更新走 PATCH / CardKit | 确认在交给我们之前就发了，3 秒不由我们控制，我们这头也量不到；`operator_id` 在；每次更新起一个进程 |
+| 断网 30 秒：重连、去重后不丢不重 | 事件：自动重连 + 飞书重投 + 去重 + 补漏，纸面能过（有条件，见下）。回调：**丢** | 飞书侧一样，回调同样丢；另外确认先于落库，进程在中间崩掉的那条丢，没有消费者时的事件确认后丢 |
+| CardKit 每秒 2 次、2 分钟 | 纸面过：进程内调用，复用连接 | **推算不过**：`sequence` 要严格递增，只能串行，每次约 3 s 就是约 0.3 次/秒；旧代码因此绕开它直连 CardKit（`feishu-api.ts`） |
+
+用法和风险（读 SDK 1.77.0 和 lark-cli 源码、飞书官方文档）：
+
+- **确认和响应**：`WSClient` 等处理函数 resolve 之后才回 `{code:200, data}`，抛错回 500；处理函数的返回值就是卡片回调响应（toast 等）。所以 3 秒预算在我们的处理函数里，03 的「只写 inbox、提交、确认」够用。要用低层 `WSClient` + `EventDispatcher`，不用高层 `LarkChannel`（它对卡片回调不带响应体，去重键是 `messageId:openId:actionId`）。
+- **载荷**：SDK 把 `header` 和 `event` 拍平，处理函数拿到 `event_id`、`operator{open_id, union_id, user_id}`、`action.value`、`token`（延迟更新令牌，30 分钟内可用 2 次）、`context.open_message_id` 和 `open_chat_id`。`user_id` 要另开权限，用 `open_id` 校验 owner。SDK 只处理 `event` 类型的帧，`card` 类型的忽略；推断卡片回调以 `event` 帧到达，待实测确认。
+- **每种订阅的类型都要注册处理函数**：没注册的事件照样回 200 然后丢，没有任何提示（测试架子里有这一条）。
+- **重连**：SDK 向 `/callback/ws/endpoint` 取连接地址和 `ClientConfig`；连接关了就自动重连：第一次等 `0..ReconnectNonce` 秒的随机数，之后每 `ReconnectInterval` 秒一次，次数默认不限；SDK 默认值 nonce 30 s、interval 120 s、ping 120 s，服务端下发的覆盖它。所以断 30 秒后最坏可能要 `nonce + interval`（默认约 150 s）才连回，要看服务端实际下发的值。**半开的链路默认发现不了**：要设 `wsConfig.pingTimeout`（默认关）和 `handshakeTimeoutMs`，否则 TCP 悄悄死了不会触发重连；架子里测过 stall 能被看门狗发现。`onError`（取不到地址、重连次数用尽）要接，不然永久断了没人知道。
+- **去重和补漏**：`WSClient` 自己不去重。事件处理失败时飞书按 15 秒、5 分钟、1 小时、6 小时重投（最多 4 次），**回调不重投**；断线期间推的事件是否同样重投，待实测。按 04 的表：消息按 `message_id` 进 `inbox` 的 UNIQUE（lark-cli 的字段说明也建议用它），卡片回调按 `event_id`。重连后用会话历史补漏——旧 `catchUp()` 只补我和 bot 的私聊，新插件要定补哪些会话。
+- **长连接限制**（官方文档）：只支持自建应用；每个应用最多 50 条，事件随机发给其中一条（所以新旧两边不能同时吃一个应用，09）。
+- **日志泄露密钥**：`TokenManager` 取令牌失败时 `logger.error(e)` 打整个 `AxiosError`，其中 `config.data` 是含 `app_secret` 的请求体；`Client.request` 失败也打原始错误（含 Bearer 令牌的请求头）。这违反「密钥只写不读、不进日志」，必须传自己的 `logger`（只留名字、消息、HTTP 状态、API 码并过打码）。架子里有一条对照：同样的失败，SDK 默认日志里能找到 secret，我们的找不到。升级 SDK 要重跑这两条。
+- **CardKit 限频（官方文档）**：流式卡片内容更新接口 1000 次/分、50 次/秒（页面没写按应用还是按卡片），单张卡实体另限 10 次/秒（流式模式下不计）；每秒 2 次是 120 次/分，单张卡有余量，若 1000 次/分按应用计，同时流式的卡超过 8 张就超；流式模式每 10 分钟自动关；流式开着时点击不能更新卡片，要先关流式。消息更新（PATCH）5 次/秒/条，卡片 14 天内可改，需要 `update_multi`；限频错误是 HTTP 429 或 99991400。
+- **lark-cli 事件模式**：一个 EventKey 一个 `event consume` 进程，背后一个脱机的 bus 守护进程（最后一个消费者走后 30 秒退出）；Go SDK 收到事件后立刻确认，再经 bus 分给消费者，bus 内存去重（5 分钟、1 万条）、每个消费者 100 条缓冲、满了丢最旧的；没有消费者的事件确认后就没了。没有 CardKit 子命令，只能用 `api`。本机没有 bus 而应用已有别的长连接时（`online_instance_cnt > 0`）拒绝启动。
+- 来源（open.feishu.cn/document/ 下）：`server-docs/event-subscription-guide/overview`、`event-subscription-guide/callback-subscription/callback-overview`、`feishu-cards/card-callback-communication`、`cardkit-v1/streaming-updates-openapi-overview`、`cardkit-v1/card-element/content`、`server-docs/im-v1/message-card/patch`、`server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case`（长连接）、`server-docs/api-call-guide/frequency-control`。
+
+测试架子（`npm test`，24 项，Node 24.22.3 和 25.8.1 都过，没连飞书）：手写 pbbp2 的假长连接服务器 + 假 lark-cli，验证确认在处理函数之后、响应体带回、500、分片、重连后重投被去重、stall 被看门狗发现、令牌失败日志无密钥、50 次点击的统计、限流被报出、断网对账能算出漏掉的消息、lark-cli 子进程的 HOME 隔离。这些只证明架子和 SDK 的这几条行为在本地对，**不替代真测**。
+
+**等你准备（飞书测试应用）**——有应用后在 `probes/p9/` 照 README 跑，结果补进这里：
+
+1. `clicks` 两个后端各一遍（我点 50 次）：确认耗时、`operator_id`、更新成功数、读回。
+2. `netcut` 两个后端、`reset` 和 `stall` 各一遍，断 30 秒、等 6 分钟以上：重连用了多久（取决于服务端下发的 `ReconnectInterval`）、消息漏几条（断线期间的事件重不重投）、重投带来几次重复、点击缺几次、断线时点按钮飞书里显示什么；lark-cli 要先看 `pass.through_proxy`（它的 WebSocket 认不认 `HTTPS_PROXY`，没验证过）。
+3. `stream` 两个后端各一遍：2 次/秒 2 分钟有没有 429、lark-cli 实际每秒几次。
+4. 卡片回调是不是以 `event` 帧到达 SDK 的、载荷字段和上面一致；服务端实际下发的 `PingInterval`、`ReconnectInterval`、`ReconnectNonce`。
+5. CardKit 的 1000 次/分到底按应用还是按卡片计。
+6. user 身份读群和邮箱能不能不靠 lark-cli（不在 P9 的门槛里，W1e 开工前定）。
 
 ## P10 换模型时有未完的工具调用（IC-11）
 

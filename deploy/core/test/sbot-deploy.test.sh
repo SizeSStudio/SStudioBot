@@ -25,7 +25,7 @@ printf '#!/bin/bash\nmkdir -p node_modules\n' > "$S/npm"
 printf '#!/bin/bash\nexit 0\n' > "$S/sleep"
 chmod +x "$S"/*
 
-g() { git -C "$T/repo" -c user.name=t -c user.email=t@example.invalid "$@"; }
+g() { git -C "$T/repo" -c user.name=t -c user.email=t "$@"; }
 commit() { g add -A; g commit -q -m "$1"; g rev-parse HEAD; }
 deploy() { bash "$here/../sbot-deploy" "$@" | tee -a "$T/out"; }
 restarts() { wc -l < "$STUB/restarts" | tr -d ' '; }

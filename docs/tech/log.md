@@ -4,13 +4,17 @@
 
 ## 断点
 
-- 当前：W0 ② 探针：P10（#37）、P1（#38）已合；P5–P8、P3/P4e/P11、P9 子线程在跑。W1a 已合（#35）；W1b 本 PR；W1c 子线程在做（分支 `w1c-hub-base`）。
+- 当前：W0 ② 探针：P10（#37）、P1（#38）、P9（#40，纸面，真测等测试应用）已合；P5–P8、P3/P4e/P11 子线程在跑。W1a（#35）、W1b（#39）已合；W1c 子线程在做（分支 `w1c-hub-base`）。
 - 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度），11-28 在各自线程里续上，worktree 里的半成品都在。
 - 下一步：探针 PR、W1c PR 逐个审、合。W1d 等 W1c（P10 已定：换模型等工具结果回来），W1e 等 P9 和 W1c。P2、P4 安卓真机项等手机。
 - 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
 
 ## 等你过目
 
+- 飞书后端暂定官方 SDK `@larksuiteoapi/node-sdk` 1.77.0（P9 ※，纸面；lark-cli 的 CardKit 按每次约 3 s 推算过不了）。有测试应用后照 08 P9 的清单真测，不过再换。
+- 断网期间的卡片点击算丢（P9 ※，08）：飞书不重投回调，两个后端都一样；卡片还在，恢复后再点，审批也能在客户端批。
+- user 身份读群、查已读、飞书邮箱先照旧用主机器上的 lark-cli（P9 ※，03），W1e 开工前再看能不能换 SDK。
+- SDK 默认日志会带出 `app_secret` 和令牌（P9 读源码发现）：飞书插件必须传自己的打码 logger，升级 SDK 要重跑那两条测试。
 - 主和节点的 Noise 加密用 `node:crypto`（OpenSSL）而不是 noble（P1 定的 ※，02）：同一接口，快 5 倍，两个后端字节一致、互通。想全用 noble 说一声，改一行 `useCrypto`。
 - 旧库只有约 11 天的消息；按实测，W6 全量重读的模型花费约 18 美元（30 美元的默认上限以内，04 §13）。正式 `import plan` 超 30 美元时我会停下来问。
 
@@ -32,7 +36,7 @@
 | ① `sbot-deploy` 按树 hash | 已合、已装 | #32。服务器上 `install.sh` 跑完：合并 #32 那次记了 `unchanged`，核心 PID 没变 |
 | 验收：只改 `docs/` 的合并不重启 | 过 | #33 合并后 timer 记 `4f6cef6 unchanged`，核心 PID、启动时间没变 |
 | 验收：只改 `core/` 的合并照常上线 | 过（测试） | `deploy/core/test/sbot-deploy.test.sh` 的「core change goes live」「broken core rolls back」；`core/` 冻结，不为验收造真改动 |
-| ② 探针 | 进行中（P10 #37、P1 #38 已合） | 子线程：P1（Opus，分支 `probe/p1`）、P5–P8（Sonnet，`probe/p5-p8`）、P3 + P4 桌面 + P11（Opus，`probe/p11`）、P10（Sonnet，`probe/p10`）、P9（Sonnet，`probe/p9`，没有测试应用，只做静态部分和测试架子）；P2、P4 安卓等手机 |
+| ② 探针 | 进行中（P10 #37、P1 #38、P9 #40 已合） | 子线程：P1（Opus，分支 `probe/p1`）、P5–P8（Sonnet，`probe/p5-p8`）、P3 + P4 桌面 + P11（Opus，`probe/p11`）、P10（Sonnet，`probe/p10`）、P9（Sonnet，`probe/p9`，没有测试应用，只做静态部分和测试架子）；P2、P4 安卓等手机 |
 | ③ 旧库实测 W0-1…6 | 完成 | 04 §13「W0 实测结果」 |
 | ④ 旧库清点（W6 基线） | 完成 | 服务器 `/srv/data/sbot/rebuild/w0/w0-baseline.json`；仓库只记聚合数（04 §13）。脚本在 `probe/w0-db` |
 
@@ -43,8 +47,8 @@
 | 块 | 内容 | 谁写 | 状态 |
 |---|---|---|---|
 | W1a 骨架 | 根 workspace、tsconfig、`protocol/` 的 frames（含分片）、envelope、version、第一批 schema 和登记表；`import-check`、`protocol-check`；CI 的 server、protocol 步骤；`CLAUDE.md` 依赖方向 | 我 | 已合 #35 |
-| W1b Noise | 从 `probe/p1` 搬 `protocol/noise/`，过 cacophony 向量 | 我（照搬 + 逐行审） | 本 PR |
+| W1b Noise | 从 `probe/p1` 搬 `protocol/noise/`，过 cacophony 向量 | 我（照搬 + 逐行审） | 已合 #39 |
 | W1c 主的基座 | config（zod、`widening()`、表单描述、唯一写路径、`config_changes`、seed 同步）、db（04 全部表、`change_log` 触发器、清理）、cli 骨架、backup + restore、`hub/test/test-home.sh` | 子线程（Opus），我审 | 进行中，分支 `w1c-hub-base` |
 | W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 我写或逐行审（闸门、审批、代理、守卫） | 等 W1c（P10 已定） |
-| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程，我审 | 等 P9 |
+| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程，我审 | 等 W1c（P9 已定，纸面） |
 | W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 我 | |

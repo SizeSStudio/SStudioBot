@@ -67,7 +67,7 @@
 - `onItem` 转发 pi 的 `message_update`、`tool_execution_start/end`，先打码再写 `run_items`、推 delta（§触6.4）；回调出错只记日志，不影响 run。
 - **提示词**（R7）：`promptFiles()` 加载 `AGENTS.md`、`SOUL.md`、`USER.md`、`MEMORY.md`，以及只在我亲手发的那一轮加载的 `VOICE.md`、`self/practice.md`（截短）和本月、本周前瞻要点（§附2.15、§附2.16）。拼装顺序在 `systemPrompt()` 一处定。超了各自上限截断并在提示里说「超了」，不静默。召回片段和「记忆改了」放 user 消息，不进 system。
 - **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。
-- **换模型**（§办2.4）：发之前剥掉历史里旧模型的 thinking 块。最后一条 assistant 有 `tool_use` 还没结果时怎么办，W0 的 P10 定（IC-11）；探针前的默认：等这轮工具结果回来再换。
+- **换模型**（§办2.4）：发之前剥掉历史里旧模型的 thinking 块。最后一条 assistant 有 `tool_use` 还没结果时：等这轮工具结果回来再换（P10 定了，IC-11；立刻换并补「已取消」会让调用重跑、真结果丢掉）。跨家换时把历史里的调用 id 改成目标家的形状，W1 验（08 P10）。
 
 ## tools
 

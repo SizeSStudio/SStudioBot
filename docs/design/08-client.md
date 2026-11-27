@@ -86,7 +86,7 @@ clients/               npm workspace，自己的 lockfile
 - **同类**（《Agent 工作台产品设计与系统架构调研》，§附1 参考）：四款 TypeScript 产品都是 Electron 桌面加 Expo / RN 手机。Paseo 一个人维护，手机和 Web 用 Expo、桌面 Electron，一套界面，和我们最像；Orca、T3 Code、Cindy 是桌面 React、手机 RN 两套界面。
 - **好处**：手机上的长列表、手势、相机、Health Connect、以后的系统通知（D15）都走原生。
 - **代价**：markdown、diff、代码块要用 RN 控件渲染，Web 生态的现成组件大多用不上（Paseo 为此 fork 了一个 markdown 渲染包）。渲染包要能关掉原始 HTML 和远程图片（不可信内容，§触6.8）。具体用哪些组件，动手时再一起挑。
-- **不用 Expo 的云服务**：构建和更新见 §触6.2。推送也不经 Expo 的推送服务和 FCM（Paseo 把标题和正文明文发给 Expo，再经 FCM 到手机）；手机的系统通知见下面。
+- **不用 Expo 的云服务**：构建和更新见 §触6.2。推送直接发 FCM，不经 Expo 的推送服务（Paseo 是先发给 Expo，Expo 再转 FCM）；见下面的系统通知。
 - **传输**：WebSocket 上的加密通道（§触6.4、§触6.7）。RN 和 Electron 都自带 WebSocket，不用 `expo/fetch`；Noise 在 Hermes 上的速度 spike 里实测（§触6.9）。
 - **Electron**：`contextIsolation`、`sandbox` 开，`nodeIntegration` 关；只加载包里的文件；origin 用固定的自定义协议，第一次发版前定死（换了 origin，存着的设备密钥就没了）；严格 CSP；外链交给系统浏览器，先确认。
 - 依赖从少开始：Expo、React Native、RN Web、虚拟列表、markdown 解析。状态用手写的 store 加 `useSyncExternalStore`。每加一个依赖都是供应链风险（§触6.8）。
@@ -96,10 +96,12 @@ clients/               npm workspace，自己的 lockfile
 
 **agent 做的 HTML**（图表、问卷、原型，2026-11-27 我定，D14）：是一个文件，对话里显示一行，点了交给系统浏览器开，不在 App 里渲染（T3 Code 那样内嵌在回答里，框里填的东西容易丢）。桌面直接开；安卓上 App 先存下，再交给浏览器。
 
-**系统通知**（2026-11-27，D15）：App 在后台挂着那条加密通道，用安卓的前台服务保活，通知在本机弹（同 Home Assistant 的 Local Push）。内容端到端加密，不经 Expo、Google 或厂商的推送服务；没有谷歌服务的手机也能收，FlClash 开着也行。
-- 推什么、什么时候推照 §触1.1，只是推到哪变了：手机 10 秒内回执了就不推飞书；没回执（后台连接被系统杀了、没网）照旧推飞书。Electron 开着、在后台时一样弹。
-- 前台服务要常驻一条通知，那个通知渠道在系统里能调到最低。后台连接在 App 设置里能关，关了就全走飞书。锁屏上显示多少照手机系统设置。
-- 后台的心跳间隔和一晚的耗电在 spike 里实测；耗电不行再看 UnifiedPush 加自建 ntfy（只推信号）。
+**系统通知**（2026-11-27，D15）：直接发 FCM，不经 Expo 的推送服务。我说复用 Expo 或 FCM 都行；Expo 在安卓上也是转给 FCM，多一家看得到内容，还要把 Firebase 的服务账号密钥交给它。两家都免费。
+- 客户端用 `expo-notifications` 的 `getDevicePushTokenAsync()` 拿 FCM 令牌，经通道交给主，存在 `devices.push_token`；删设备连令牌一起删。主用 FCM HTTP v1 发，服务账号密钥只在主上，按 `secrets.env` 对待。`google-services.json` 是实例数据，放 `~/.config/sbot/`，构建时带进去，不进仓库。
+- 推什么、什么时候推照 §触1.1，只是推到哪变了：手机有令牌、FCM 收下了，就不推飞书；没令牌（手机没有谷歌服务）或 FCM 报令牌失效，照旧推飞书。App 设置里能关手机通知，关了全走飞书。Electron 开着、在后台时经通道弹本机通知。
+- 内容：标题加一行，和推飞书的那一行一样，点了进 App 的那一条。`personal`（主对话、`self/`、命盘、身体）只说「有一条私人的」，内容不交给 Google（按 §读5.1 的底线套的，不想要就否）。安卓通知渠道按类别分（等我回、审批、任务、知道就好），声音和锁屏在系统设置里调。
+- 前提：手机有谷歌服务，FlClash 让 FCM 的长连接走代理；spike 里实测。没有谷歌服务的手机，以后再看 App 自己挂连接（前台服务）或 UnifiedPush。
+- `console.yaml` 里一个开关管 FCM，默认关，我开（新的外部服务）。
 
 ### 触6.4 事件流协议
 
@@ -326,7 +328,7 @@ thread 分 `work` 和 `personal`，沿用事的 `domain`。这一条要专门做
 - **节点也是设备**（§办3.1）：同一套配对、同一张表，角色是 `node`。
 
 ```sql
-devices(id, public_key, name, platform, role, created_at, last_seen, last_ip_masked, removed_at, removed_by)
+devices(id, public_key, name, platform, role, push_token NULL, created_at, last_seen, last_ip_masked, removed_at, removed_by)
         -- role: client | node
 device_invites(id, secret_hash, role, created_by, expires, used_at)
 device_audit(id, ts, device_id, action, actor, ip_masked, detail)
@@ -379,6 +381,7 @@ device_audit(id, ts, device_id, action, actor, ip_masked, detail)
 | 提示注入（经 web、邮件、群消息） | 诱导 agent 动手 | 对外动作照旧要审批；审批只认我答，节点批不了 | 和飞书私聊相同的残余 |
 | 供应链、CI 被污染 | 前端被植入，能用设备密钥 | 依赖少、锁版本、`--ignore-scripts`、产物校验；App 发布按安全边界对待，不用远程更新 | 上游被投毒且未被发现 |
 | 重放 | 重复写操作 | Noise 帧计数器 + `client_op_id` | 无 |
+| 推送服务（FCM） | Google 看到通知的标题和那一行、时间；主上的服务账号密钥泄露，别人能给我的手机发假通知 | `personal` 只说一句；令牌只在主上；点通知只是打开 App，看到和批的都是主上的状态 | 非私人的那一行，和飞书看到的一样 |
 | 刷 LLM 预算 | 花钱 | 用量按设备记，到告警线告警（§办3.5 限5），不设每台的上限 | 告警之前的消耗 |
 | 节点上的 agent | 用它那台机器的登录和权限行事 | 主用单独账号跑，agent 读不到主的库和密钥（§办3.1）；来问时转看一眼卡（§办3.3）；`node` 角色批不了审批；迁完之前的 host worker 仍是 §底3.6 的软边界 | 不变 |
 
@@ -390,10 +393,10 @@ device_audit(id, ts, device_id, action, actor, ip_masked, detail)
 |---|---|---|
 | **P0** | 这一章 | PR 合入 |
 | **P1 连上，只读** | 先改 `sbot-deploy`。中继（VPS 上，先试 Paseo 的）、Noise 通道、主上的 `sbot pair`、`devices`；`core/protocol`、`change_log`、`run_items`、只读的 `/api/v1`；客户端只读的主对话、thread 列表 + 时间线 + 链路（开发版）。连中继的开关默认关，我开 | ① 手机开着 FlClash，扫主上的码配上，经中继连上 ② 飞书私聊说一句，客户端上逐字出现，工具调用实时开始和结束 ③ 反复断线重连，文字不重不缺 ④ 切 thread 不发请求 ⑤ 中继上抓包看不到明文；配对码里换一个主的公钥就连不上 ⑥ 主上 20 个连接时事件循环和内存有实测数字 ⑦ 只改 `clients/` 的合并不重启核心 ⑧ 旧控制台不受影响 |
-| **P1.5 spike** | 限时 1～2 天：Expo 安卓开发版和 Electron（Mac）接 P1 | 安卓：长列表流式不掉帧；中文输入法和软键盘正常；切后台再回来能续上；杀进程后 Keystore 里的密钥还在；能扫码；Hermes 上 Noise 握手和每帧加解密够快；HTML 文件能交给系统浏览器打开，页面里 localStorage 存得住；后台挂着连接一晚的耗电；Health Connect 的包读得到。Electron：同一套界面跑通；设备密钥放 IndexedDB 还是系统钥匙串。中继：Paseo 的 `relay/` 能不能直接用。两端：markdown 渲染包能关掉原始 HTML 和远程图片。哪项不达标，带着结果回来再定 |
+| **P1.5 spike** | 限时 1～2 天：Expo 安卓开发版和 Electron（Mac）接 P1 | 安卓：长列表流式不掉帧；中文输入法和软键盘正常；切后台再回来能续上；杀进程后 Keystore 里的密钥还在；能扫码；Hermes 上 Noise 握手和每帧加解密够快；HTML 文件能交给系统浏览器打开，页面里 localStorage 存得住；开着 FlClash 时 FCM 收得到；Health Connect 的包读得到。Electron：同一套界面跑通；设备密钥放 IndexedDB 还是系统钥匙串。中继：Paseo 的 `relay/` 能不能直接用。两端：markdown 渲染包能关掉原始 HTML 和远程图片。哪项不达标，带着结果回来再定 |
 | **P2 设备** | 已配对设备出码、飞书 `/pair`、设备页、删、`/devices`；节点并进同一张表 | 三条配对路都走通；删后 1 秒内断开；重放被拒；`node` 角色批不了审批、答不了看一眼 |
 | **P3 写操作** | 审批、看一眼、任务、事件的写操作，乐观更新和回滚；「办」追平旧控制台的待办和会话；任务步骤和 diff | 飞书和客户端同时点同一张审批，只有一个生效，两边状态一致；断网重试不重复；任务的工具调用和 diff 实时出现 |
-| **P4 对话** | 主对话和 thread（一般、主线、任务）；`personal` 隔离；在场推（§触1.1）；手机系统通知（D15，§触6.3） | 流式、停止、排队都通；飞书 lane 搜不到主对话和 `personal` 的内容；客户端里正看着的那条，飞书不响；走开后手机弹通知、飞书不响，杀掉后台连接就改推飞书 |
+| **P4 对话** | 主对话和 thread（一般、主线、任务）；`personal` 隔离；在场推（§触1.1）；手机系统通知（D15，§触6.3） | 流式、停止、排队都通；飞书 lane 搜不到主对话和 `personal` 的内容；客户端里正看着的那条，飞书不响；走开后手机弹通知、飞书不响；令牌失效就改推飞书 |
 | **P5 替换** | 读、参、觉、改、它自己追平；旧控制台下线，tailscale serve 和公网密码入口一起撤 | 功能对照清单全部通过，`core/console` 删除，两个旧入口撤掉 |
 | **P6 身体输入（安卓）** | §读5.2 的三条：拍照或上传体检报告（PDF、照片、截图），确认后入账；一句话记身体感受；Health Connect 的日级睡眠、步数、心率摘要（新来源，默认关，我开，§0.3）。都走 owner 隔离接口写 `body_entries` 和私人附件区，不经信息源和分拣 | 三条都能入账；Health Connect 关着时一条都不读 |
 | **P7 发版** | 安卓安装包；Mac、Windows 的 Electron 安装包；签名看 D10 | 装好的版本日常可用；密钥重启后还在；扫码配对 |
@@ -416,7 +419,7 @@ device_audit(id, ts, device_id, action, actor, ip_masked, detail)
 | D8 | 飞书能不能回邮件 | 能：起草 → 审批卡 → 批了从飞书邮箱发 ※ |
 | D13 | 每台设备的 run 频率和日预算 | 不设，只告警（限5）※ |
 | D14 | agent 做的 HTML 能不能预览 | 用系统浏览器看，不在对话里渲染 |
-| D15 | 手机系统通知 | App 在后台自己挂着加密连接收，不经 Expo、FCM；没回执照旧推飞书（§触6.3）。我说都行，选了这个 |
+| D15 | 手机系统通知 | 直接发 FCM，不经 Expo（我说两个都行；Expo 在安卓上也转给 FCM，多一家）；FCM 收下了不推飞书，没谷歌服务推飞书；`personal` 只说一句（按底线套的）（§触6.3） |
 
 ※ 是按「权限尽可能大，除非我否决」套出来的，不是我逐条说的；不对就否。
 

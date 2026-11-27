@@ -314,14 +314,14 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] 主的 Curve25519 密钥（第一次启动生成，按 `secrets.env` 对待）；主不再在网络上监听 `/api/v1`
 - [ ] Noise NK 通道（`Noise_NK_25519_ChaChaPoly_SHA256`）+ 帧计数器；握手后设备签一次性挑战；`/api/v1` 跑在帧里，`client_op_id` 照旧
 - [ ] 配对：`device_invites`（一次性、10 分钟）；`sbot pair [--node]` 打二维码；已配对设备「加一台」；配对码放链接 `#` 后
-- [ ] `devices` 加 `role`、`removed_at`、`removed_by`，去掉 scope、过期和入口；`device_audit`；`nodes` 只放状态，身份在 `devices`
+- [ ] `devices` 加 `role`、`push_token`、`removed_at`、`removed_by`，去掉 scope、过期和入口；`device_audit`；`nodes` 只放状态，身份在 `devices`
 - [ ] `node` 角色：批不了审批、答不了看一眼卡、不能发起对话、读不到 `self/` 和命盘；有测试
 - [ ] 删：当场断通道、排队的输入作废、发起的 run 停掉；新设备、删设备、新 IP 段在客户端和渠道通知一句
 - [ ] `console.yaml` 连中继的开关，打开走 `widening()`
 - [ ] agent 做的 HTML：对话里一行，点了交给系统浏览器；安卓先存文件再交
 - [ ] 飞书：`/pair [node]`、`/devices`、`/devices rm <id>`；回邮件起草 → 审批卡 → 批了发
-- [ ] 系统通知（D15，§触6.3）：安卓前台服务挂着通道、本机弹、回执；10 秒没回执改推飞书；App 里能关后台连接；Electron 在后台也弹
-- [ ] spike（§触6.9 P1.5）：后台连接一晚的耗电、Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
+- [ ] 系统通知（D15，§触6.3）：FCM 令牌经通道交给主；主用 FCM HTTP v1 发（服务账号密钥按 `secrets.env`），`personal` 只发「有一条私人的」；FCM 收下了不推飞书，没令牌或令牌失效推飞书；安卓通知渠道按类别分；`console.yaml` 开关默认关；Electron 在后台经通道弹
+- [ ] spike（§触6.9 P1.5）：开着 FlClash 时 FCM 收得到、Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
 - [ ] P5：tailscale serve 和公网密码入口随旧控制台撤（`deploy/console-web/` 要手动收）
 
 ## 附3 里程碑

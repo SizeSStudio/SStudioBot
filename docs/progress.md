@@ -320,7 +320,8 @@ M3 拆三段：**M3a** 记忆底座 + 定时 + 巡检（本节）；**M3b** 控�
 - [ ] `console.yaml` 连中继的开关，打开走 `widening()`
 - [ ] agent 做的 HTML：对话里一行，点了交给系统浏览器；安卓先存文件再交
 - [ ] 飞书：`/pair [node]`、`/devices`、`/devices rm <id>`；回邮件起草 → 审批卡 → 批了发
-- [ ] spike（§触6.9 P1.5）：Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
+- [ ] 系统通知（D15，§触6.3）：安卓前台服务挂着通道、本机弹、回执；10 秒没回执改推飞书；App 里能关后台连接；Electron 在后台也弹
+- [ ] spike（§触6.9 P1.5）：后台连接一晚的耗电、Hermes 上的 Noise 速度、Keystore、Electron 密钥放 IndexedDB 还是系统钥匙串、HTML 交给浏览器后 localStorage 存得住
 - [ ] P5：tailscale serve 和公网密码入口随旧控制台撤（`deploy/console-web/` 要手动收）
 
 ## 附3 里程碑

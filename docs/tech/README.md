@@ -102,7 +102,7 @@
 |---|---|
 | 01 | Windows 用计划任务开机启动；`relay` 单元只看 `relay protocol/envelope.ts` |
 | 02 | `client_ops` 留 30 天；blob 没人引用 1 天后删；主和节点的 AEAD 用 `node:crypto` |
-| 03 | 一次最多处理 50 条批量输入；`channels.yaml` 取代 `feishu.yaml`；`worker.yaml` 挪到节点；节点上的渠道插件经代理插件接主；本机节点不配对；`check` 非零照跑 + 告警；节点排空默认 30 分钟；代理令牌不过期；备份保留 14 日 / 8 周 / 12 月 |
+| 03 | 一次最多处理 50 条批量输入；`channels.yaml` 取代 `feishu.yaml`；`worker.yaml` 挪到节点；节点上的渠道插件经代理插件接主；本机节点不配对；`check` 非零照跑 + 告警；节点排空默认 30 分钟；代理令牌不过期；备份保留 14 日 / 8 周 / 12 月；备份由 03:30 的 `backup` 定时任务跑、没 `recipient` 就不备份只通知；备份文件布局和 manifest 放在密文里；`restore` 本地跑不经 socket、`--force` 挪开不删；`channels`、`backup`、owner ID 的放宽项；`age` 混合公钥也认 |
 | 04 | `life_notes`、没到点的 follow-up 带过去；同一 PR 第 3 次红 CI 进通知不发卡 |
 | 05 | 定稿 diff 超 16 KB 走 blob；不在 `workdirs` 里的照样能派只是标出；远端节点收到 exec 回 403；worktree 清理不删分支；Windows 节点私钥用 DPAPI |
 | 06 | 中继 DNS 不经 CDN；中继自保的几个数；主密钥 v1 不轮换；新 IP 段按通知不按安全告警 |

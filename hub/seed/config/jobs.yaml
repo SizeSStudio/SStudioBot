@@ -1,0 +1,25 @@
+# Periodic jobs (DESIGN §底4.1). Hot-reloaded; times are in the owner's timezone (Asia/Shanghai).
+#   every: day | week | month    at: "HH:MM"    weekday: 0-6 (0 = Sunday, week only)    day: 1-31 (month only)
+#   enabled: false pauses a job and keeps its settings. The console's 定时任务 form edits this file.
+#   do: morning      → the morning report: code gathers the facts, the main agent writes it in the owner DM
+#       event        → puts `text` into `lane` (default the owner DM) as a timer event; quota: true counts it against 先安静
+#       dream        → nightly memory tidy (§读1.3); dream_diff → posts last night's changes to the admin group
+#                      max_delete (0.2, share of lines one night may delete) · max_add (6, net new lines) · archive_days (90, how long
+#                      .archive/ keeps them). Raising max_delete/max_add or lowering archive_days is a widening: the admin outlet is told.
+#       matter_review → the daily look over matters (§读3.2): one card of suggestions in the owner DM, nothing changes until I click.
+#                      limit (5 a day) · first_limit (12, the first card) · stale_days (30) · ask_days (7, imported asks) · tier (light; work on the first run)
+#       lens_day / lens_week / lens_month → routine lens views written into the 解读账本 (§参1), silently; the morning report,
+#                      the Sunday review and the month review bring them out. 六爻 needs no birth data; 紫微流月 joins in once it is filled.
+#                      lens_week on Sunday looks at the coming week. Turn one off with enabled: false on its line.
+#       backup       → the nightly encrypted backup (§底1.3 R4) to backup.yaml's recipient; no recipient = no backup and one notice.
+# A run that fails on the upstream (429, 5xx, network) is retried for 2 hours, never into the job's next firing; retry_hours: N changes that (§底4.3).
+# A job more than 15 minutes late (the hub was down) is recorded as missed, not run. /job in the DM lists them; /job <name> runs one now.
+
+dream:      { every: day, at: "03:00", do: dream, max_delete: 0.2, max_add: 6, archive_days: 90 }
+backup:     { every: day, at: "03:30", do: backup }
+matter_review: { every: day, at: "08:15", do: matter_review, limit: 5, first_limit: 12, stale_days: 30, ask_days: 7 }
+dream_diff: { every: day, at: "08:25", do: dream_diff }
+morning:    { every: day, at: "08:30", do: morning }
+lens_day:   { every: day, at: "07:50", do: lens_day }
+lens_week:  { every: week, weekday: 0, at: "19:30", do: lens_week }
+lens_month: { every: month, day: 1, at: "06:00", do: lens_month }

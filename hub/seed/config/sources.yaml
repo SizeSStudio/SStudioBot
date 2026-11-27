@@ -1,0 +1,36 @@
+# 信息源 (DESIGN §读2.1). Hot-reloaded. Everything read here goes the same way as group messages: Triage sorts it,
+# records events (知道就行 / 要盯 / 要你回 / 要你拍板) and hangs them on matters. Nothing here can send anything.
+#
+# feishu.dm: true → other people's DMs to the owner are read too (events only, never drafts). The owner↔bot DM is
+#   never read this way. Turning it on is a widening: the admin group is told.
+#
+# sources: one entry per place to read.
+#   id:      lowercase name, used in kv keys and the console     kind: git | fetch | command | feishu-mail
+#   every:   how often (15m, 2h, 1d; default 30m)                 domain: work | personal (default work)
+#   enabled: false to pause without deleting
+#   git      repo: <name in repos.yaml>      new commits on any branch (the first poll only sets a baseline)
+#   fetch    url: https://…                  a page's text changes (the first poll only sets a baseline)
+#   feishu-mail                              the owner's Feishu mailbox (inbox and sent), read-only, through the hub's own
+#                                            user login; bodies go to the triage model. The first poll only sets a baseline
+#   command  run: <plugin dir name>          runs /opt/sbot/plugins/sources/<run>/run --since <ISO time>
+#            env: [NAME, …]                  secrets.env names handed to that plugin, nothing else; the hub's own keys never
+#            args: { … }                     passed as JSON in SBOT_SOURCE_ARGS
+#   A plugin prints one JSON object per line on stdout:
+#     {"ref": "unique id", "ts": "2026-01-02T10:00:00+08:00", "who": "name", "where": "project / mailbox", "where_name": "how to show where",
+#      "text": "what was said", "link": "https://…", "to_me": true, "from_me": false, "reply_to": "ref it answers",
+#      "thread": "issue / mail thread id"}     only ref and text are required; from_me: his own words there close my asks
+#   It runs as the sbot user with its own state dir as HOME and cwd, 2 minutes at most; stderr is masked and kept short.
+#   Plugins are installed on the server by hand (root-owned), never by an agent.
+
+feishu:
+  dm: false
+
+# exclude: never read these, wherever they come from (§读2.1). Removing an entry is a widening: the admin outlet is told.
+#   chats: [chat ids] · persons: [person slugs or ids] · mails: [addresses or domains]
+exclude: {}
+
+sources: []
+#  - { id: core-repo, kind: git, repo: sbot, every: 30m }
+#  - { id: release-notes, kind: fetch, url: "https://example.com/changelog", every: 6h }
+#  - { id: jira, kind: command, run: jira, every: 15m, env: [JIRA_TOKEN], args: { jql: "assignee = currentUser() OR watcher = currentUser()" } }
+#  - { id: mail, kind: feishu-mail, every: 10m }

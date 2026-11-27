@@ -2,6 +2,12 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### W1c 主的基座（2026-11-28）
+施工里对出来的几处，设计跟着改；※ 的都是推出来的，等我过目。
+- §寸8 的 `measure` 补上正文里已有的三个默认值：`breaker: 3`（Y8）、`stuck_minutes: 20`（§办 卡住）、`tidy_wait_minutes: 30`（§读3.2 整理卡）。
+- §底1.3 备份 ※：由 03:30 的 `backup` 定时任务跑；没公钥不备份只通知；恢复本地跑、`--force` 挪开不删；换公钥、加推送节点算放宽。细节在 `tech/03-hub.md` backup、cli。
+- 放宽项 ※（`tech/03-hub.md` 配置键变化）：`channels.yaml` 换群、`shadow` → `live`、出口组加出口；`backup.yaml` 换 `recipient`、加 `to_nodes`；`people.yaml` owner ID 新填或换掉。
+
 ### 技术设计（2026-11-27）
 新增 `docs/tech/`（索引 `tech/README.md`，决定表 T1–T47）：整体重写，新目录 `protocol/`、`hub/`、`node/`、`relay/`、`clients/`，`core/` 冻结、切换后删；W0 探针和 `sbot-deploy` 先行，W1–W6 在测试 home 里搭，W7 切换等我点头；数据不搬，从 seed、飞书和本地重读重建，旧库不动，副本上演练两次。
 - **我定**：round-1 九题（路线、目录、节奏、数据、pi 嵌入、节点适配、自建中继、节点升级、三系统当主）和十条直接定的；前端：coss ui 变量、Expo 一套界面、Uniwind + react-native-reusables、markdown-it + cjk-friendly + remend、lowlight、diff 只在桌面、Legend List、lucide、reanimated 一系、手写 store；数据逐类重建（§附2.21 交接表在 `tech/README.md` 末）。

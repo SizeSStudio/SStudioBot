@@ -111,6 +111,9 @@ measure:
   ease_flip: 2          # §寸6 切省心时翻几条养
   infer_min_convs: 2    # §改1 推断的候选至少来自几场对话（按 journal 行的 run_id 数）
   dismiss_window: 50    # ※ §寸1 比对 dismissals 最近多少条（也可改成天数）；默认值，我改
+  breaker: 3            # §底1.2 Y8 同一错误指纹连续几次就停下发卡
+  stuck_minutes: 20     # §办 任务多久没动静进「需要你处理」
+  tidy_wait_minutes: 30 # §读3.2 早报过了多久还没出，整理卡自己发
 ```
 
 `measure` 在客户端有表单入口，和配置编辑器同一条路：校验、git 提交、记 `config_changes`（Y11，§触6.1）。

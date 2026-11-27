@@ -225,10 +225,22 @@ interface ChannelPlugin {
 - 原始资料、体检原件、导入原件：加密后进 `backup-staging/cas/<sha>`，节点按 sha 增量拉，只增不删。
 - **保留期**（设计留给技术设计）※：每日 14 份、每周 8 份、每月 12 份。「彻底删」后私聊里告诉我的「哪天全部过期」= 最老那份月度备份滚掉的日子（约一年）。
 - 主私钥不能解备份（公钥加密），恢复在我手上做：`sbot restore <文件>` 读我给的私钥文件。
+- W1c 落地的细节 ※：
+  - 由主的定时任务 `backup`（`jobs.yaml`，每天 03:30，默认任务和镜头任务一样只补一次，之后归我管）跑，不再要 systemd 单元，三个系统一样。
+  - `backup.yaml` 没填 `recipient` = 不备份，当晚发一条管理通知；不拦启动。`recipient` 认 `age1…` 公钥（含后量子混合的长公钥）。
+  - 一份一个文件 `backup-staging/sbot-<日期>.tar.age`（0600）+ 旁边的 `.sha256`（只是密文的 hash，防传坏）。tar 里：`manifest.json`（每部分的字节数、sha256、`db_version`）、`sbot.db`（快照过 `integrity_check` 才打包）、`config.bundle`、`agent-home.bundle`（空仓库不打）、`keys/…`、`secrets.env`。manifest 在加密的 tar 里面，不在外面。
+  - tar 是自写的 ustar（只放普通文件），手工 `age -d … | tar x` 照样能解。
+  - 保留期在每次备份后修剪，只动 `sbot-<日期>.tar.age` 和它的 `.sha256`。
+  - 推节点（`/node/v1/backup/put`）W2 才有：`backup.ts` 的 `pushToNodes` 是标出来的接缝，现在只记日志、报「等着」。`cas/` 同步也跟着 W2。
+  - `restore` 先在临时目录里解密、逐个对 sha256、库过 `integrity_check`、bundle 过 `git bundle list-heads`，都过了才动 home。home 里有东西就拒绝，加 `--force` 才换，原来的 `db/`、`config/`、`agent-home/`、`keys/`、`secrets.env` 挪进 `.pre-restore-<时间>/`，不删。私钥文件的内容不进报错和日志。
 
 ## cli（`hub/src/cli.ts`，命令名 `sbot`）
 
-`sbot pair [--node]`、`sbot devices [rm <id>]`、`sbot status`（版本、主公钥指纹、中继、节点、缺哪些 Linux 可选件）、`sbot chat`（终端里接主对话 lane，等同一台 client）、`sbot upgrade --ref <sha>`、`sbot restore <文件>`、`sbot import ...`（09 的重建）。都经 `hub-admin.sock`。
+`sbot pair [--node]`、`sbot devices [rm <id>]`、`sbot status`（版本、主公钥指纹、中继、节点、缺哪些 Linux 可选件）、`sbot chat`（终端里接主对话 lane，等同一台 client）、`sbot upgrade --ref <sha>`、`sbot restore <文件> --identity <私钥文件> [--force]`、`sbot import ...`（09 的重建）。都经 `hub-admin.sock`，除了 `restore` ※：它要换掉主正在用的库，所以在主停着时本地跑，socket 上有主应答就拒绝。
+
+- `hub-admin.sock` 帧：u32 大端长度 + 一个应用帧（JSON），上限和 Noise 重组后一样 1 MiB；不加密，靠 run 目录 0700、socket 0600、属主是主的账号。Windows 用命名管道 `\\.\pipe\sbot-hub-admin`。
+- `status` 走 `GET /api/v1/status`（`protocol/api/status.ts`）：版本、提交号、协议版本、主公钥指纹（W2 前是 `null`）、启动时间、库版本；中继、节点、可选件跟着各自的波次加字段。
+- 退出码：0 成功、1 失败、2 参数不对、3 还没做（报是哪一波：`pair`、`devices` W2，`chat` W3，`upgrade` W4，`import` W6）。
 
 ## 配置键变化（Y11）
 
@@ -247,7 +259,8 @@ interface ChannelPlugin {
 | `backup.yaml` | 新：`recipient`、`to_nodes` |
 | `auto.yaml` | M5 做的时候加（§底3.5） |
 
-放宽项进 `widening()`：`relay.enabled`、`mcp_open`、`fcm.enabled` 由关到开；`push` 里缩短等待、缩短夜间、`night_allow` 多一类、建议条数调高；`exclude` 删条目；dream 的三个数调松。
+放宽项进 `widening()`：`relay.enabled`、`mcp_open`、`fcm.enabled` 由关到开；`push` 里缩短等待、缩短夜间、`night_allow` 多一类、建议条数调高；`exclude` 删条目；dream 的三个数调松；tier 的 `daily_alert` 调高。
+※ 另外几条也算放宽（W1c 加）：`channels.yaml` 换管理群或工作台群、飞书 `shadow` → `live`、出口组多一个出口；`backup.yaml` 换 `recipient`（拿着它私钥的人能读 `secrets.env` 和 `keys/`）、`to_nodes` 多一个节点；`people.yaml` 里 owner 的 ID 新填或换掉（认谁是我）。
 
 ## 照旧不在新主里的
 

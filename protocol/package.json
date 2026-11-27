@@ -4,6 +4,9 @@
   "type": "module",
   "description": "Shared by hub, node and clients: frames, envelope, version, schemas (docs/tech/02). No runtime state.",
   "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
     "zod": "4.6.7"
   }
 }

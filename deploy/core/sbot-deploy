@@ -4,7 +4,14 @@
 #   sbot-deploy                 deploy the tip of $SBOT_DEPLOY_BRANCH (default main)
 #   sbot-deploy --if-new        same, but quiet when it is already live or already failed once (the timer uses this)
 #   sbot-deploy --ref <sha>     deploy (or roll back to) a commit; it must be on the branch
+#   sbot-deploy --force         switch and restart even when the unit's tree is the same as live
 #   sbot-deploy --status        print what is live and the last deploys
+#
+# A commit is only switched to when the unit's tree changed (docs/tech/01, R3): the tree hash of each path in
+# $SBOT_DEPLOY_PATHS (default "core") at that commit is compared with the one recorded at the last good deploy. Same
+# trees → no switch, no restart; the checked sha goes into deploys.log once ("unchanged"), so a merge that only touches
+# docs/, clients/ or the new hub/ doesn't interrupt the running core. The live REVISION is then the last commit that
+# changed the unit. Settings come from /etc/sbot/deploy.env (also read on manual runs).
 #
 # Layout, all root:sbot and outside the service's ReadWritePaths, so the core can't change its own code:
 #   /srv/data/sbot-app/src.git               bare mirror of the public repo (no credentials)
@@ -16,21 +23,28 @@
 # and gets a ROLLBACK_FROM file, so it can tell the admin group what happened.
 # Only core/ is deployed. Units, this script and the worker sandbox (deploy/) are root-level: install those by hand.
 set -euo pipefail
+ENVF="${SBOT_DEPLOY_ENV:-/etc/sbot/deploy.env}"   # overridable for tests only
+# shellcheck disable=SC1090
+if [ -f "$ENVF" ]; then set -a; . "$ENVF"; set +a; fi
 REPO="${SBOT_DEPLOY_REPO:-https://github.com/SizeSStudio/SStudioBot.git}"
 BRANCH="${SBOT_DEPLOY_BRANCH:-main}"
 APP="${SBOT_DEPLOY_APP:-/srv/data/sbot-app}"   # overridable for tests only
 UNIT="${SBOT_DEPLOY_UNIT:-sbot-core.service}"
-export PATH=/opt/node/bin:/usr/local/bin:/usr/bin:/bin
+PATHS="${SBOT_DEPLOY_PATHS:-core}"              # the unit's paths; a change in any of them is a change of the unit
+TREEF="$APP/current.tree"                       # trees of the live release, written after a good deploy
+export PATH="${SBOT_DEPLOY_TEST_PATH:+$SBOT_DEPLOY_TEST_PATH:}/opt/node/bin:/usr/local/bin:/usr/bin:/bin"
 umask 027
 
-ref=""; if_new=0; restart=1
+ref=""; if_new=0; restart=1; force=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --ref) ref="${2:?--ref needs a commit}"; shift 2 ;;
     --if-new) if_new=1; shift ;;
     --no-restart) restart=0; shift ;;
-    --status) echo "live: $(readlink "$APP/current" 2>/dev/null | sed 's#^releases/##')"; tail -n 5 "$APP/deploys.log" 2>/dev/null || true; exit 0 ;;
-    *) echo "usage: sbot-deploy [--if-new] [--ref <sha>] [--no-restart] [--status]" >&2; exit 2 ;;
+    --force) force=1; shift ;;
+    --status) echo "live: $(readlink "$APP/current" 2>/dev/null | sed 's#^releases/##')  $(cat "$TREEF" 2>/dev/null || true)"
+              tail -n 5 "$APP/deploys.log" 2>/dev/null || true; exit 0 ;;
+    *) echo "usage: sbot-deploy [--if-new] [--ref <sha>] [--force] [--no-restart] [--status]" >&2; exit 2 ;;
   esac
 done
 [ "$(id -u)" = 0 ] || { echo "sbot-deploy: run as root" >&2; exit 2; }
@@ -52,6 +66,26 @@ prev=$(readlink "$APP/current" 2>/dev/null | sed 's#^releases/##' || true)
 if [ "$sha" = "$prev" ]; then [ "$if_new" = 1 ] || say "$sha is already live"; exit 0; fi
 # the timer doesn't retry a commit that already failed; the next merge (or a manual run) does
 if [ "$if_new" = 1 ] && grep " $sha FAILED" "$APP/deploys.log" >/dev/null 2>&1; then exit 0; fi
+
+# trees of the unit's paths at a commit, e.g. "core=1a2b…"; a missing path counts as "-"
+trees() { local p t out=""; for p in $PATHS; do t=$("${G[@]}" rev-parse -q --verify "$1:$p" 2>/dev/null || echo -); out="$out $p=$t"; done; echo "${out# }"; }
+want=$(trees "$sha")
+live=$(cat "$TREEF" 2>/dev/null || true)
+# first run after this check was installed: the live release has no tree file yet, so take it from git
+if [ -z "$live" ] && [ -n "$prev" ] && "${G[@]}" cat-file -e "$prev^{commit}" 2>/dev/null; then
+  live=$(trees "$prev"); echo "$live" > "$TREEF"
+fi
+if [ "$force" = 0 ] && [ -n "$live" ] && [ "$want" = "$live" ]; then
+  # same unit, different commit: nothing to switch. Record each checked sha once.
+  grep " $sha unchanged" "$APP/deploys.log" >/dev/null 2>&1 || note "$sha unchanged live=$prev $want"
+  [ "$if_new" = 1 ] || say "${sha:0:7} has the same $PATHS as live (${prev:0:7}); nothing to do (--force to redeploy)"
+  exit 0
+fi
+# a newer commit with the same trees as one that already failed would fail the same way (and restart twice)
+if [ "$if_new" = 1 ] && grep " FAILED.* $want\$" "$APP/deploys.log" >/dev/null 2>&1; then
+  grep " $sha skipped" "$APP/deploys.log" >/dev/null 2>&1 || note "$sha skipped: same trees as a failed deploy $want"
+  exit 0
+fi
 say "deploying ${sha:0:7} (live: ${prev:0:7})"
 
 # 2. release dir: core/ at that commit, plus what the core reports about itself
@@ -96,19 +130,20 @@ healthy() {   # the new process logs "core up" and is still the same running pro
   return 1
 }
 switch "$sha"
-if [ "$restart" = 0 ]; then note "$sha switched (no restart) prev=$prev"; say "switched; restart $UNIT to run it"; exit 0; fi
+if [ "$restart" = 0 ]; then echo "$want" > "$TREEF"; note "$sha switched (no restart) prev=$prev $want"; say "switched; restart $UNIT to run it"; exit 0; fi
 since=$(date '+%Y-%m-%d %H:%M:%S')
 systemctl restart "$UNIT"
 if healthy "$since"; then
-  note "$sha ok prev=$prev"; say "${sha:0:7} is live"; exit 0
+  echo "$want" > "$TREEF"; note "$sha ok prev=$prev $want"; say "${sha:0:7} is live"; exit 0
 fi
 journalctl -u "$UNIT" --since "$since" -o cat --no-pager 2>/dev/null | tail -n 30 >&2 || true
 if [ -n "$prev" ] && [ -d "$APP/releases/$prev" ]; then
   say "${sha:0:7} did not come up; rolling back to ${prev:0:7}" >&2
   echo "$sha" > "$APP/releases/$prev/core/ROLLBACK_FROM"; chgrp sbot "$APP/releases/$prev/core/ROLLBACK_FROM"
   switch "$prev"; since=$(date '+%Y-%m-%d %H:%M:%S'); systemctl restart "$UNIT"
-  if healthy "$since"; then note "$sha FAILED, rolled back to $prev"; else note "$sha FAILED, rollback to $prev also unhealthy"; fi
+  if healthy "$since"; then note "$sha FAILED, rolled back to $prev $want"; else note "$sha FAILED, rollback to $prev also unhealthy $want"; fi
 else
-  note "$sha FAILED, nothing to roll back to"
+  echo none > "$TREEF"   # current is the failed release: the next commit must not count as "unchanged"
+  note "$sha FAILED, nothing to roll back to $want"
 fi
 exit 1

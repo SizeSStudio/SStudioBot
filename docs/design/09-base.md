@@ -112,7 +112,7 @@ always-on agent 并不是一直在跑。它大部分时间在睡觉，被事件�
 **上线（2026-11-17）**：代码在公开仓库，`main` 就是线上跑的东西。
 - 所有改动走 PR，CI（泄露检查、语法检查）过了才能合。
 - 主机上 `sbot-deploy.timer` 每 3 分钟看一次 `main`。有新提交就执行 `sbot-deploy`：
-  1. 从 GitHub 拉进本地镜像（公开仓库，不需要凭证）。
+  1. 从 GitHub 拉进本地镜像（公开仓库，不需要凭证）。按单元比较树 hash（`git rev-parse "$sha:core"`，单元的路径在 `/etc/sbot/deploy.env` 的 `SBOT_DEPLOY_PATHS`，默认 `core`）：和上次成功部署记下的一样就不切、不重启，`deploys.log` 记一行 `unchanged`（每个 sha 一次）；和一次失败部署的树一样也不再试。状态页的版本因此是单元最后一次变化的提交（2026-11-27 起，tech/01）。
   2. 把 `core/` 导出到 `releases/<sha>/`，写入 `REVISION` 和 `HISTORY`。
   3. 按 `package.json` + lock 的哈希共用一份 `node_modules`（`npm ci --ignore-scripts`）。
   4. 原子切换 `current`，重启核心。

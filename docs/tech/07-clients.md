@@ -30,9 +30,9 @@ clients/                 npm workspace，自己的 lockfile；Node 24 构建（E
 | 样式 | Uniwind 1.14 + Tailwind 4 | 组件抄 react-native-reusables 的 Uniwind 版，需要时加 `@rn-primitives/*` |
 | 主题 | coss ui 的变量 | 原样：中性灰、黑色主按钮、圆角 10px、明暗两套；只借变量，不引 coss 的 React 组件（它是 DOM 的） |
 | markdown | markdown-it 15.0.3、markdown-it-cjk-friendly 3.0.0、remend 1.5.1 | token → RN 组件的渲染器自己写，只做映射，越薄越好 |
-| 代码高亮 | lowlight 3.3.0 + highlight.js 11.12 | 只注册常用语言（下面） |
+| 代码高亮 | lowlight 3.3.0 + highlight.js 11.12 | 只注册常用语言（下面）。lowlight 的入口顺带 import 全部语言，Metro 里把 `lowlight` 指到 `lib/index.js`（P11：1.5 MB → 87 KB） |
 | diff | `@pierre/diffs` 1.7.2（只桌面）；退路 `diff`（jsdiff） | 见「diff」 |
-| 列表 | `@legendapp/list` 3.9.2；退路 `@tanstack/react-virtual`（只网页） | `ChatList.native.tsx` / `ChatList.web.tsx` 一开始就分开 |
+| 列表 | `@legendapp/list` 3.9.2（P11 两端都过，不用退路） | `ChatList.native.tsx` / `ChatList.web.tsx` 一开始就分开 |
 | 图标 | lucide-react-native 1.82 | ISC，本地 SVG |
 | 动画、手势、键盘 | reanimated 4.7.1、react-native-worklets 0.13、gesture-handler 3.3、react-native-keyboard-controller 1.22.7 | reanimated 一系跟 Expo 的绑定表走 |
 | 浮层 | `@rn-primitives`（菜单、对话框）、`@expo/ui` BottomSheet | 桌面上底部面板换成对话框或侧栏 |
@@ -82,32 +82,32 @@ agent 输出、消息、邮件、diff、工具结果一律当不可信：
 
 - `markdown-it-cjk-friendly` 修中文旁边的 `**加粗**`（P11 测 4 种加粗情形）。
 - 流式文本先过 remend 补全未闭合的标记，再解析；只重解析最后一个块，前面已闭合的块缓存 token ※。
-- 代码块：lowlight 注册 `bash shell json yaml typescript javascript tsx python go rust sql diff markdown css xml ini dockerfile`；别的语言按纯文本。正在流的代码块（还没遇到收尾的 fence）不高亮。hast → 嵌套 `<Text>`。超过 400 行先显示前 80 行加「展开」※（Hermes 上的耗时 P11 实测，不达标改阈值）。
-- 中文：行高不裁字（P11 测）；输入法组字时不发送、不抢焦点。
+- 代码块：lowlight 注册 `bash shell json yaml typescript javascript tsx python go rust sql diff markdown css xml ini dockerfile`；别的语言按纯文本。正在流的代码块（还没遇到收尾的 fence）不高亮。hast 按行切开，**每行一个 `<Text>`**，行内 token 嵌套 `<Text>`（P11：整块一个 `<Text>` 时安卓 UI 线程卡 20 s 以上）。超过阈值先显示前 80 行加「展开」：网页 400 行，安卓 200 行 ※（P11 的数字，真机再核）。
+- 中文：行高不裁字（P11 测过）；两侧都是中文的软换行丢掉，不渲染成空格；输入法组字时不发送、不抢焦点：判断用 `isComposing || keyCode === 229`，不要展开 DOM 事件对象（字段是原型上的 getter，展开后全是 `undefined`）。
 
 ### diff
 
-- 桌面：`DiffView.web.tsx` 用 `@pierre/diffs` 1.7.2（DOM 组件，RN Web 下直接用）。它用 shiki：语法和主题打进包里，不许运行时去 CDN 拉（P11 的抓包一起查）；拉了就换退路：jsdiff 算块 + lowlight 的 `diff` 高亮。
+- 桌面：`DiffView.web.tsx` 用 `@pierre/diffs` 1.7.2（DOM 组件，RN Web 下直接用）。它用 shiki：语法和主题打进包里，不许运行时去 CDN 拉（P11 查过，分块从 `sbot-app://` 本地加载）；拉了就换退路：jsdiff 算块 + lowlight 的 `diff` 高亮。shiki 的语法占 3.6 MB，是包里最大的一块，W2 试按需加载 `DiffView.web`。
 - 安卓：`DiffView.native.tsx` 只显示改了哪些文件、各加减几行；点一个文件显示 lowlight `diff` 高亮的原文块；顶上一个「去 git 上看」（PR 或 commit 链接，同样先确认）※。不做并排、不做逐词。
 - diff 内容走 blob 拉取（02 大载荷），只在展开时拉。
 
 ### 列表
 
 - `ChatList.native.tsx`：Legend List，倒序、贴底、往上翻时不被新消息拽回去（离底超过一屏就停止跟随，显示「有新消息」）。
-- `ChatList.web.tsx`：先用 Legend List；P11 里跨消息选择文字、贴底、滚动不跳任何一项不过，就换 `@tanstack/react-virtual`。
+- `ChatList.web.tsx`：Legend List（P11 里跨消息选字、贴底、不拽回都过）。
 
 ## agent 做的 HTML（D14）
 
 - 事件里是 `{ ref: "blob:<sha>", name, size }`，时间线显示一行「打开」。
 - 桌面：bridge 的 `html.open(sha)`，主进程拉 blob 写到 `<temp>/sbot-html/<sha>.html`，`shell.openPath` 交给系统浏览器；启动时清掉 24 小时前的。
-- 安卓：写到 App 私有缓存目录，经 `FileProvider` 只读分享，`ACTION_VIEW` 交给浏览器；24 小时后清（§触6.4 的例外）。
+- 安卓：写到 App 私有缓存目录，经 `FileProvider` 只读分享，`ACTION_VIEW` 交给浏览器；24 小时后清（§触6.4 的例外）。系统选择框里会有只能看的「HTML Viewer」，优先交给默认浏览器（P11）。
 
 ## Electron（`desktop/`）
 
 - `BrowserWindow`：`contextIsolation: true`、`sandbox: true`、`nodeIntegration: false`、`webSecurity: true`。`will-navigate` 一律拦；`setWindowOpenHandler` 一律拒，链接走 bridge；`session.setPermissionRequestHandler` 全拒 ※（桌面不扫码、不用摄像头和麦克风）。
 - **自定义协议**：`sbot-app://app/`，第一次发版前定死 ※。`protocol.registerSchemesAsPrivileged` 设 `standard`、`secure`、`supportFetchAPI`；`protocol.handle` 只从包内 `web/` 目录读：解码后 `path.normalize`，不在 `web/` 里就 404；没有扩展名的请求回 `index.html`。网页产物用 `expo export -p web`，`web.output = "single"`，网页上关异步路由。
-- **CSP** 由 `protocol.handle` 的响应头给（不写在 HTML 里）：`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; object-src 'none'; frame-src 'none'; connect-src 'self' wss://<配对时存的中继主机>`。中继主机来自主进程存的配对信息，包里没有任何实例地址。`style-src 'unsafe-inline'` 是 RN Web 运行时注入样式要的（P3 核实能不能去掉）。
-- **密钥**：`keys.ts` 在主进程用 `node:crypto` 生成 Ed25519，`safeStorage.encryptString` 后存 `userData/device.key`；`safeStorage.getSelectedStorageBackend()` 是 `basic_text` 就拒绝配对并说明（06）。
+- **CSP** 由 `protocol.handle` 的响应头给（不写在 HTML 里）：`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'none'; object-src 'none'; frame-src 'none'; connect-src 'self' wss://<配对时存的中继主机>`。中继主机来自主进程存的配对信息，包里没有任何实例地址。`style-src 'unsafe-inline'` 去不掉（P3）：RN Web 运行时往 `<style id="react-native-stylesheet">` 里 `insertRule`，Uniwind 也注入 `<style>`，没有它布局全坏。`public/index.html` 用自定义模板，不带内联 `<style>`（Expo 默认那段根重置挪进 `global.css`）。
+- **密钥**：`keys.ts` 在主进程用 `node:crypto` 生成 Ed25519，`safeStorage.encryptStringAsync` 后存 `userData/device.key`（同步版 Electron 45 起废弃）；后端 Mac 是钥匙串、Windows 是 DPAPI，Linux 看 `safeStorage.getSelectedStorageBackend()`，是 `basic_text` 就拒绝配对并说明（06）。
 - **bridge**（`preload.ts` 的 `contextBridge`，就这几个）：
   - `device.publicKey()`、`device.sign(handshakeHash, challenge)`
   - `pair.accept(link)`：主进程校验配对链接、存主公钥和中继地址，重载窗口让 CSP 带上中继 ※；`pair.onLink(cb)`：系统用 `sstudiobot://` 唤起时把链接交给页面
@@ -122,6 +122,7 @@ agent 输出、消息、邮件、diff、工具结果一律当不可信：
 - **FCM**：`getDevicePushTokenAsync()` → `PUT /api/v1/devices/self/push-token`；令牌变了再交。`google-services.json` 是实例数据，`app.config.ts` 从 `~/.config/sbot/` 读路径，不进仓库。通知渠道四个：等我回、审批、任务、知道就好。点通知 → `sstudiobot://item/<ref>` 打开那一条。App 设置里能关手机通知（关了发 `push-token` 空值，主改推渠道）。
 - **配对**：扫码（expo-camera）、系统唤起 `sstudiobot://pair#…`、「粘贴配对码」三条路。
 - 构建：本机 `expo prebuild` + Gradle，不用 EAS 云构建、不用 EAS Update；侧载（D10），手动发版（D11）。
+- 安全区：Android 15 起强制 edge-to-edge，根布局用 `useSafeAreaInsets` 留顶部（第三方组件不认 Uniwind 的 `className`，`SafeAreaView` 写 `flex-1` 会塌成 0 高）；状态栏图标颜色跟应用主题走（P11）。
 - 身体输入（拍体检报告、一句话记感受、Health Connect）在 09 的对应波次做；Health Connect 默认关。
 
 ## CI（`clients` job，01 的表）
@@ -130,7 +131,7 @@ agent 输出、消息、邮件、diff、工具结果一律当不可信：
 
 1. Node 24；`npm ci --ignore-scripts`（`clients/`）；比对 `zod`、`@noble/*` 和根 lockfile 一致。
 2. `tsc --noEmit`；`node --test`（store、连接状态机、markdown 白名单映射、链接判定，纯 TS 部分）。
-3. `expo export -p web`；记下产物大小（P11 定基线，涨超过 20% 标红不拦 ※）；产物里 grep 不到实例配置的样式（域名、公钥格式的串）——和 `leak-guard.sh` 同一套规则。
+3. `expo export -p web`；记下产物大小（P11 基线：首屏 gzip 1204 KiB，全部 gzip 2.9 MiB；涨超过 20% 标红不拦 ※）；产物里 grep 不到实例配置的样式（域名、公钥格式的串）——和 `leak-guard.sh` 同一套规则。
 4. 装 Electron 二进制（显式、校验 checksum），无头起一次 `desktop/`，加载 `sbot-app://app/` 不报 CSP 错。
 5. 安卓 APK 不在 CI 出（要 `google-services.json`），在本机出。
 

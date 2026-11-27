@@ -25,3 +25,7 @@ jobs:
         run: |
           set -e
           for f in $(git ls-files '*.sh') deploy/worker/worker-exec deploy/worker/task-mkdir; do bash -n "$f"; done
+      - name: sbot-deploy (tree-hash check, rollback; stubbed systemd, temp dirs only)
+        run: |
+          sudo groupadd -f sbot
+          sudo bash deploy/core/test/sbot-deploy.test.sh

@@ -81,6 +81,7 @@ docs/tech/           这套文件
 ## 部署
 
 - **W0 先改 `sbot-deploy`**（§附2.21 R3）：按单元比较 `git rev-parse "$sha:<路径>"`，和上次部署记下的树 hash 一样就不切、不重启；每次检查过的 sha 记下来。必须在任何重建 PR 合入 `main` 之前上线，否则每个 `hub/`、`docs/` 的合并都会重启线上核心。改完手动跑 `deploy/core/install.sh`。
+  - W0 落地（PR 见 `log.md`）：一个单元，路径 `SBOT_DEPLOY_PATHS`（默认 `core`）、服务 `SBOT_DEPLOY_UNIT`；树记在 `$APP/current.tree`；没有这个文件时（刚装上）从 git 算线上 release 的；和失败过的树相同的新提交不再试；`--force` 照切。测试 `deploy/core/test/sbot-deploy.test.sh`（CI 里 root 跑，systemd 打桩）。W2 加 `relay` 时扩成多个单元，各有自己的 `current`。
 - 单元在 `/etc/sbot/deploy.env` 里配：
   - 切换前：`core` = 路径 `core`。
   - W2 起加：`relay` = `relay protocol/envelope.ts`（中继只认信封，协议别处改了不重启它）※，跑 `deploy/relay/install.sh`。

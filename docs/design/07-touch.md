@@ -165,6 +165,7 @@ tailscale serve --https=8444                         nginx :443（Let's Encrypt�
   - 写操作除了原有的 `x-sbot-console: 1`，还要 `Origin` 等于 `web.origin`。为此这个入口的 `Referrer-Policy` 是 `same-origin`（`no-referrer` 下浏览器同源写请求会带 `Origin: null`）；tailnet 入口仍是 `no-referrer`。
 - **为什么两个 socket**：tailscaled 会换掉客户端伪造的 `Tailscale-User-Login`，nginx 不会。两个入口如果共用一个 socket，从公网进来的人自己塞这个头就能过。所以 nginx（www-data）连不上 tailnet 的 socket（目录 700），公网 socket 上完全不看这个头；反过来公网的 cookie 在 tailnet 入口也不算数。www-data 下别的进程能连公网 socket，但那里除了 cookie 什么都不信，所以没用；X-Real-IP 它可以伪造，因此限流另有一个总量上限。
 - **部署**：`deploy/console-web/`（tmpfiles 建 `/run/sbot-web`、sbot-core 的 drop-in 放开这个目录的写权限、nginx 站点模板、`install.sh <host>` 申请证书并启用）。核心启动时这个目录存在才开公网 socket。
+- **P5 撤掉**（2026-11-27）：公网入口当初只为控制台；旧控制台下线时 tailscale serve 和公网入口一起撤，客户端经中继连（§触6.7）。
 - P0 实测（2026-11-16，tailscale 1.104.5）：
   - 控制台**单独用一个端口**（实例里是 8444），不和本机已有的 serve 配置抢路径，也不改它们。
   - 经 serve 进来的请求带 `Tailscale-User-Login` / `Tailscale-User-Name` / `X-Forwarded-For`；客户端自己塞的同名头会被换掉，伪造不了。

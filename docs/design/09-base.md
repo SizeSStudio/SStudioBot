@@ -368,6 +368,7 @@ config_changes(id, ts, file, diff, source)                 -- source: console|ch
 proposals(id, ts, origin_lane, target_file, patch, reason, status,
           tier, hypothesis, evidence_ids, eval_json, version, review_at, rollback_of)
       -- v0.10：tier: A|B|C；status: pending|approved|rejected|expired|live|rolled_back（§进2）
+      -- v0.26：status 加 held（和我说过的对不上，挂起等复盘问，§进3.1）；usage 也记节点 agent 自报的用量，标明来源（§进2.2）
 
 -- v0.8：事上修（原 §15）
 matters(id, title, domain, lane, status, opened_at, close_condition, closed_at, reviewed_at, file_path, keys, parent_id, merged_into)

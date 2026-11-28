@@ -13,6 +13,8 @@ import * as devices from "./api/devices.ts";
 import * as pair from "./pair.ts";
 import * as write from "./api/write.ts";
 import * as push from "./api/push.ts";
+import * as nv1 from "./node/v1.ts";
+import * as tasks from "./api/tasks.ts";
 
 export const SCHEMAS: Record<string, z.ZodType> = {
   "frame.req": F.Req, "frame.res": F.Res, "frame.cancel": F.Cancel, "frame.ev": F.Ev, "frame.delta": F.Delta,
@@ -45,6 +47,22 @@ export const SCHEMAS: Record<string, z.ZodType> = {
   "api.reads.req": push.ReadReq, "api.reads.res": push.ReadRes,
   "api.push_token.req": push.PushTokenReq, "api.push_token.res": push.PushTokenRes,
   "api.ease.req": push.EaseReq, "api.ease.res": push.EaseRes, "push.data": push.PushData,
+  // W4: tasks and nodes
+  "api.tasks.query": tasks.TasksQuery, "api.tasks.res": tasks.TasksRes, "api.task.res": tasks.TaskRes, "api.nodes.res": tasks.NodesRes,
+  "api.tasks.start": tasks.TaskStart, "api.tasks.start.res": tasks.TaskStartRes,
+  "api.tasks.steer": tasks.TaskSteer, "api.tasks.steer.res": tasks.TaskSteerRes,
+  "api.tasks.move": tasks.TaskMove, "api.tasks.action.res": tasks.TaskActionRes,
+  "api.worktrees.cleanup": tasks.WorktreeCleanupReq, "api.worktrees.cleanup.res": tasks.WorktreeCleanupRes,
+  "node.agent_event": nv1.AgentEvent, "node.event": nv1.NodeEvent,
+  "node.task_events": nv1.TaskEvents, "node.task_events.res": nv1.TaskEventsRes,
+  "node.tool_call": nv1.ToolCall, "node.tool_call.res": nv1.ToolCallRes,
+  "node.permission": nv1.PermissionPost, "node.permission.res": nv1.PermissionPostRes,
+  "node.permission.answer": nv1.PermissionAnswer, "node.permission.answer.res": nv1.PermissionAnswerRes,
+  "node.status": nv1.NodeStatus, "node.blob_put": nv1.BlobPut, "node.blob_put.res": nv1.BlobPutRes,
+  "node.session.open": nv1.SessionOpen, "node.session.open.res": nv1.SessionOpenRes,
+  "node.session.turn": nv1.TurnReq, "node.session.steer.res": nv1.SteerRes, "node.session.release.res": nv1.ReleaseRes,
+  "node.git.checks": nv1.GitChecks, "node.git.checks.res": nv1.GitChecksRes,
+  "node.worktrees.cleanup": nv1.WorktreeCleanup, "node.worktrees.cleanup.res": nv1.WorktreeCleanupRes,
 };
 
 /** Routes implemented so far ("METHOD path"). 02's table is the plan; this is what exists. */

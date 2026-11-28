@@ -20,7 +20,7 @@ import type { Db, Row } from "../db/db.ts";
 import { log } from "../log.ts";
 import { authorize, type Authorize, type Caller } from "./authz.ts";
 import { Pump, type Conn, type PumpOpts } from "./pump.ts";
-import { approvalView, deviceView, headSeq, runView, taskView, threadView, timeline } from "./views.ts";
+import { approvalView, deviceView, headSeq, nodeView, runView, taskView, threadView, timeline } from "./views.ts";
 
 export type { Caller, Conn };
 /** What the link writes back as the `res` frame. */
@@ -118,6 +118,7 @@ export class Api {
         approvals: db.all<Row>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC LIMIT ?", LIST_MAX).map((r) => approvalView(db, blobs, r)),
         tasks: db.all<Row>(`SELECT * FROM tasks WHERE status NOT IN ${ENDED_TASK} ORDER BY ts`).map((r) => taskView(blobs, r)),
         devices: db.all<Row>("SELECT * FROM devices WHERE removed_at IS NULL ORDER BY created_at").map(deviceView),
+        nodes: db.all<Row>("SELECT * FROM nodes ORDER BY device_id").map((r) => nodeView(db, r)),
       };
     });
   }

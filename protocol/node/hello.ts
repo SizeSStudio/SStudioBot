@@ -11,11 +11,22 @@ export const Hello = z.object({
   quotas: z.record(z.string(), z.unknown()),
   max_parallel: z.number().int().positive().optional(),
   cwd: z.string().optional(),         // the node's default directory (SBOT_NODE_CWD, else its account's home); the hub resolves relative paths against it
+  // W4
+  app_version: z.string().optional(), // the node program's package version (nodes.version)
+  /** 05 升级 step 4: the last self-upgrade; ok false = it rolled back to `from` */
+  upgrade: z.object({ from: z.string(), to: z.string(), ok: z.boolean(), error: z.string().optional() }).optional(),
+  /** sessions the node still holds after a restart (its state file), so the hub can tell lost ones from live ones */
+  sessions: z.array(z.object({ ref: z.string(), task_id: z.string().optional(), attempt: z.number().int().optional(), agent: z.string(), state: z.string() })).optional(),
 });
 export const HelloRes = z.object({
   target_sha: z.string(),             // 05: differs from `sha` → the node upgrades itself
   min_version: z.number().int(),
   tools: z.array(z.object({ name: z.string(), description: z.string(), schema: z.unknown() })).optional(),
+  // W4
+  /** false: the node's protocol is below min — it only upgrades, the hub sends it no work (03) */
+  accepts_work: z.boolean().optional(),
+  /** my login on git platforms (people.yaml): the only PR comments a CI watch treats as instructions (05) */
+  owner_git: z.array(z.string()).optional(),
 });
 
 // exec/fs are only for the local node; a remote node answers 403 ※ (05). No time or output limit (§办3.4); stop = interrupt.

@@ -19,7 +19,7 @@
 // - `delta.chunk_seq` counts from 1 per item; take a delta only when it is the last one you have + 1 (a `snapshot`
 //   sets that count to its `chunk_seq`); otherwise wait for the next snapshot.
 import { z } from "zod";
-import { Approval, Device, Run, Task, Thread, TimelineEntry } from "./entities.ts";
+import { Approval, Device, Node, Run, Task, Thread, TimelineEntry } from "./entities.ts";
 import { Ease, Read } from "./push.ts";
 
 const seq = z.number().int().nonnegative();
@@ -48,6 +48,8 @@ export const BootstrapRes = z.object({
   ease: Ease.optional(),
   /** W3: read marks of what this snapshot shows (threads, pending approvals) */
   reads: z.array(Read).optional(),
+  /** every node (W4; an older hub leaves it out) */
+  nodes: z.array(Node).optional(),
 });
 export type BootstrapRes = z.infer<typeof BootstrapRes>;
 

@@ -85,8 +85,13 @@ type AgentEvent =
   | { k: "turn_end"; stop: "done" | "interrupted" | "error"; error?: string }
   | { k: "usage"; input_tokens?: number; output_tokens?: number; ms?: number }   // usage.source = node
   | { k: "quota"; resets_at?: number; remaining?: unknown }        // 认出订阅上限
-  | { k: "progress"; text: string };                               // progress.md 的新内容
+  | { k: "progress"; text: string }                                // progress.md 的新内容
+  | { k: "session"; ref: string }                                  // ※ agent 第一轮后才给出 session id 时补报
+  | { k: "diff"; item?: string; blob?: string; text?: string; stat?: unknown }  // ※ 定稿 diff（大的先传 blob）
+  | { k: "pr"; url: string; repo?: string; number?: number; branch?: string };  // ※ agent 开了 PR，主据此盯 CI
 ```
+
+- 线上的 schema 在 `protocol/node/v1.ts`（W4）：批里每条是 `{ seq, ts, e }`，`e` 逐条按 `AgentEvent` 校验，认不出的 `k` 只跳过那一条 ※。
 
 - 每个 session 一个单调 `event_seq`；批量回传 `/node/v1/tasks/:id/events { attempt, from_seq, events }`，主按 `task_id:attempt:event_seq` 幂等。离线时攒在本地（文件），重连后补发；`attempt` 旧了主整批丢。
 - 打码在主上做（03 tools），节点不碰密钥规则；但 `text` 增量照样按 50～100 ms 一批发，减少帧数。

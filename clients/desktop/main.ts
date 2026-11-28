@@ -13,6 +13,7 @@ import { fileURLToPath } from 'node:url'
 import { PAIR_LINK_PREFIX, type PairCode } from '../../protocol/pair.ts'
 import { PAIR_ERROR_TEXT, readPairCode } from '../app/src/conn/pairCode.ts'
 import { classifyLink } from '../app/src/render/links.ts'
+import { cleanupHtmlCache, HTML_DIR_NAME, openHtmlFile } from './html.ts'
 import { backendOf, BackendRefused, canHoldKeys, DeviceKeys } from './keys.ts'
 import { buildCsp, makeHandler, ORIGIN, SCHEME } from './protocol.ts'
 
@@ -135,11 +136,18 @@ function registerBridge() {
     await shell.openExternal(v.url)
     return true
   })
+
+  // agent HTML (D14): never rendered inside the app; verified against sha and handed to the system browser
+  const htmlDir = () => path.join(SELFTEST ? app.getPath('userData') : app.getPath('temp'), HTML_DIR_NAME)
+  handle('html.open', (sha: unknown, bytes: unknown) =>
+    openHtmlFile(sha, bytes, { dir: htmlDir(), openPath: SELFTEST ? async () => '' : (file) => shell.openPath(file) }),
+  )
 }
 
 // ── start ─────────────────────────────────────────────────────────────────────────────────────────────────────
 app.whenReady().then(async () => {
   backend = await backendOf(safeStorage, process.platform)
+  if (!SELFTEST) void cleanupHtmlCache(path.join(app.getPath('temp'), HTML_DIR_NAME))
   const ses = session.defaultSession
   ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false)) // no camera, mic, notifications prompts, geolocation …
   ses.setPermissionCheckHandler(() => false)

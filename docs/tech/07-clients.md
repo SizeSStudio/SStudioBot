@@ -8,16 +8,18 @@
 clients/                 npm workspace，自己的 lockfile；Node 24 构建（Expo 58 拒奇数版本）
   app/                   Expo + expo-router
     app/                 路由：(tabs)/ 对话 · 办 · 读 · 参 · 觉 · 改；self/（它自己：提案、节点、用量、配置、设备、连接、信息源）；pair.tsx
-                         W2 只有 对话 · 线程 两页（只读）、thread/[id]、self/devices、pair、selftest（P11 ③ 的恶意样本，桌面自检用）；其余随波次加
-    src/conn/            连接状态机：WS → Noise → auth → bootstrap → stream（用 ../../protocol）
-    src/store/           规范化 store
+                         W3 有 对话 · 线程 · 等你、thread/[id]、item/[ref]、self/（省心、手机通知、设备）、pair、selftest（P11 ③ 恶意样本，桌面自检用）；其余随波次加
+    src/conn/            连接状态机（WS → Noise → auth → bootstrap → stream）、写层（writes.ts、actions.ts）、在场（presence.ts）
+    src/store/           规范化 store（基线 + 乐观叠层）
     src/render/          markdown、代码块、diff、不可信内容规矩
-    src/ui/              从 react-native-reusables（Uniwind 版）抄进来的组件，改成 coss 的变量
+    src/push/            FCM 令牌注册与四渠道规则（notify.native.ts / notify.web.ts）
+    src/html/            agent 做的 HTML 拉取与校验（pull.ts / open.ts）
+    src/ui/              从 react-native-reusables（Uniwind 版）抄进来的组件，改成 coss 的变量；纯 View 二维码（QR.tsx）
     src/device/          设备密钥：device.native.ts（Expo 本地模块）、device.web.ts（调 Electron bridge）
-    modules/device-key/  Expo 本地模块（Kotlin）：Keystore
+    modules/device-key/  Expo 本地模块（Kotlin）：Keystore + 界面偏好
     global.css           coss 变量 → Tailwind 4 `@theme`
   desktop/
-    main.ts  preload.cjs  protocol.ts  keys.ts      preload 是 CJS：sandbox 下的 preload 不能是 ESM
+    main.ts  preload.cjs  protocol.ts  keys.ts  html.ts    preload 是 CJS：sandbox 下的 preload 不能是 ESM
   scripts/               lock-check.ts（两份 lockfile 比对）、bundle-report.ts（产物大小、产物里的 ws 地址）
 ```
 
@@ -39,7 +41,8 @@ clients/                 npm workspace，自己的 lockfile；Node 24 构建（E
 | 动画、手势、键盘 | reanimated 4.7.1、react-native-worklets 0.13、gesture-handler 3.3、react-native-keyboard-controller 1.22.7 | reanimated 一系跟 Expo 的绑定表走 |
 | 浮层 | `@rn-primitives`（菜单、对话框）、`@expo/ui` BottomSheet | 桌面上底部面板换成对话框或侧栏 |
 | 状态 | 不引库 | 手写 store + `useSyncExternalStore` |
-| 推送 | expo-notifications | 只用 `getDevicePushTokenAsync()` 拿 FCM 令牌，不用 Expo 推送服务 |
+| 推送 | expo-notifications 58.1.10 | 只用 `getDevicePushTokenAsync()` 拿 FCM 令牌，不用 Expo 推送服务 |
+| 二维码 | uqr 0.1.3 | 邀请码二维码：纯 JS 算矩阵、View 合并画块，无图无 SVG、无 install 脚本、无网络请求 ※ |
 | 扫码 | expo-camera | 配对码 |
 | 加密 | react-native-quick-crypto 1.1.10 + react-native-nitro-modules 0.37.2（只安卓） | Noise 的 ChaCha20-Poly1305、X25519 和随机数走原生（P1：Hermes 上 noble 太慢）；没有 install 脚本（只有 `prepare`，从 registry 装不跑）；要 prebuild |
 | 桌面壳 | electron（锁版本，CI 显式装二进制并校验 checksum） | |
@@ -58,11 +61,11 @@ clients/                 npm workspace，自己的 lockfile；Node 24 构建（E
 - 关闭码（06，常量在 `protocol/pair.ts`，主的 `link/session.ts` 也从这里取）：4401 认不出、4410 被删 → 停在「要重新配对」，不再重连；4426 → 升级页；4404 → 等主，照退避；别的码和网络断开 → 退避重连。配对中收到 4401/4410 是「配对失败」（码过期、用过、伪造，或这把钥匙主见过）。
 - 配对码：`protocol/pair.ts` 的 `decodePairCode` 解；设备再把 `relay` 收紧到 `wss://`（`ws://` 只许回环），不带用户名、查询、片段 ※（它要进桌面 CSP 的 `connect-src`）。连 `<relay>?hub=<hub_pk>`。码的 `secret` 只在内存里等主收下，不落盘。
 - **每次配对一把新钥匙**（06：主见过的公钥，删了也不能再配）：桌面 `pair.accept` 时 `keys.renew()`，安卓先 `deleteKeys()` 再生成；「解除配对」删配对信息和私钥 ※。已经配对的设备要换主，先解除。
-- W3 之前设备的写（邀请、改名、删除）只在 `hub-admin.sock` 上，经中继调是 404；设备页只列表、标明设备名是自称的，改名、删除提示到主上做。
+- W3 起设备写操作（改名、删除、邀请）走 `/api/v1`（确认后才算）；设备名和平台仍标明是各设备自称的，邀请码默认遮住、点开才显二维码和链接，到期自动清 ※。
 - 安卓的 Noise 原语：启动时 quick-crypto 的 ChaCha20-Poly1305 和 X25519 先和 noble 对一遍（含篡改必须解不开），对上才换，否则留 noble 并在设备页标出 ※。
 
-- **写操作**：按 02 路由表的类型。乐观的先改 store，失败回滚并就地提示；确认后才算的按钮转圈，等 `res`；乐观锁 409 时用回来的最新内容替换并提示。没回 `res` 就断线的写操作留在内存队列，重连后用同一个 `client_op_id` 重发。App 被杀就丢（内容不落盘），界面下次打开不假装发出去了。
-- **在场**：前台且有触摸、键盘、滚动时，最多每 30 秒发一次 `POST /api/v1/presence { foreground: true, viewing }`；`viewing` 是当前打开的 thread 或卡片的 ref；切后台立刻发 `foreground: false` ※。
+- **写操作**：按 02 路由表的类型。乐观的按 `client_op_id` 叠在 store 基线之上，失败回滚并就地提示，收到 `res.seq` 后等流追上同一帧一起撤（不闪）；确认后才算的按钮显示处理中，等 `res` 和流追上；乐观锁带 `draft_version`，409/410 用回来的最新内容替换并提示（改稿框里保留我刚写的文字，下次存基于主当前版 ※）。没回 `res` 就断线的写操作留在内存队列，重连后用同一个 `client_op_id` 重发。App 被杀就丢（内容不落盘），界面下次打开不假装发出去了。
+- **在场**：前台且有触摸、点击、键盘、滚动时，最多每 30 秒发一次 `POST /api/v1/presence { foreground: true, viewing }`；`viewing` 是当前打开的 thread 或卡片的 ref，切屏立刻报并合并为 2 秒最多一次 ※；切后台立刻发 `foreground: false` ※。
 - **安卓后台**：不保活连接，系统掐了就掐；靠 FCM。回前台用 `after` 续。
 
 ## store（`src/store/`）
@@ -106,9 +109,9 @@ agent 输出、消息、邮件、diff、工具结果一律当不可信：
 
 ## agent 做的 HTML（D14）
 
-- 事件里是 `{ ref: "blob:<sha>", name, size }`，时间线显示一行「打开」。
-- 桌面：bridge 的 `html.open(sha)`，主进程拉 blob 写到 `<temp>/sbot-html/<sha>.html`，`shell.openPath` 交给系统浏览器；启动时清掉 24 小时前的。
-- 安卓：写到 App 私有缓存目录，经 `FileProvider` 只读分享，`ACTION_VIEW` 交给浏览器；24 小时后清（§触6.4 的例外）。系统选择框里会有只能看的「HTML Viewer」，优先交给默认浏览器（P11）。
+- 事件体（`body` 或 `body.html`）里带 `{ ref: "blob:<sha>", name, size }` 且文件名是 `*.html?` ※，时间线显示一行「用浏览器打开」，绝不在应用内渲染。
+- 桌面：渲染进程经 Noise 连接分片拉 `/api/v1/blobs/<sha>`（上限 20 MiB），交 bridge 的 `html.open(sha, bytes)`；主进程校验 sha256 与大小边界、校验目录非符号链接且归当前用户、原子写入 `<temp>/sbot-html/<sha>.html`（0600，干净十六进制文件名），`shell.openPath` 交给系统浏览器，启动时清掉 24 小时前的 ※（主进程不碰 Noise 连接）。
+- 安卓：写到 App 私有缓存目录，经 `FileProvider` 只读分享，`ACTION_VIEW` 交给浏览器；24 小时后清（§触6.4 的例外）；该原生路由随安卓构建接上，未接上之前提示在桌面打开 ※。系统选择框里会有只能看的「HTML Viewer」，优先交给默认浏览器（P11）。
 
 ## Electron（`desktop/`）
 
@@ -122,15 +125,16 @@ agent 输出、消息、邮件、diff、工具结果一律当不可信：
   - `pair.save(pairing)`：只收和内存里那张码对得上、`device_id` 是本机的配对信息，写 `userData/pairing.json`（主公钥、中继、`device_id`、角色，0600）；`pair.current()`；`pair.forget()` 删配对信息和私钥
   - `pair.onLink(cb)`：系统用 `sstudiobot://` 唤起时把链接交给页面（主进程先存着，页面 `takeLink` 取）
   - `link.open(url)`：主进程再查一遍协议白名单，`shell.openExternal`
-  - `html.open(sha)`、`notify(title, body, ref)`：W3 和推送那一波再加，W2 没有
+  - `html.open(sha, bytes)`：主进程核对 64 位小写 hex、非空且 ≤ 20 MiB、sha256 吻合后原子写 `<temp>/sbot-html/<sha>.html` 并 `shell.openPath`（同 `fromApp` 校验，不改 CSP 与 `webRequest`）
+  - `notify(title, body, ref)`：桌面通知那一波再加
 - 出站：`webRequest` 再拦一层，不是 `sbot-app://` 的请求只放行连配对中继的 WebSocket ※。权限请求、权限检查一律否。
 - `--selftest`：一次性的 userData 里加载 `/selftest`（27 个 P11 ③ 恶意样本），记所有非 `sbot-app://` 请求和 CSP 报错，最后页面自己 `fetch` 一个 `.invalid` 地址当金丝雀，必须被 CSP 拦下并被看到，否则前面的「零外部请求」不作数；都对才退出 0。
 - 只在本机构建、自用，不签名不公证（D10）；Mac 先，Windows 同一个包。
 
 ## 安卓
 
-- **设备密钥**（P4 定细节）：`modules/device-key` 本地模块。API ≥ 33 且 Keystore 支持 Ed25519：在 Keystore（有 StrongBox 就用）里生成，不可导出；否则 noble 在 JS 里生成，Keystore 里一把不可导出的 AES-GCM 包起来，密文存 App 私有目录。JS 只拿到 `publicKey()`、`sign()`。
-- **FCM**：`getDevicePushTokenAsync()` → `PUT /api/v1/devices/self/push-token`；令牌变了再交。`google-services.json` 是实例数据，`app.config.ts` 从 `~/.config/sbot/` 读路径，不进仓库。通知渠道四个：等我回、审批、任务、知道就好。点通知 → `sstudiobot://item/<ref>` 打开那一条。App 设置里能关手机通知（关了发 `push-token` 空值，主改推渠道）。
+- **设备密钥**（P4 定细节）：`modules/device-key` 本地模块。API ≥ 33 且 Keystore 支持 Ed25519：在 Keystore（有 StrongBox 就用）里生成，不可导出；否则 noble 在 JS 里生成，Keystore 里一把不可导出的 AES-GCM 包起来，密文存 App 私有目录。JS 只拿到 `publicKey()`、`sign()`。模块同时提供 `getPref` / `setPref` 存少量界面偏好（如手机通知开关，键名限 `[a-z_]{1,32}`、值限 200 字，不存内容与密钥）※。
+- **FCM**：没交过令牌时先发 `PUT /api/v1/devices/self/push-token { token: null }` 探测，主答 `fcm_enabled: true` 才向系统要通知权限与 `getDevicePushTokenAsync()` 令牌 ※；令牌变了再交。`google-services.json` 是实例数据，`prebuild` 从 `~/.config/sbot/` 拷进来（gitignored），没有时 `app.config.ts` 设 `extra.fcm = false`，推送模块完全不触发 ※。通知渠道四个：等我回（`wait`）、审批（`approval`）、任务（`task`）、知道就好（`fyi`）。点通知 → `sstudiobot://item/<ref>` 显示主上的状态，不用通知载荷；`personal` 通知只显示「有一条私人的」。App 设置里能关手机通知（关了发 `push-token` 空值，主改推渠道）。
 - **配对**：扫码（expo-camera）、系统唤起 `sstudiobot://pair#…`、「粘贴配对码」三条路。
 - 构建：本机 `expo prebuild` + Gradle，不用 EAS 云构建、不用 EAS Update；侧载（D10），手动发版（D11）。
 - 安全区：Android 15 起强制 edge-to-edge，根布局用 `useSafeAreaInsets` 留顶部（第三方组件不认 Uniwind 的 `className`，`SafeAreaView` 写 `flex-1` 会塌成 0 高）；状态栏图标颜色跟应用主题走（P11）。

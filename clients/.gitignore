@@ -7,3 +7,4 @@ desktop/web/
 out/
 *.apk
 *.aab
+app/google-services.json

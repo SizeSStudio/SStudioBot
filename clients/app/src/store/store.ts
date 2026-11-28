@@ -4,12 +4,20 @@
 //
 // Plain TS, no React: hooks.ts puts useSyncExternalStore on top. Every change bumps a version per key, so a
 // component that reads one entity, one entity kind or one lane re-renders only when that changed.
+//
+// W3 optimistic layer (protocol/api/write.ts): a write may lay patches over rows (or add rows of its own, id
+// `op:<client_op_id>`). Reads see base + patches; the base stays what the hub said. A patch goes when its write failed
+// (rollback, conn/writes.ts says so in place) or once the stream has reached the seq of its `res`: by then the hub's own
+// rows are in, so the switch from patch to real row happens in one flush (no flicker).
 import type { Delta, Ev, Snap } from "../../../../protocol/frames.ts";
 import type { BootstrapRes } from "../../../../protocol/api/stream.ts";
 import type { ThreadItemsRes } from "../../../../protocol/api/read.ts";
 import { ENTITY_DATA, type EntityData, type EntityName } from "../../../../protocol/api/entities.ts";
 
-export type Rec<E extends EntityName = EntityName> = { seq: number; data: EntityData[E] };
+/** `pending`: the client_op_id of a write whose patch this view still shows */
+export type Rec<E extends EntityName = EntityName> = { seq: number; data: EntityData[E]; pending?: string };
+/** A write's patch on one row: base (undefined = no such row) → what to show (null = hide it). */
+export type Patch = { entity: EntityName; id: string; fn: (base: unknown) => unknown };
 export type Live = { run: string; item: string; text: string; chunks: number | null; stale: boolean; tool?: string };
 export type TimelineRow = { entity: "input" | "item" | "approval" | "task"; id: string; ts: number; rec: Rec };
 
@@ -39,6 +47,7 @@ export class Store {
   #versions = new Map<string, number>();
   #subs = new Set<() => void>();
   #dirty = new Set<string>();
+  #over = new Map<string, { patches: Patch[]; until: number | null }>(); // client_op_id → its patches, in write order
   /** where the stream resumes: the highest `ev.seq` / `beat.seq` seen (02: beat.seq is the resume cursor) */
   seq = 0;
   /** a bootstrap has been loaded since the last reset */
@@ -46,10 +55,25 @@ export class Store {
 
   // ── reads ─────────────────────────────────────────────────────────────────────────────────────────────────
   get<E extends EntityName>(entity: E, id: string): Rec<E> | undefined {
+    const base = this.#rows.get(entity)?.get(id) as Rec<E> | undefined;
+    if (this.#over.size === 0) return base;
+    let data: unknown = base?.data, pending: string | undefined;
+    for (const [op, o] of this.#over) for (const p of o.patches) {
+      if (p.entity === entity && p.id === id) { data = p.fn(data); pending = op; }
+    }
+    if (pending === undefined) return base;
+    return data === null || data === undefined ? undefined : { seq: base?.seq ?? 0, data: data as EntityData[E], pending };
+  }
+  /** what the hub said, without the optimistic layer */
+  base<E extends EntityName>(entity: E, id: string): Rec<E> | undefined {
     return this.#rows.get(entity)?.get(id) as Rec<E> | undefined;
   }
   list<E extends EntityName>(entity: E): Rec<E>[] {
-    return [...(this.#rows.get(entity)?.values() ?? [])] as Rec<E>[];
+    const ids = new Set(this.#rows.get(entity)?.keys() ?? []);
+    for (const o of this.#over.values()) for (const p of o.patches) if (p.entity === entity) ids.add(p.id);
+    const out: Rec<E>[] = [];
+    for (const id of ids) { const r = this.get(entity, id); if (r) out.push(r); }
+    return out;
   }
   threadByLane(lane: string): Rec<"thread"> | undefined {
     return this.list("thread").find((r) => r.data.lane === lane);
@@ -57,10 +81,12 @@ export class Store {
   /** One lane's inputs, items, approvals and tasks, oldest first (§触6.4: merged by time). */
   timeline(lane: string): TimelineRow[] {
     const out: TimelineRow[] = [];
-    for (const k of this.#lanes.get(lane) ?? []) {
+    const keys = new Set(this.#lanes.get(lane) ?? []);
+    for (const o of this.#over.values()) for (const p of o.patches) if (isTimeline(p.entity)) keys.add(`${p.entity}\u0000${p.id}`);
+    for (const k of keys) {
       const [entity, id] = k.split("\u0000") as [TimelineEntity, string];
       const rec = this.get(entity, id);
-      if (rec) out.push({ entity, id, ts: tsOf(entity, rec.data), rec });
+      if (rec && laneOf(entity, rec.data) === lane) out.push({ entity, id, ts: tsOf(entity, rec.data), rec });
     }
     return out.sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
@@ -78,6 +104,7 @@ export class Store {
   version = (key: string): number => this.#versions.get(key) ?? 0;
 
   // ── writes (from the connection) ──────────────────────────────────────────────────────────────────────────
+  /** Empty the rows (a `reset` frame, or before a bootstrap). Pending writes' patches stay: they are still pending. */
   reset(): void {
     for (const [entity, rows] of this.#rows) for (const id of rows.keys()) this.#touchRow(entity, id, rows.get(id)!.data);
     this.#rows.clear(); this.#lanes.clear(); this.#live.clear(); this.#paging.clear();
@@ -94,12 +121,15 @@ export class Store {
     for (const a of b.approvals) put("approval", a.id, a);
     for (const t of b.tasks) put("task", t.id, t);
     for (const d of b.devices) put("device", d.id, d);
+    if (b.ease) put("ease", "ease", b.ease);
+    for (const r of b.reads ?? []) put("read", r.ref, r);
     for (const [threadId, tl] of Object.entries(b.timelines)) {
       for (const e of tl.entries) if (isEntity(e.entity)) put(e.entity, e.id, e.data);
       this.#paging.set(threadId, tl.next_before);
     }
     this.seq = b.seq;
     this.loaded = true;
+    this.#settle();
     this.#flush();
   }
 
@@ -113,9 +143,9 @@ export class Store {
 
   ev(e: Ev): void {
     if (e.seq > this.seq) this.seq = e.seq;
-    if (!isEntity(e.entity)) { this.#flush(); return; } // unknown entity: ignore, but the cursor moved (02)
-    const held = this.get(e.entity, e.id);
-    if (held && held.seq >= e.seq) return;
+    if (!isEntity(e.entity)) { this.#settle(); this.#flush(); return; } // unknown entity: ignore, but the cursor moved (02)
+    const held = this.base(e.entity, e.id);
+    if (held && held.seq >= e.seq) { this.#settle(); this.#flush(); return; }
     if (e.op === "delete") this.#drop(e.entity, e.id);
     else this.#put(e.entity, e.id, e.seq, e.data);
     if (e.op === "upsert") {
@@ -124,10 +154,58 @@ export class Store {
       if (e.entity === "item" && typeof d?.live_key === "string") this.#dropLive((l) => l.item === d.live_key);
       if (e.entity === "run" && d?.status !== "running") this.#dropLive((l) => l.run === e.id);
     }
+    this.#settle();
     this.#flush();
   }
 
-  beat(seq: number): void { if (seq > this.seq) this.seq = seq; }
+  beat(seq: number): void {
+    if (seq > this.seq) this.seq = seq;
+    // a write's own rows may be filtered out of this stream; the beat still says the stream is past them
+    this.#settle();
+    this.#flush();
+  }
+
+  /**
+   * The hub's current copy of one entity, from a write's answer (a 409 / 410 Conflict body). It replaces ours unless we
+   * already hold a newer one from the stream; `seq` when the answer had one, else it ranks with what we hold.
+   */
+  current(entity: EntityName, data: unknown, seq?: number): void {
+    const d = data as { id?: unknown; ref?: unknown } | null;
+    const id = entity === "read" ? d?.ref : entity === "ease" ? "ease" : d?.id;
+    if (typeof id !== "string") return;
+    const held = this.base(entity, id);
+    const at = seq ?? Math.max(held?.seq ?? 0, 0);
+    if (held && held.seq > at) return;
+    this.#put(entity, id, at, data);
+    this.#flush();
+  }
+
+  // ── the optimistic layer (conn/writes.ts) ──────────────────────────────────────────────────────────────────
+  /** Lay a write's patches over the store now. */
+  overlay(op: string, patches: Patch[]): void {
+    this.#over.set(op, { patches, until: null });
+    this.#touchPatches(patches);
+    this.#flush();
+  }
+  /** The write was answered at `seq`: keep the patches until the stream has reached it (no seq: drop now). */
+  settleAt(op: string, seq: number | undefined): void {
+    const o = this.#over.get(op);
+    if (!o) return;
+    if (seq === undefined || seq <= this.seq) return this.dropOverlay(op);
+    o.until = seq;
+  }
+  /** Roll back (the write failed) or forget it. */
+  dropOverlay(op: string): void {
+    const o = this.#over.get(op);
+    if (!o) return;
+    this.#touchPatches(o.patches); // mark before and after, so the lanes the patch moved rows in/out of both redraw
+    this.#over.delete(op);
+    this.#touchPatches(o.patches);
+    this.#flush();
+  }
+  hasOverlay(op: string): boolean { return this.#over.has(op); }
+  /** Unpairing: nothing of the old pairing may stay on screen. */
+  clearOverlays(): void { for (const op of [...this.#over.keys()]) this.dropOverlay(op); }
 
   delta(d: Delta): void {
     const k = liveKey(d.run, d.item);
@@ -157,8 +235,22 @@ export class Store {
   }
 
   // ── internals ─────────────────────────────────────────────────────────────────────────────────────────────
+  /** drop the patches of answered writes the stream has caught up with (same flush as the rows that replace them) */
+  #settle(): void {
+    for (const [op, o] of this.#over) {
+      if (o.until !== null && o.until <= this.seq) { this.#touchPatches(o.patches); this.#over.delete(op); this.#touchPatches(o.patches); }
+    }
+  }
+
+  #touchPatches(patches: Patch[]): void {
+    for (const p of patches) {
+      const r = this.get(p.entity, p.id);
+      this.#touchRow(p.entity, p.id, r?.data ?? this.base(p.entity, p.id)?.data ?? {});
+    }
+  }
+
   #put(entity: EntityName, id: string, seq: number, raw: unknown): void {
-    const held = this.get(entity, id);
+    const held = this.base(entity, id);
     if (held && held.seq > seq) return;
     // the schema is the contract; a row that doesn't fit it is skipped rather than shown half-understood
     const parsed = ENTITY_DATA[entity].safeParse(raw);
@@ -177,7 +269,7 @@ export class Store {
   }
 
   #drop(entity: EntityName, id: string): void {
-    const held = this.get(entity, id);
+    const held = this.base(entity, id);
     if (!held) return;
     this.#unindex(entity, id, held.data);
     this.#rows.get(entity)!.delete(id);

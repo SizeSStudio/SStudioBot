@@ -1,5 +1,6 @@
 // A sandboxed preload has to be CommonJS. The whole bridge (07): the page can ask for the public key and a signature,
-// hand over a pairing code, keep its pairing, open a link. The private key never comes across.
+// hand over a pairing code, keep its pairing, open a link, or hand agent HTML bytes to the system browser. The private
+// key never comes across.
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('sbot', {
@@ -22,4 +23,5 @@ contextBridge.exposeInMainWorld('sbot', {
     },
   },
   link: { open: (url) => ipcRenderer.invoke('link.open', String(url)) },
+  html: { open: (sha, bytes) => ipcRenderer.invoke('html.open', String(sha), bytes) },
 })

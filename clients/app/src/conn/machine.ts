@@ -11,7 +11,8 @@
 //   else (network, 4400 protocol, relay limits) → retry with backoff.
 // - After a drop, `after` is the store's cursor: the newest `ev.seq` / `beat.seq` (02), so nothing is skipped and a
 //   replayed `ev` is dropped by seq. A `reset` frame clears the store and bootstraps again on the same connection.
-// - Reads only in W2: pending requests fail on a drop; W3 adds the write queue with `client_op_id`.
+// - Pending requests fail on a drop. Writes carry `client_op_id` (conn/writes.ts keeps them and sends them again with
+//   the same id once this is live again).
 import { finishInitiator, startInitiator, type Transport } from "../../../../protocol/noise/channel.ts";
 import { encodeFrame, parseFrame, type Frame, type Req, type Res } from "../../../../protocol/frames.ts";
 import { PROTOCOL } from "../../../../protocol/version.ts";
@@ -77,6 +78,7 @@ export interface ConnDeps {
 }
 
 type Pending = { resolve: (r: Res) => void; reject: (e: Error) => void };
+type ReqOpts = { query?: Record<string, string>; body?: unknown; client_op_id?: string };
 
 export class Connection {
   state: ConnState = { s: "idle" };
@@ -123,7 +125,7 @@ export class Connection {
 
   get live(): boolean { return this.state.s === "live"; }
 
-  request(method: Req["method"], path: string, opts: { query?: Record<string, string>; body?: unknown } = {}): Promise<Res> {
+  request(method: Req["method"], path: string, opts: ReqOpts = {}): Promise<Res> {
     if (!this.#transport || (this.state.s !== "live" && this.state.s !== "sync")) return Promise.reject(new Error("not connected"));
     return this.#req(method, path, opts);
   }
@@ -311,12 +313,15 @@ export class Connection {
   }
 
   // ── plumbing ──────────────────────────────────────────────────────────────────────────────────────────────
-  #req(method: Req["method"], path: string, opts: { query?: Record<string, string>; body?: unknown } = {}): Promise<Res> {
+  #req(method: Req["method"], path: string, opts: ReqOpts = {}): Promise<Res> {
     const id = this.#nextId++;
     return new Promise<Res>((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
       try {
-        this.#send({ t: "req", id, method, path, ...(opts.query ? { query: opts.query } : {}), ...(opts.body !== undefined ? { body: opts.body } : {}) });
+        this.#send({
+          t: "req", id, method, path, ...(opts.query ? { query: opts.query } : {}), ...(opts.body !== undefined ? { body: opts.body } : {}),
+          ...(opts.client_op_id ? { client_op_id: opts.client_op_id } : {}),
+        });
       } catch (e) { this.#pending.delete(id); reject(e instanceof Error ? e : new Error(String(e))); }
     });
   }

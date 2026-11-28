@@ -18,6 +18,9 @@ export interface DeviceKeyNative {
   /** pairing info (hub key, relay, device id; no secrets) in the app's private SharedPreferences */
   getPairing(): Promise<string | null>
   setPairing(json: string | null): Promise<void>
+  /** interface preferences (the phone-notifications switch); keys [a-z_]{1,32}, values ≤ 200 chars, no content */
+  getPref(key: string): Promise<string | null>
+  setPref(key: string, value: string | null): Promise<void>
   info(): Promise<KeyInfo>
 }
 

@@ -4,9 +4,9 @@
 
 ## 断点
 
-- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合。W1 完成（#35、#39、#43、#45、#46、#47）。W2 完成（#49–#52，验收 #56），只剩要公网中继、手机、飞书测试应用的三项。W3、W4 的 schema 已合（#55、#54）；W3 主的一侧（`w3a-writes` → `w3b-push`）、W3 客户端（`w3c-clients`）、W4（`w4a-hub` → `w4b-node`）三个子线程并行。
-- 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度），11-28 在各自线程里续上，worktree 里的半成品都在。
-- 下一步：`w4a-hub` 合了开 W4 客户端一侧（任务 thread、步骤、diff、节点页）；`w3a-writes` 合了让 `w3c-clients` 补 e2e。审：W3 的审批、闸门、鉴权逐行；W4 的节点权限、沙箱、`deploy/node/` 逐行。W2 验收里经中继公网入口、手机、飞书测试应用的几项停下等我（等你准备）；`deploy/relay/`、`deploy/node/` 写好不装。
+- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合。W1 完成（#35、#39、#43、#45、#46、#47）。W2 完成（#49–#52，验收 #56），只剩要公网中继、手机、飞书测试应用的三项。W3、W4 的 schema 已合（#55、#54），W3 客户端已合（#58）；W3 主的一侧（`w3a-writes` → `w3b-push`）、W4（`w4a-hub` → `w4b-node`）停着，等换模型。
+- 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度）。11-28 按你说的换 Gemini 4 Neon（magpie-us）续：W3c 做完合了；W3a、W4a 半路被 403 停掉（Google 停了那个账号的 Antigravity），这条路不能再用。半成品都存成本地 ref（没推）：`refs/wip/w3a-writes`、`refs/wip/w4a-hub`（换 Neon 前），`refs/wip/w3a-writes-neon`、`refs/wip/w4a-hub-neon`（Neon 做到的，含前者，基于 08985c2）。
+- 下一步：换好模型后，W3a 从 `refs/wip/w3a-writes-neon`、W4a 从 `refs/wip/w4a-hub-neon` 接着做（W4a 的 `api/index.ts` 和 #54 的 `nodeView`、`nodes` 冲突，两边都留）；`w4a-hub` 合了开 W4 客户端一侧（任务 thread、步骤、diff、节点页）；`w3a-writes` 合了让 W3 客户端补 e2e。审：W3 的审批、闸门、鉴权逐行；W4 的节点权限、沙箱、`deploy/node/` 逐行。W2 验收里经中继公网入口、手机、飞书测试应用的几项停下等我（等你准备）；`deploy/relay/`、`deploy/node/` 写好不装。
 - 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*' 'w2*' 'w3*' 'w4*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
 
 ## 等你过目
@@ -50,6 +50,13 @@
   - 飞书 `/pair` 回的配对链接留在发件表里：10 分钟或用一次就作废，06 已写明这条路经过飞书的服务器（审 #51 时我认的）。
   - 审 #51 时记下没改的两处小毛病：中继拒绝日志里的路径没截长度；SIGHUP 重读不改心跳间隔。
 - W2c 的 ※（#52 描述有全表）：设备上中继只认 `wss://`（`ws://` 只许回环）；每次配对一把新钥匙，「解除配对」连私钥一起删；桌面配对码只在主进程内存；`webRequest` 再拦一层，只放行连配对中继的 WebSocket；安卓 quick-crypto 自检不过就留 noble；`style-src` 带 `'unsafe-inline'`（RN web 要）；产物超基线 20% 只警告；clients job 暂不设必过。
+- W3c 的 ※（#58）：
+  - 配对二维码用 `uqr` 画成 View，默认收起，点了才显示。
+  - 审批锁在屏幕上那一版 `draft_version`；草稿变了先点「看过了」才能批。改草稿撞上 409 时留着我打的字，不被主的版本盖掉。
+  - 在场：30 秒节流；切视图 2 秒内合成一条；转到后台立刻发 `foreground:false`。
+  - 推送：先用 `{token:null}` 探主的 `fcm_enabled`，开着才要通知权限和令牌；`personal` 的推只写「有一条私人的」；点开到 `/item/<ref>`。没有 `google-services.json` 时推送模块不动。
+  - 桌面 HTML 预览按 `body` / `body.html` 认；`html.open` 校验 sha256、大小 ≤ 20 MiB，缓存目录不许是链接、属当前用户 0700，文件 0600，24 小时清。
+  - 安卓的小偏好放 SharedPreferences（键 `[a-z_]{1,32}`、值 ≤ 200 字），不放钥匙。
 
 ## 等你准备
 
@@ -96,3 +103,21 @@
 | W2c 客户端只读 | 连接状态机、store、渲染、页面、Electron 壳、安卓密钥模块、CI clients job | 子线程（Opus），我逐行审（设备密钥、配对、不可信渲染） | 已合 #52（clients 68/68，桌面 selftest 在 GitHub 的 Linux 上也过了）。合并前查过：服务器上的 `sbot-deploy` 和 `main` 一致，按树判断 |
 | W2 验收 | 09 W2 验收清单，中继在服务器回环上 | 子线程（Opus） | 已合 #56（`smoke-w2` 56/56，服务器 7829）。过：三条配对路、私聊流式（14 段，首段比整条早 1.5 s）、工具开始结束实时、连断 5 次不重不缺、切 thread 不发请求、中继抓包 2108 条无明文、错主公钥 4404/4401、重放 4401/4400、node 四条 403、20 连接（配对 p95 157 ms、请求 p95 22 ms、一行推 20 条流最多 97 ms）、删设备 5–6 ms 断开、外部请求 0、只改 `clients/` 不重启核心（PID 没变）。待：手机扫码（手机）、公网中继抓包（公网入口）、飞书真发（测试应用）。顺手修了流式打码：中文整条才出来 → 在非 ASCII 字符后也可切；私钥块分几段来时中间会漏出 → 不在块里切（我逐行审过） |
 
+
+### W3 写、审批、推送
+
+| 块 | 内容 | 谁写 | 状态 |
+|---|---|---|---|
+| W3 schema | 写路由、`client_ops`、审批决定、看一眼和问我、thread、在场、已读、FCM 令牌、省心 | 我 | 已合 #55 |
+| W3a 主的写 | `/api/v1` 写路由、`client_ops` 幂等、审批经 `decide`、草稿和重写、thread 操作 | 子线程，我逐行审（审批、闸门、鉴权） | 停着：Neon 被停，半成品在 `refs/wip/w3a-writes-neon` |
+| W3b 推送 | 推送通道、FCM（`fcm.enabled` 关）、在场和已读、省心 | 子线程，我审 | 等 W3a |
+| W3c 客户端 | 写层（离线排队、同一 `client_op_id` 重发、乐观覆盖、409/410 取主的）、审批卡、在场、安卓推送、桌面 `html.open` | 子线程（Opus → Neon），我逐行审 | 已合 #58（clients 95/95，根 230/230）。e2e 等 W3a |
+
+### W4 任务和节点
+
+| 块 | 内容 | 谁写 | 状态 |
+|---|---|---|---|
+| W4 schema | `/node/v1` 的会话、统一事件、权限、工具调用、CI、worktree；客户端的任务、节点实体 | 我 | 已合 #54 |
+| W4a 主的任务和节点 | 任务、节点登记、会话、权限转审批 | 子线程，我逐行审（节点权限） | 停着：Neon 被停，半成品在 `refs/wip/w4a-hub-neon` |
+| W4b 节点 | `node/`、ACP、沙箱、`deploy/node/`（写好不装） | 子线程，我逐行审 | 等 W4a |
+| W4 客户端 | 任务 thread、步骤、diff、节点页 | 子线程，我审 | 等 W4a |

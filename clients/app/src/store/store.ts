@@ -121,6 +121,7 @@ export class Store {
     for (const a of b.approvals) put("approval", a.id, a);
     for (const t of b.tasks) put("task", t.id, t);
     for (const d of b.devices) put("device", d.id, d);
+    for (const n of b.nodes ?? []) put("node", n.id, n);
     if (b.ease) put("ease", "ease", b.ease);
     for (const r of b.reads ?? []) put("read", r.ref, r);
     for (const [threadId, tl] of Object.entries(b.timelines)) {

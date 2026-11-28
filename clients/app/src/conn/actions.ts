@@ -3,12 +3,17 @@
 import type { Approval, Input, Thread } from "../../../../protocol/api/entities.ts";
 import type { DecideReq, ThreadCreateReq, ThreadPatchReq } from "../../../../protocol/api/write.ts";
 import type { PresenceReq, Read } from "../../../../protocol/api/push.ts";
+import type { TaskStart } from "../../../../protocol/api/tasks.ts";
 import type { Store } from "../store/store.ts";
 import type { WriteResult, Writes } from "./writes.ts";
 
 const enc = encodeURIComponent;
 /** the ref a read mark, a push and the item page use (push.ts Ref) */
 export const refOf = (entity: string, id: string) => `${entity}:${id}`;
+/** a task's lane (and its thread's): task:<id> */
+export const taskLane = (id: string) => `task:${id}`;
+/** what a worktree's 清理 button watches */
+export const worktreeRef = (node: string, path: string) => `worktree:${node}:${path}`;
 
 export type Actions = ReturnType<typeof makeActions>;
 
@@ -86,6 +91,42 @@ export function makeActions(w: Writes, store: Store, me: () => string | null, no
     },
     setPushToken(token: string | null): Promise<WriteResult> {
       return w.write({ method: "PUT", path: "/api/v1/devices/self/push-token", body: { token }, target: "push" });
+    },
+
+    // ── tasks and nodes (W4, protocol/api/tasks.ts) ───────────────────────────────────────────────────────
+    /** 派活: confirmed (the task exists once the hub says so); the answer's `task` is the new one. */
+    startTask(req: TaskStart): Promise<WriteResult> {
+      return w.write({ method: "POST", path: "/api/v1/tasks", body: req, target: "task-new" });
+    },
+    /**
+     * 插话: my line shows in the task thread at once (like a message); the answer says whether it went into this turn
+     * (`applied`) or waits for the next one, and the screen says which (status.ts steerOutcome).
+     */
+    steerTask(id: string, text: string): Promise<WriteResult> {
+      const lane = taskLane(id);
+      return w.write({
+        method: "POST", path: `/api/v1/tasks/${enc(id)}/steer`, body: { text }, target: refOf("lane", lane),
+        patches: (op) => [{
+          entity: "input", id: `op:${op}`,
+          fn: (): Input => ({
+            id: `op:${op}`, lane, kind: "user", source: "client", status: "received", run_id: null,
+            device_id: me(), text, sender_name: null, owner: true, ts: now(),
+          }),
+        }],
+      });
+    },
+    stopTask(id: string): Promise<WriteResult> {
+      return w.write({ method: "POST", path: `/api/v1/tasks/${enc(id)}/stop`, body: {}, target: refOf("task", id) });
+    },
+    cancelTask(id: string): Promise<WriteResult> {
+      return w.write({ method: "POST", path: `/api/v1/tasks/${enc(id)}/cancel`, body: {}, target: refOf("task", id) });
+    },
+    moveTask(id: string, to: { node?: string; agent?: string }): Promise<WriteResult> {
+      return w.write({ method: "POST", path: `/api/v1/tasks/${enc(id)}/move`, body: to, target: refOf("task", id) });
+    },
+    /** 清理 (§办3.4: only when I press it; the branch stays). */
+    cleanupWorktree(node: string, path: string): Promise<WriteResult> {
+      return w.write({ method: "POST", path: `/api/v1/nodes/${enc(node)}/worktrees/cleanup`, body: { path }, target: worktreeRef(node, path) });
     },
 
     // ── presence, reads, 省心 ────────────────────────────────────────────────────────────────────────────────

@@ -6,8 +6,13 @@
 // The on-screen version: a decision carries the draft_version I was shown. If a newer draft arrives while the card is
 // open, the buttons wait until I've said I saw it (the hub would refuse the old version with 409 anyway; this keeps
 // me from approving text I didn't read).
-import { useEffect, useState } from 'react'
-import { Text, TextInput, View } from 'react-native'
+//
+// A node's card (W4, requester node:<device>): the tool, command, path and cwd are shown whole (folded when long,
+// never cut: a cut command could hide its tail), its diff as a diff, and a request too big for the card says so and
+// can be pulled in full. An ask with AskUserQuestion's questions is answered per question (`answers`), and only when
+// every one has an answer; the answer goes with the version on screen like any decision.
+import { useEffect, useMemo, useState } from 'react'
+import { Pressable, Text, TextInput, View } from 'react-native'
 import type { Approval } from '../../../../protocol/api/entities.ts'
 import { ApprovalRes } from '../../../../protocol/api/write.ts'
 import { actions, writes } from '../conn/client.ts'
@@ -15,6 +20,12 @@ import { refOf } from '../conn/actions.ts'
 import { useWrites } from '../store/hooks.ts'
 import type { Rec } from '../store/store.ts'
 import { Btn, Refusal, Row } from '../ui/kit.tsx'
+import { CodeBlock } from '../render/CodeBlock.tsx'
+import { conn } from '../conn/client.ts'
+import { pullBlob } from '../html/pull.ts'
+import { DiffView } from '../task/DiffView'
+import { decodeText, shaOf, splitDiff } from '../task/diff.ts'
+import { answersOf, detailOf, pick, type Picks, type Question } from './permission.ts'
 
 const KIND: Record<string, string> = { send: '发出去', plan: '计划', glance: '看一眼', ask: '问我', proposal: '提案', rollback: '回滚' }
 const STATUS: Record<string, string> = { pending: '等你', approved: '批了', rejected: '拒了', expired: '过期了', superseded: '换了新稿', invalidated: '作废了' }
@@ -50,6 +61,11 @@ export function ApprovalCard({ rec }: { rec: Rec<'approval'> }) {
   const hasDraft = a.kind === 'send' || a.kind === 'plan' || a.kind === 'proposal' || a.kind === 'rollback'
   const editable = a.kind === 'send' || a.kind === 'plan'
   const opts = optionsOf(a.options)
+  const detail = useMemo(() => detailOf(a.request), [a.request])
+  const node = a.kind === 'glance' || a.kind === 'ask'
+  const questions = a.kind === 'ask' ? detail.questions : []
+  const [picks, setPicks] = useState<Picks>({})
+  const answers = answersOf(questions, picks)
 
   const save = async (text: string, base: number) => {
     const r = await actions.saveDraft(a.id, text, base)
@@ -79,9 +95,7 @@ export function ApprovalCard({ rec }: { rec: Rec<'approval'> }) {
       {hasDraft && a.draft !== null ? (
         <View testID="approval-draft" className="rounded bg-muted p-2"><Text selectable className="text-foreground" style={{ lineHeight: 22 }}>{a.draft}</Text></View>
       ) : null}
-      {a.kind === 'glance' && a.request !== null ? (
-        <View className="rounded bg-muted p-2"><Text selectable className="text-foreground text-xs font-mono">{plain(a.request)}</Text></View>
-      ) : null}
+      {node ? <RequestDetail a={a} /> : null}
       {stale ? (
         <View testID="approval-stale" className="rounded border border-border p-2 gap-1">
           <Text className="text-foreground text-xs">稿子刚换成第 {a.draft_version} 版（上面就是）。看过再定。</Text>
@@ -91,7 +105,7 @@ export function ApprovalCard({ rec }: { rec: Rec<'approval'> }) {
 
       {pending && mode.m === 'view' ? (
         <Row wrap>
-          {a.kind === 'glance' || a.kind === 'ask' ? opts.map((o) => (
+          {questions.length ? null : node ? opts.map((o) => (
             <Btn key={o.id} small label={o.label} variant={yes(o.kind) ? 'primary' : 'outline'} busy={busy} disabled={!canAct}
               onPress={() => void actions.decide(a, seen, { action: 'answer', option_id: o.id })} testID={`approval-option-${o.id}`} />
           )) : (
@@ -108,7 +122,20 @@ export function ApprovalCard({ rec }: { rec: Rec<'approval'> }) {
           ))}
         </Row>
       ) : null}
-      {pending && mode.m === 'view' && a.kind === 'ask' ? (
+      {pending && mode.m === 'view' && questions.length ? (
+        <View testID="approval-questions" className="gap-2">
+          {questions.map((q, i) => <QuestionForm key={q.question} q={q} i={i} picks={picks} setPicks={setPicks} disabled={!canAct} />)}
+          <Row wrap>
+            <Btn small variant="primary" label={answers ? '答' : '每一问都答了才能发'} busy={busy} disabled={!canAct || !answers}
+              onPress={() => { if (answers) void actions.decide(a, seen, { action: 'answer', answers }) }} testID="approval-answers-send" />
+            {opts.filter((o) => !yes(o.kind)).map((o) => (
+              <Btn key={o.id} small label={o.label} busy={busy} disabled={!canAct}
+                onPress={() => void actions.decide(a, seen, { action: 'answer', option_id: o.id })} testID={`approval-option-${o.id}`} />
+            ))}
+          </Row>
+        </View>
+      ) : null}
+      {pending && mode.m === 'view' && a.kind === 'ask' && !questions.length ? (
         <Row>
           <TextInput value={answer} onChangeText={setAnswer} placeholder="自己答" maxLength={4000} className="flex-1 border border-border rounded-lg p-2 text-foreground" />
           <Btn small label="答" busy={busy} disabled={!canAct || !answer.trim()} onPress={() => { void actions.decide(a, seen, { action: 'answer', text: answer.trim() }); setAnswer('') }} />
@@ -146,6 +173,72 @@ export function ApprovalCard({ rec }: { rec: Rec<'approval'> }) {
         extra={refusal?.state === 'conflict' && mode.m === 'edit' ? <Text className="text-foreground text-xs">你写的还在框里；上面是现在的稿子。</Text> : null} />
 
       {!pending ? <Outcome a={a} /> : null}
+    </View>
+  )
+}
+
+/** One AskUserQuestion question: its options (one, or several when multiSelect), or my own words. */
+function QuestionForm({ q, i, picks, setPicks, disabled }: { q: Question; i: number; picks: Picks; setPicks: (f: (p: Picks) => Picks) => void; disabled: boolean }) {
+  const p = picks[q.question] ?? { chosen: [], text: '' }
+  return (
+    <View testID="approval-question" className="rounded border border-border p-2 gap-1">
+      {q.header ? <Text selectable className="text-muted-foreground text-xs">{q.header}</Text> : null}
+      <Text selectable className="text-foreground">{q.question}{q.multi ? '（可多选）' : ''}</Text>
+      {q.options.map((o, j) => {
+        const on = p.chosen.includes(o.label)
+        return (
+          <Pressable key={j} testID={`approval-q${i}-o${j}`} accessibilityRole={q.multi ? 'checkbox' : 'radio'} accessibilityState={{ checked: on, disabled }}
+            disabled={disabled} onPress={() => setPicks((s) => pick(s, q, o.label))}
+            className={`rounded px-2 py-1 border ${on ? 'border-primary bg-muted' : 'border-border'}`}>
+            <Text selectable className="text-foreground text-sm">{q.multi ? (on ? '☑ ' : '☐ ') : (on ? '◉ ' : '○ ')}{o.label}</Text>
+            {o.description ? <Text selectable className="text-muted-foreground text-xs">{o.description}</Text> : null}
+          </Pressable>
+        )
+      })}
+      <TextInput testID={`approval-q${i}-text`} value={p.text} editable={!disabled} maxLength={4000} placeholder="或者自己说（写了就用这个）"
+        onChangeText={(t) => setPicks((s) => ({ ...s, [q.question]: { ...(s[q.question] ?? { chosen: [] }), text: t } }))}
+        className="border border-border rounded-lg p-2 text-foreground text-sm" />
+    </View>
+  )
+}
+
+/** What a node asked to do, whole: each field as text (folded when long), its diff, and the rest when it was too big. */
+function RequestDetail({ a }: { a: Approval }) {
+  const d = useMemo(() => detailOf(a.request), [a.request])
+  const diff = useMemo(() => (d.diff ? splitDiff(d.diff) : null), [d.diff])
+  const [full, setFull] = useState<{ s: 'no' } | { s: 'loading' } | { s: 'error'; error: string } | { s: 'yes'; text: string }>({ s: 'no' })
+  const blob = a.request_blob
+  const sha = shaOf(blob?.ref)
+  const pull = async () => {
+    if (!sha || full.s === 'loading') return
+    setFull({ s: 'loading' })
+    try {
+      const r = await pullBlob(sha, 4 * 1024 * 1024, { request: (m, p, o) => conn.request(m, p, o) })
+      setFull(r.ok ? { s: 'yes', text: decodeText(r.bytes) } : { s: 'error', error: r.error })
+    } catch { setFull({ s: 'error', error: '没拉到，连上后再试' }) }
+  }
+  const field = (label: string, v: string | null, lang = '') => (v ? (
+    <View key={label}><Text className="text-muted-foreground text-xs">{label}</Text><CodeBlock text={v} lang={lang} open={false} /></View>
+  ) : null)
+  return (
+    <View testID="approval-request" className="gap-1">
+      {a.requester?.startsWith('node:') ? <Text className="text-muted-foreground text-xs">来自节点 {a.requester.slice(5, 105)}{d.tool ? ` · 工具 ${d.tool.slice(0, 200)}` : ''}</Text> : d.tool ? <Text className="text-muted-foreground text-xs">工具 {d.tool.slice(0, 200)}</Text> : null}
+      {field('命令', d.command, 'bash')}
+      {field('路径', d.path)}
+      {field('在哪个目录', d.cwd)}
+      {diff ? <View><Text className="text-muted-foreground text-xs">要做的改动</Text><DiffView diff={diff} testID="approval-diff" /></View> : null}
+      {field('参数', d.args, 'json')}
+      {field('原样', d.raw)}
+      {blob ? (
+        <View className="gap-1">
+          <Pressable onPress={() => void pull()} testID="approval-request-full" accessibilityRole="button">
+            <Text className="text-foreground text-xs underline">
+              上面只是开头：全文 {Math.ceil(blob.size / 1024)} KB{full.s === 'loading' ? ' · 在拉…' : full.s === 'error' ? ` · ${full.error}` : full.s === 'yes' ? '' : ' · 点开拉全文'}
+            </Text>
+          </Pressable>
+          {full.s === 'yes' ? <CodeBlock text={full.text} lang="json" open={false} /> : null}
+        </View>
+      ) : null}
     </View>
   )
 }

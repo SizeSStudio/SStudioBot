@@ -34,28 +34,41 @@ export type PullHtmlDeps = {
   chunkBytes?: number
 }
 
-export async function pullAndOpenHtml(h: HtmlRef, deps: PullHtmlDeps): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!deps.open) return { ok: false, error: '这台还不能打开（安卓随安卓构建接上）；在桌面上打开' }
-  const max = deps.maxBytes ?? HTML_MAX
+export type BlobDeps = Pick<PullHtmlDeps, 'request' | 'chunkBytes'>
+
+/**
+ * Pull a whole blob in order (02 「大载荷」), at most `max` bytes. The bytes are untrusted (what they are is up to the
+ * caller); a short or out-of-order answer stops it.
+ */
+export async function pullBlob(sha: string, max: number, deps: BlobDeps): Promise<{ ok: true; bytes: Uint8Array } | { ok: false; error: string }> {
+  if (!/^[0-9a-f]{64}$/.test(sha)) return { ok: false, error: '不是一个 blob' }
   const chunk = deps.chunkBytes ?? BLOB_CHUNK
-  if (h.size < 0 || h.size > max) return { ok: false, error: '太大了' }
   const parts: Uint8Array[] = []
   let offset: number | null = 0, total = 0
   while (offset !== null) {
-    const r = await deps.request('GET', `/api/v1/blobs/${h.sha}`, { query: { offset: String(offset), len: String(chunk) } })
+    const r = await deps.request('GET', `/api/v1/blobs/${sha}`, { query: { offset: String(offset), len: String(chunk) } })
     if (r.status !== 200) return { ok: false, error: `主没给（${r.status}）` }
     const b = BlobRes.parse(r.body)
     if (b.total > max) return { ok: false, error: '太大了' }
     const bytes = fromB64(b.data_b64)
     parts.push(bytes); total += bytes.length
     if (total > max) return { ok: false, error: '太大了' }
-    if (b.next_offset !== null && b.next_offset <= offset) return { ok: false, error: '分片偏移不对，没打开' }
+    if (b.next_offset !== null && b.next_offset <= offset) return { ok: false, error: '分片偏移不对' }
     offset = b.next_offset
   }
-  if (total === 0) return { ok: false, error: '内容是空的，没打开' }
   const all = new Uint8Array(total)
   let i = 0
   for (const p of parts) { all.set(p, i); i += p.length }
-  const ok = await deps.open(h.sha, all)
+  return { ok: true, bytes: all }
+}
+
+export async function pullAndOpenHtml(h: HtmlRef, deps: PullHtmlDeps): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!deps.open) return { ok: false, error: '这台还不能打开（安卓随安卓构建接上）；在桌面上打开' }
+  const max = deps.maxBytes ?? HTML_MAX
+  if (h.size < 0 || h.size > max) return { ok: false, error: '太大了' }
+  const got = await pullBlob(h.sha, max, deps)
+  if (!got.ok) return { ok: false, error: got.error === '分片偏移不对' ? '分片偏移不对，没打开' : got.error }
+  if (got.bytes.length === 0) return { ok: false, error: '内容是空的，没打开' }
+  const ok = await deps.open(h.sha, got.bytes)
   return ok ? { ok: true } : { ok: false, error: '校验没过或系统没打开' }
 }

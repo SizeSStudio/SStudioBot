@@ -100,6 +100,8 @@ export const Item = z.object({
   blob: BlobRef.nullable(),
   /** a field was cut and the hub has no full copy either */
   truncated: z.boolean(),
+  /** the `delta.item` this row finishes: `<run_id>:a<n>` for an assistant message, the id for a tool call, else null */
+  live_key: z.string().nullable(),
 });
 export type Item = z.infer<typeof Item>;
 

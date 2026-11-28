@@ -13,9 +13,9 @@
 //   and drop an `ev` that isn't newer. Filtered-out events advance `beat.seq` all the same: `beat.seq` is the `after`
 //   to resume from.
 // - `delta.item` / `snapshot.item`: an assistant message being written is `<run_id>:a<n>` (n counts that run's
-//   messages from 0); it has no run_items row yet. When the finished message arrives as an `item` ev (kind assistant)
-//   for the same run, or the run's `run` ev is no longer running, drop that run's streaming text. A tool call is the
-//   run_items id (the same id as its `item` ev); only expanded tool items stream.
+//   messages from 0); it has no run_items row yet. When an `item` ev arrives whose `live_key` is that key (the
+//   finished message), or the run's `run` ev is no longer running, drop that streaming text. A tool call is its
+//   run_items id (= its `item` ev's id and `live_key`); only expanded tool items stream.
 // - `delta.chunk_seq` counts from 1 per item; take a delta only when it is the last one you have + 1 (a `snapshot`
 //   sets that count to its `chunk_seq`); otherwise wait for the next snapshot.
 import { z } from "zod";

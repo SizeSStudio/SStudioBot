@@ -64,7 +64,7 @@ interface AgentAdapter {
 
 - Claude 的 `AskUserQuestion` 转成 `ask`（§附2.19）：`canUseTool` 里截下，答案放进 `updatedInput.answers` 回给模型。
 - P5–P8 实测要照做的几条（08 有数）：
-  - Claude：`allowedTools` 里写了的工具不再进 `canUseTool`（SDK 会警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），只放我们自己的 `mcp__sbot__*`（闸门在主上）。项目级规则、hooks 只在工作区已信任时加载，SDK 不弹信任框；要让项目规则生效，节点得在 agent 的配置目录里为这个 cwd 预记信任（`.claude.json` 的 `projects[<realpath>].hasTrustDialogAccepted`）※（预记信任同时让仓库里的 `.claude/` hooks 和 MCP 配置生效，要不要这么做我定；不预记则只有用户级规则）。
+  - Claude：`allowedTools` 里写了的工具不再进 `canUseTool`（SDK 会警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），只放我们自己的 `mcp__sbot__*`（闸门在主上）。项目级规则、hooks 只在工作区已信任时加载，SDK 不弹信任框；要让项目规则生效，节点得在 agent 的配置目录里为这个 cwd 预记信任（`.claude.json` 的 `projects[<realpath>].hasTrustDialogAccepted`）※：默认**不预记**，只有用户级规则生效。预记信任会同时让仓库里的 `.claude/` hooks 和 MCP 配置生效，等于跑仓库里的代码，而任务的工作目录可能是别人的仓库；所以做成按仓库开的开关（节点配置里每个仓库一项，默认关，打开走 `widening()`），我点了才预记。
   - ACP（`claude-agent-acp`）：新 session 默认起在 `auto`，**不发权限请求**，直接自动放行；节点建 session 后必须 `session/set_mode` 到 `default`（acpx 库里是 `runtime.setMode`）。
   - Codex、ACP 调我们自己的 MCP 工具也会先问一次（`mcpServer/elicitation/request`、带 `sbot:` 标题的 `session/request_permission`）；闸门在主上，节点对 `sbot` 自己的工具请求直接答允许，不进卡片，其余照常转。
   - pi 没有权限请求；扩展里的 `tool_call` 钩子能返回 `block` 拦下，但那是拒绝不是询问，不当权限系统用。

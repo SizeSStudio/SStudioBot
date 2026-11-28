@@ -157,7 +157,7 @@
 
 发现，照 05 改了（同一个 PR）：
 
-- **Claude 项目规则要工作区已信任**：`settingSources` 含 `project` 也没用，SDK 不弹信任框；首测 0/1，规则内的 `mkdir` 也进了 `canUseTool`。预记 `projects[<realpath>].hasTrustDialogAccepted` 后 3/3（用户规则、项目规则都生效，规则外的两条才进 `canUseTool`）。※ 预记信任同时让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，要不要在节点上这么做，我定；不预记就只有用户级规则。另：`allowedTools` 里写了的工具会绕过 `canUseTool`（SDK 警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），所以只放 `mcp__sbot__*`。
+- **Claude 项目规则要工作区已信任**：`settingSources` 含 `project` 也没用，SDK 不弹信任框；首测 0/1，规则内的 `mkdir` 也进了 `canUseTool`。预记 `projects[<realpath>].hasTrustDialogAccepted` 后 3/3（用户规则、项目规则都生效，规则外的两条才进 `canUseTool`）。※ 预记信任同时让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，所以先定为默认不预记、只用用户级规则，按仓库开（默认关，走 `widening()`，05）；等我过目。另：`allowedTools` 里写了的工具会绕过 `canUseTool`（SDK 警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），所以只放 `mcp__sbot__*`。
 - **ACP 新 session 默认 `auto`，没有权限请求**：`claude-agent-acp` 不设 `defaultMode` 时分类器自动放行，权限项首测 0 条请求；`session/set_mode` 到 `default` 后 3/3。节点建 session 必须切。
 - **pi 没有 `--mcp-config`**，`mcp: false`（这条路）。pi 内置 MCP，挂法是节点带一个扩展（`-e`），里面 `pi.registerMcpServer("sbot", { command, args, env, exposure: "direct" })`；`exposure: "direct"` 工具才会声明给模型；3/3。`~/.pi/agent/mcp.json` 那条路没测（会动用户配置，节点不走）。
 - **Codex 挂 MCP 不用动 `~/.codex/config.toml`**：`thread/start`、`thread/resume` 的 `config` 里给 `mcp_servers.sbot.command/args/env` 就行。Codex 和 ACP 调这个工具都会先问一次（`mcpServer/elicitation/request`；ACP 是标题带 `sbot:` 的 `session/request_permission`）；闸门在主上，节点对 sbot 自己的工具直接答允许。

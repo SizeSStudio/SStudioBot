@@ -95,16 +95,20 @@ const r1 = await ask(tok, "sbot-chat"); await r1.text();
 const r2 = await ask(tok, "sbot-chat"); await r2.text();
 ok(r1.status === 200 && r2.status === 200, "proxy: over the run's output line, still answered");
 await until(() => !!hub.db.one("SELECT 1 FROM outbox WHERE lane = 'outlet:admin' AND payload LIKE '%r_smoke_px%单 run 告警线%'"), "budget alert");
-ok(hub.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM outbox WHERE lane = 'outlet:admin' AND payload LIKE '%r_smoke_px%单 run 告警线%'")!.n === 1, "proxy: alerted once on the admin outlet");
+// one row per admin outlet entry: client, plus feishu:chat:admin now that the Feishu plugin (shadow) is registered
+const alerts = hub.db.all<{ c: string; n: number }>("SELECT channel AS c, COUNT(*) AS n FROM outbox WHERE lane = 'outlet:admin' AND payload LIKE '%r_smoke_px%单 run 告警线%' GROUP BY channel ORDER BY channel");
+ok(JSON.stringify(alerts) === JSON.stringify([{ c: "client", n: 1 }, { c: "feishu", n: 1 }]), "proxy: alerted once on each admin outlet");
 
 mine("发给 oc_smokefake 一句");
 await until(() => !!hub.db.one("SELECT 1 FROM approvals WHERE kind = 'send'"), "send approval");
 const ap = hub.db.one<{ id: number; status: string }>("SELECT id, status FROM approvals WHERE kind = 'send'")!;
-ok(ap.status === "pending" && !hub.db.one("SELECT 1 FROM outbox WHERE channel = 'feishu' AND kind = 'text'"), "send went to an approval, nothing sent");
+// the admin outlet's feishu alert rows are text too; what matters is nothing addressed to the send's target
+ok(ap.status === "pending" && !hub.db.one("SELECT 1 FROM outbox WHERE channel = 'feishu' AND kind = 'text' AND json_extract(target_json, '$.chat') = 'oc_smokefake'"), "send went to an approval, nothing sent");
 const d = decide(hub.db, ap.id, { decision: "approve", by: { kind: "device", device_id: "cli" } });
 ok(d.ok && !!d.outbox_id, "approved by me: one outbox row");
 await until(() => hub.db.one<{ s: string }>("SELECT status AS s FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!.s !== "queued", "settled");
-ok(hub.db.one<{ s: string }>("SELECT status AS s FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!.s === "unrouted", "no feishu plugin yet (W1e): unrouted, not lost");
+const sentRow = hub.db.one<{ s: string; m: string | null }>("SELECT status AS s, sent_msg_id AS m FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!;
+ok(sentRow.s === "sent" && sentRow.m === null, "through the Feishu plugin in shadow mode: settled as sent, nothing called (no msg_id)");
 
 ingest(hub.db, { lane: "client:other", kind: "user", source: "smoke", source_msg_id: "smoke-other-1", payload: { text: "周五能来吗", sender_name: "虚构的人" }, turn: { channel: "client", surface: "smoke:dm", chat: "oc_smokeother" } });
 await until(() => !!hub.db.one("SELECT 1 FROM approvals WHERE kind = 'send' AND context_json LIKE '%\"hold\":true%'"), "held reply");

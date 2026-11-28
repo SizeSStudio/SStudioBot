@@ -7,10 +7,11 @@
   },
   "workspaces": [
     "protocol",
-    "hub"
+    "hub",
+    "node"
   ],
   "scripts": {
-    "test": "node --test 'protocol/test/*.test.ts' 'hub/test/*.test.ts' 'scripts/test/*.test.ts'",
+    "test": "node --test 'protocol/test/*.test.ts' 'hub/test/*.test.ts' 'node/test/*.test.ts' 'scripts/test/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "import-check": "node scripts/import-check.ts",
     "protocol-check": "node scripts/protocol-check.ts"

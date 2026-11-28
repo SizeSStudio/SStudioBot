@@ -89,6 +89,8 @@ export function gateConf() {
     approval_ttl_hours: num(g.approval_ttl_hours, d.approval_ttl_hours),
     send_by_hours: num(g.send_by_hours, d.send_by_hours),
     proactive_daily_cap: num(g.proactive_daily_cap, d.proactive_daily_cap),
+    hold_text: typeof g.hold_text === "string" && g.hold_text.trim() ? g.hold_text : d.hold_text,
+    hold_timeout_text: typeof g.hold_timeout_text === "string" && g.hold_timeout_text.trim() ? g.hold_timeout_text : d.hold_timeout_text,
     // Y11: improve_budget_usd is the old name
     improve_alert_usd: num(g.improve_alert_usd, num(g.improve_budget_usd, d.improve_alert_usd)),
     attention: {

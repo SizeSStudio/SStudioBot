@@ -23,6 +23,8 @@
 - 安卓客户端代码块折叠阈值 400 → 200 行，仍先显示前 80 行（P11 ※，08）：400 行整块一个 `<Text>` 时安卓 UI 线程卡 20 多秒。
 - 节点上 Claude Code 的工作区信任默认不预记，只用用户级规则；按仓库开、默认关、走 `widening()`（P5–P8 ※，05）。预记会让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，等于跑仓库里的代码。
 - ACP 新 session 默认 `auto`、不发权限请求，节点建 session 后切到 `default`（P5–P8，05）。
+- W1d 的 ※（PR 描述「等过目」有全表）：run 令牌放内存 credential store 不走环境变量；出网代理 7820–7828；连崩两次按 `inbox.tries`；熔断后非我输入直接 `failed`；找不到插件的发件标 `unrouted`；check 命令也过命令守卫；令牌不设 TTL；exec 每路输出留前 300 KB。
+- W1d 审后的 ※（#45「审后修」）：稳住对方的两句键名 `hold_text`、`hold_timeout_text`；承诺检测最多等 60 秒，调不通、不成形、超时都按命中；他人会话的出错提示改发管理出口；`hub.sock` 挪到 `$SBOT_HOME/node/`（0750，属组 `SBOT_NODE_GROUP`），部署时 `$SBOT_HOME` 要给节点组 `x`（0710），W7 写进 `deploy/`。
 
 ## 等你准备
 
@@ -55,6 +57,6 @@
 | W1a 骨架 | 根 workspace、tsconfig、`protocol/` 的 frames（含分片）、envelope、version、第一批 schema 和登记表；`import-check`、`protocol-check`；CI 的 server、protocol 步骤；`CLAUDE.md` 依赖方向 | 我 | 已合 #35 |
 | W1b Noise | 从 `probe/p1` 搬 `protocol/noise/`，过 cacophony 向量 | 我（照搬 + 逐行审） | 已合 #39 |
 | W1c 主的基座 | config（zod、`widening()`、表单描述、唯一写路径、`config_changes`、seed 同步）、db（04 全部表、`change_log` 触发器、清理）、cli 骨架、backup + restore、`hub/test/test-home.sh` | 子线程（Opus），我审 | 已合 #43（审后我改了 restore 对 home 外 `secrets.env` 的处理、`self.yaml` 不进 `config_changes`；部署机冒烟 22/22） |
-| W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | 进行中，分支 `w1d-hub-run` |
+| W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | PR 审中（分支 `w1d-hub-run`） |
 | W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 进行中，分支 `w1e-hub-channels`（和 W1d 并行，接口按 03 channels 节） |
 | W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 我 | |

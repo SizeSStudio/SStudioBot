@@ -29,6 +29,8 @@ export const DEFAULTS = {
   gate: {
     sensitive_words: DEFAULT_SENSITIVE_WORDS, approval_ttl_hours: 12, send_by_hours: 2, proactive_daily_cap: 6,
     improve_alert_usd: 3, attention: { wait_minutes: 30, escalate_wait_minutes: 0 },
+    // §底3.4 稳住对方: fixed lines (never model text) the other side gets when a reply waits for my approval, and when it times out ※
+    hold_text: "收到～这个我得先确认一下，晚点回你。", hold_timeout_text: "不好意思，这个我晚点亲自回你。",
     push: {
       quiet_minutes: 5, max_delay_minutes: 30, night: { from: "22:30", to: "08:00", awake_minutes: 30 },
       night_allow: ["owner_followup", "task", "due_ask", "alert_security"] as string[],
@@ -93,6 +95,7 @@ export const SCHEMAS: Record<string, z.ZodType> = {
   "gate.yaml": z.object({
     sensitive_words: z.array(z.string().min(1)).optional(), approval_ttl_hours: z.number().positive().optional(), send_by_hours: z.number().positive().optional(),
     proactive_daily_cap: z.number().int().min(0).optional(),
+    hold_text: z.string().min(1).max(500).optional(), hold_timeout_text: z.string().min(1).max(500).optional(),   // §底3.4
     improve_alert_usd: z.number().min(0).optional(),   // R7: replay alert line; the replay always finishes
     // §读2.4: how long a raised message waits for me to respond by myself; places: chat_id | source id | source:where | feishu_dm
     attention: z.object({ wait_minutes: waitMin.optional(), escalate_wait_minutes: waitMin.optional(), places: z.record(z.string().min(1), waitMin).nullable().optional() }).passthrough().nullable().optional(),

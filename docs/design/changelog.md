@@ -2,6 +2,13 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### W1d 跑起来（2026-11-28）
+施工里对出来的几处，设计跟着改；※ 的都是推出来的，等我过目。细节在 `tech/03-hub.md`。
+- §办1.1 run 令牌 ※：不再经 `$SBOT_RUN_TOKEN` 环境变量插值，每个 run 放进它自己的内存 credential store（lane 并发跑，共用的环境变量会串）。工具 schema 给 pi 用 zod 的输入形状。
+- §底3.6 出网代理端口 ※：新主用 7820–7828，7829 留给冒烟测试的主；`SBOT_W` 链照旧，不用改。
+- §底1.2 连崩两次按 `inbox.tries` 认 ※；熔断后不是我亲手发的输入直接 `failed` ※。outbox 找不到渠道插件的行标 `unrouted` ※（`tech/04-schema.md` outbox）。
+- 审后：§底3.4 承诺检测接上，他人会话里 agent 写的回复都先过它；稳住对方的两句话键名 `hold_text`、`hold_timeout_text` ※；检测调不通、答得不成形、超时都按命中处理 ※。他人会话的出错提示改发管理出口 ※。`hub.sock` 挪到单独的 `$SBOT_HOME/node/`（`tech/03-hub.md` link）※。
+
 ### W0 探针 P5–P8（2026-11-28）
 四个适配器实测，结果在 `tech/08-probes.md`。设计里只改一处措辞：§办3.2 的适配器表，ACP 续接的 `unstable_resumeSession` 现名 `session/resume`；pi 没有 `--mcp-config`，我们的 MCP 靠节点带的扩展挂。其余细节（Claude 的工作区信任 ※ 默认不预记、按仓库开、ACP 新 session 要切到 `default` 才有权限请求等）在 `tech/05-node.md`。
 

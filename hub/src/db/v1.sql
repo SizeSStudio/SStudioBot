@@ -147,7 +147,7 @@ CREATE TABLE outbox(
   as_identity TEXT NOT NULL DEFAULT 'bot', -- bot|user
   target_json TEXT NOT NULL,         -- {surface, chat_id, thread_id?, …}
   payload TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'queued', -- queued|streaming|sending|sent|failed|unknown|expired（streaming 照 card.ts）
+  status TEXT NOT NULL DEFAULT 'queued', -- queued|streaming|sending|sent|failed|unknown|expired|unrouted（streaming 照 card.ts；unrouted = 没有在跑的渠道插件）
   attempts INTEGER NOT NULL DEFAULT 0,
   idem_key TEXT UNIQUE,
   send_by INTEGER, next_try INTEGER,

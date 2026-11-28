@@ -4,7 +4,7 @@
 
 ## 启动顺序
 
-`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。
+`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；渠道、push、timers 等 W1e、W2 各就各位。
 
 关停：停收新输入 → 等跑着的 run 到下一个安全点（最多 30 秒）→ 没跑完的按 §底1.2 的重启规则处理 → 关通道 → 关库。
 
@@ -47,8 +47,8 @@
 - 插话：run 进行中来了我的消息（`ownerTyped`），pi 能插就 `steer` 进去，这条标 `processing` 并挂到当前 run；插不进的排队。别的事件一律排队。
 - 停：`/stop`、客户端「停」→ pi `abort`；还没被读到的插话作废（标 `dropped`）。
 - 撤回：没处理的标 `dropped`；在处理的按停处理；是审批卡触发消息的，卡作废（§触2.4）。
-- 重启恢复：`processing` 且 `runs.side_effects = 0` 的回 `received`；有副作用的标 `interrupted`，在那条 lane 里问我要不要继续。副作用由工具层在执行有写效果的工具前 +1（进发件箱、提交审批、开任务、写记忆）。
-- **熔断**（Y8）：错误指纹 = `sha256(角色 | lane 类别 | 错误类名 | 规范化的错误信息（去掉数字和 id）)`。同一指纹连续 N 次（`self.yaml` `measure.breaker`，默认 3）就停下这个循环、发看一眼卡。同一条输入让进程连崩两次（启动时看 `kv` 里记的「正在处理的 inbox id」）就标 `failed`，告诉我。模型 5xx 归上游重试，不算；PR 的 CI 不归它管。
+- 重启恢复：`processing` 且 `runs.side_effects = 0` 的回 `received`；有副作用的标 `interrupted`，在那条 lane 里说一句「我刚才被重启了。上一轮做到一半，已经发出 N 条消息，不会重发。要我接着做，再说一声。」（N = 这个 run 进了 outbox、没失败没过期的文字行；这句本身不挂 run，不算谁的副作用）。`running` 的 run 标 `interrupted`，活着的令牌全部作废。副作用由工具层在执行有写效果的工具前 +1（进发件箱、提交审批、开任务、写记忆）。
+- **熔断**（Y8）：错误指纹 = `sha256(角色 | lane 类别 | 错误类名 | 规范化的错误信息（去掉数字和 id）)`。同一指纹连续 N 次（`self.yaml` `measure.breaker`，默认 3）就停下这个循环、发看一眼卡。同一条输入让进程连崩两次（W1d：`inbox.tries`，开 run 和插话时 +1，启动时还在 `processing` 且 `tries ≥ 2` 的 ※）就标 `failed`，告诉我。熔断后这条 lane 上不是我亲手发的输入直接标 `failed` ※，我发一条、跑通一次就解开。模型 5xx 归上游重试，不算；PR 的 CI 不归它管。
 - 来源标签（R1）：一批输入全是我亲手发的（`ownerTyped`：来自 `client` 设备，或渠道里 owner 的 ID 在主对话 lane 发的）标 `owner@<surface>`；定时 `job@<名字>`；审批、任务、系统转来的 `system@<类型>`。这个值进 `TurnContext.src`、journal 每行、`run_items`。dream 认「我说的」只看这个前缀，加上我所有主对话 lane 的行（不再按渠道串写正则）。
 - 回复跟着输入走：`TurnContext { lane, surface, chat, thread, msg_id, src, device_id? }`，`reply` 投回输入来源。
 
@@ -57,16 +57,17 @@
 - 一个接口，hub 里只有 pi 一个实现（节点适配器在节点程序里实现同一组能力，05）：
   ```ts
   interface Runner {
-    run(o: { lane: string; role: Role; tier: Tier; session_ref?: string; input: TurnInput; tools: ToolDef[];
-             ctx: TurnContext; onItem: (e: ItemEvent) => void; signal: AbortSignal }):
-      Promise<{ output: string; side_effects: number; usage: Usage; session_ref: string; stop: StopReason }>;
-    steer(lane: string, text: string): boolean;   // false = 插不进，调用方排队
+    run(o: { lane: string; role: Role; tier: Tier; session_ref?: string; system: string; input: string; tools: ToolDef[];
+             ctx: ToolCtx; token: string; onItem: (e: ItemEvent) => void; signal: AbortSignal }):
+      Promise<{ output: string; fullText: string; session_ref: string; stop: StopReason; error?: string; usage: Usage;
+                tools: string[]; undelivered: number[] }>;   // undelivered = 插进去但模型没读到的 inbox id
+    steer(lane: string, text: string, inbox_id: number): Promise<boolean>;   // false = 插不进，调用方排队 ※（pi 的 steer 是异步的）
   }
   ```
-- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`、`noTools: "builtin"` + `customTools`、`models.json` 的 `apiKey: "$SBOT_RUN_TOKEN"`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
+- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`（`$SBOT_HOME/pi/`）、`noTools: "builtin"` + `customTools`，再加 `tools` 允许列表只放这一轮的工具名（同名的自定义工具顶掉 pi 自带的，`bash` 是我们的）；选项按 pi 的类型写，拼错 tsc 报。`models.json` 不写 key：每个 run 自己一个 `ModelRuntime`，令牌放进内存里的 credential store（`setRuntimeApiKey("sbot", token)`）※——lane 并发跑，一个进程共用的 `$SBOT_RUN_TOKEN` 环境变量会串。工具 schema 给 pi 时用 zod 的输入形状（`io: "input"`）：pi 在执行前按它校验参数，输出形状里带默认值的字段算必填，靠默认值的调用会被 pi 挡掉、到不了 `callTool`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
 - `onItem` 转发 pi 的 `message_update`、`tool_execution_start/end`，先打码再写 `run_items`、推 delta（§触6.4）；回调出错只记日志，不影响 run。
 - **提示词**（R7）：`promptFiles()` 加载 `AGENTS.md`、`SOUL.md`、`USER.md`、`MEMORY.md`，以及只在我亲手发的那一轮加载的 `VOICE.md`、`self/practice.md`（截短）和本月、本周前瞻要点（§附2.15、§附2.16）。拼装顺序在 `systemPrompt()` 一处定。超了各自上限截断并在提示里说「超了」，不静默。召回片段和「记忆改了」放 user 消息，不进 system。
-- **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。
+- **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。W1d 先用 pi 自带的压缩 ※，自己的摘要随 memory（W1e）。
 - **换模型**（§办2.4）：发之前剥掉历史里旧模型的 thinking 块。最后一条 assistant 有 `tool_use` 还没结果时：等这轮工具结果回来再换（P10 定了，IC-11；立刻换并补「已取消」会让调用重跑、真结果丢掉）。跨家换时把历史里的调用 id 改成目标家的形状，W1 验（08 P10）。
 
 ## tools
@@ -81,14 +82,15 @@
 - 本轮工具 = 列 ∩ 域规则。列由 `ctx.src` 判：`owner@` → typed，`job@`/`system@` → system，他人会话 → others。`node` 设备的任务经 MCP 调时按 system 列。
 - **调用顺序**（`callTool`）：列检查 → zod 校验 → 守卫 → 闸门（L0、L1 执行；L2 写 `approvals` 立即返回「已提交审批 #N」）→ 执行 → 结果打码 → `run_items`。异常转成 `error: …` 字符串给模型，不抛给 runner。
 - **`self/` 守卫**（R1）：一个函数 `selfGuard(path, ctx)` 在所有读路径的工具（`memory_read`、`memory_search`、`timeline_query`、`readings_query`、`self_*`、`bash`/读写文件）里调，不分渠道。规则照 §读5.1 和三列表：typed 可整份；system 只给条目级（`self_list`），`habits.md`、`rhythms.md`、`charts/`、`practice.md`、`timeline.md`、出生信息整份不给；others 读不到 `self/`、身体、时间线。`self_mark`、`reading_revisit` 改看 `ctx.src` 前缀，不看来源字符串里有没有 `owner`。
-- **`bash` 和读写文件**：只在 typed 列，经本机节点 `/node/v1/exec`、`fs/*`（05）以节点账号跑。命令守卫（软边界，§底3.8）：拒绝命令或路径里出现 `$SBOT_HOME`（`db/`、`config/`、`keys/`、`secrets.env`、`agent-home/` 原文件）、`/proc/*/environ`、`/run/sbot`、渠道 CLI 的凭证目录；只看去哪，不看写进去的内容（同旧 `coreGuard`）。被拒的写进 `run_items`，告诉模型为什么。
-- **打码**：一个 `redact(text)`：已知密钥的值（从 `secrets.env` 和 `keys/` 读进内存的那份）+ 常见密钥格式（`sk-`、`ghp_`、`xox`、PEM 头、`AKIA`、JWT 三段）。流式按 50～100 ms 一批、在行或空白边界整段替换（§触6.4）。日志、`run_items`、事件流、审批卡都过它。
+- **`bash` 和读写文件**：只在 typed 列，经本机节点 `/node/v1/exec`、`fs/*`（05）以节点账号跑。命令守卫（软边界，§底3.8）：拒绝命令或路径里出现 `$SBOT_HOME`（`db/`、`config/`、`keys/`、`secrets.env`、`agent-home/` 原文件）、`/proc/*/environ`、`/run/sbot`、渠道 CLI 的凭证目录；只看去哪，不看写进去的内容（同旧 `coreGuard`）。被拒的写进 `run_items`，告诉模型为什么。路径先在主这边变成绝对路径再给守卫看，发给节点的也是这份：相对路径按给的 `cwd`，没给就按节点 hello 里报的默认目录（`SBOT_NODE_CWD`，否则节点账号的 home）；节点没连上就拒，不猜。`bash` 不给 `cwd` 也在这个默认目录跑。
+- **打码**：一个 `redact(text)`：已知密钥的值（从 `secrets.env` 和 `keys/` 读进内存的那份）+ 常见密钥格式（`sk-`、`ghp_`、`xox`、PEM 头、`AKIA`、JWT 三段）。流式按 50～100 ms 一批、在行或空白边界整段替换（§触6.4）。日志、`run_items`、事件流、审批卡都过它。审批的草稿在写进 `approvals.draft` 之前就打码，`outbox` 的文字行写入时再过一遍：卡上看到的和批了发出去的是同一份。
+- **他人会话的回复**（§底3.4）：others 列里 agent 写的东西，最终回答和 `reply` 工具都一样，发出前先做承诺检测（`commit-check.ts`）：经自己的代理用这个 run 的 light 档令牌发一次请求，按 JSON 答三项。没命中就发；命中、答得不成形、调不通、超过 60 秒 ※，都转 `send` 审批（`checks_json` 记原因，卡上显示，`context_json.hold = true`），对方先收到 `gate.yaml` 的 `hold_text`；卡过期再发 `hold_timeout_text` ※，一次。两句都是固定文字，不由模型写。typed、system 列不检测。others 列的出错提示不发给对方，改发管理出口 ※。§底3.4 的条件 ①（这个 surface 允许自动）随 W1e 的渠道配置接 ※；在那之前 others 的回复都走检测。
 - `bash` 之外，新加只读工具标 `readOnly: true`；注册表测试检查「L0 且 `readOnly: false`」的都要有注释写为什么。
 
 ## approvals（§底3.2、§底3.3、§办3.3）
 
 - kind：`send` | `plan` | `glance` | `ask` | `proposal` | `rollback`。状态机照 §底3.3。
-- **只认我答**：决定来自 `client` 设备，或渠道回调里操作人是 owner 的 ID。`node` 角色、主 agent、别的 agent 都不能决定。同一台设备发起的自己能批（D6）。
+- **只认我答**：决定来自 `client` 设备，或渠道回调里操作人是 owner 的 ID。`cli` 是 `hub-admin.sock`，配对生成的设备 id 永远不会是 `cli`（W2 配对要保证）。`node` 角色、主 agent、别的 agent 都不能决定。同一台设备发起的自己能批（D6）。
 - 决定在一个事务里：查状态和 `draft_version` → 改状态 → 写 `decided_by`（`device:<id>` / `feishu`）→ 后续（`send` 进发件箱原样发批准时的版本；`plan` 往原 lane 投 `approval` 事件；`glance`/`ask` 经 `tasks` 把答案发回同一个 session）。
 - **卡片模型和渠道无关**：`Card { title, lines[], question, options[{id, label, recommended?, cost?}], detail?: { kind: "cmd"|"path"|"args"|"diff", text, folded } }`。客户端直接画；飞书插件渲染成卡片 JSON，命令、路径、参数完整显示，长的折叠（§办3.3）。每路渲染结果记 `approvals.cards_json`，决定后每一路都改卡（飞书用回调 token 延迟更新，§底3.3）。
 - 过期：`approval_ttl_hours`（旧键，沿用；§底3.3 有 `expired`）。看一眼卡不过期（§办3.3：等的时候不设超时），只在节点或 agent 进程重启时作废。
@@ -108,6 +110,7 @@
   ```
   `client` 指客户端的「等你 N」和时间线；推到哪还要过 `push` 的路由表。
 - 投递：`outbox` 行带 `channel`、`target_json`、`idem_key`；出口按渠道插件的 `send()`；`approval_id` 唯一，一个审批最多发一次；`send_by` 到了作废；结果不确定标 `unknown`，不重发（§底3.3）。
+- W1d：插件按 id 登记在 `outbox.ts`（`registerChannel`），W1e 的 ChannelPlugin 照这个接口接 ※。`client` 出口内建：投递就是写一行 `messages`。出口组里没在跑插件的出口跳过（记日志）；行写进去了但找不到插件的标 `unrouted` ※，不丢、不重试。同一个 `idem_key` 只写一行；失败按 10、20、40 秒退避，最多 4 次；重启时 `sending` 的回 `queued`，带原 `idem_key` 再发，由插件认重复。写一行就踢一下投递，不等 5 秒的轮询。
 
 ## channels（ChannelPlugin，veto 4）
 
@@ -153,6 +156,7 @@ interface ChannelPlugin {
   - 退出 0 且有输出 → 有事，stdout 带进这次 run。
   - 其他退出码 → 脚本坏了：照常跑 run，把 stderr 前 2 KB 和退出码带进去，并记一条运维告警 ※（宁可多跑一次，不让坏脚本把任务静默吞掉）。
   - 不设时长和输出上限。
+  - check 命令和 `bash` 过同一个命令守卫 ※（命令是我写在 `jobs.yaml` 里的，但它在 bash 那儿跑）；被拒算「脚本坏了」。W1d 给出 `runCheck()`，到点调用是 timers（W1e）的事。
 - 上游错误重试照 §底4.3，照搬旧 `retry.ts` 的分类和退避表。
 - Sentinel 每 5 分钟，纯代码，告警经 `push`（`alert_security` / `alert_ops`）。
 
@@ -170,7 +174,8 @@ interface ChannelPlugin {
 ## proxy（§办2.2，R7）
 
 - 只给主进程里的 run（pi）用；远端节点不走代理、不拿令牌（D3）。
-- 令牌：每个 run 一个，绑 `{ run_id, tier, requester, device_id? }`，run 结束作废；不再有 30 分钟 TTL ※（run 不设时长，令牌跟着 run 走；只有主进程里的 run 拿得到，节点链路没有令牌，旧的「长跑 agent 中途 401」不会发生）。
+- 端口：`SBOT_PROXY_PORT`，没有就 `SBOT_PORT`，再没有 7811 ※（测试 home 用 `SBOT_PORT` 的 7829–7831）。
+- 令牌：每个 run 一个，绑 `{ run_id, tier, requester, device_id? }`，库里只存 sha256，run 结束作废；不再有 30 分钟 TTL ※（run 不设时长，令牌跟着 run 走；只有主进程里的 run 拿得到，节点链路没有令牌，旧的「长跑 agent 中途 401」不会发生）。
 - 状态码：令牌无效、过期 → 401；越档 → 403 `permission_error`；预算从不拒绝。
 - **预算只告警**（限5）。键：
   | 键 | 新含义 | 旧键 |
@@ -183,6 +188,11 @@ interface ChannelPlugin {
   `run_tokens.status` 去掉 `budget_exhausted`；旧代码里依赖它的分支（10 的 R7 节列了行号）在新主里没有对应物。
 - 记账：`usage` 每行带 `source`（`proxy` | `node`）和 `device_id`；节点 agent 自报的 token 和耗时记 `source = node`（§进2.2）。
 - 备用模型、按能力降级、上游系统提示计入，照 §办2.3、§办2.4。
+- 换模型：每次请求按 `sbot-<档>` 现读 `models.yaml`，lane 上一次用的模型记在 `sessions.model`；不一样就剥掉 assistant 的 thinking 块。工具调用 id 一律改成目标家的形状（Claude `toolu_`，GPT `call_`），`tool_use` 和 `tool_result` 同一张映射，成对不散。
+
+## egress（§底3.6）
+
+- 照旧 `egress.ts` 搬：`127.0.0.1` 上一个插件一个端口，只放 `CONNECT` 到白名单域名的 443，解析到非公网地址的拒绝。端口 7820–7828 ※（旧的到 7829，7829 现在是冒烟测试主的端口；`SBOT_W` 链照旧放到 7829，不用改）。W1d 只有模块和测试，插件起来时（W1e）才开。
 
 ## api
 
@@ -193,9 +203,9 @@ interface ChannelPlugin {
 
 ## link
 
-- 本机 socket（`$SBOT_HOME/run/`，目录 0700）：
-  - `hub.sock`：本机节点（文件属组给节点账号，0660）。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
-  - `hub-admin.sock`：`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
+- 本机 socket：
+  - `hub.sock`：本机节点，在单独的 `$SBOT_HOME/node/`（0750，属组是节点账号的组，组名或 gid 取 `SBOT_NODE_GROUP`，没设就跟主同组），socket 0660 ※。不放 `run/`：`run/` 是 0700，节点账号进不去，里面的 socket 权限再开也连不上。要节点账号够得着，`$SBOT_HOME` 本身要给那个组 `x`（属组设成它、0710），主的账号要在那个组里（改目录属组要求）；部署时设，主启动时查到进不去会记日志。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
+  - `hub-admin.sock`：在 `$SBOT_HOME/run/`（0700），`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
 - 中继：`relay.enabled` 时主连 `wss://…/v1/hub`，按 06 注册，断了按 1、2、5、10、30 秒退避重连。
 - 删设备：06。
 
@@ -248,7 +258,7 @@ interface ChannelPlugin {
 
 | 文件 | 变化 |
 |---|---|
-| `gate.yaml` | 加 `push`（§触1.1 那段）；`improve_budget_usd` → `improve_alert_usd`；`expert_daily_limit` 照认、读成 `models.yaml` `tiers.expert.daily_alert`；`proactive_daily_cap`、`approval_ttl_hours`、`send_by_hours`、`sensitive_words`、`attention` 沿用 |
+| `gate.yaml` | 加 `push`（§触1.1 那段）；`improve_budget_usd` → `improve_alert_usd`；`expert_daily_limit` 照认、读成 `models.yaml` `tiers.expert.daily_alert`；`proactive_daily_cap`、`approval_ttl_hours`、`send_by_hours`、`sensitive_words`、`attention` 沿用；加 `hold_text`、`hold_timeout_text`（§底3.4 稳住对方的两句固定话，有默认值）※ |
 | `models.yaml` | `budgets.*` 改只告警；tier 加 `daily_alert` |
 | `jobs.yaml` | 加 `check`；`improve` 去掉 `min_days`（旧键忽略，表单删）；dream 行加 `max_delete`、`max_add`、`archive_days` |
 | `self.yaml` | 加 `measure`（§寸8：`breaker`、`stuck_minutes`、`infer_min_convs`、`dismiss_window`、早报等整理卡的 30 分钟……）；旧顶层键照认 |

@@ -155,6 +155,8 @@ export const FORM_SPECS: Record<string, FormSpec> = {
       { title: "审批", fields: [
         num("approval_ttl_hours", "审批多久失效", "卡片等你这么久没点就作废。默认 12。调大旧草稿还能批，但内容可能已经过时。", { default: 12, unit: "小时", widen: { when: "up", note: "更旧的草稿还能被批准发出，内容可能已经过时。" } }),
         num("send_by_hours", "批准后多久内要发出", "批准了但这么久还没发出去（比如渠道断了），就不再发。默认 2。", { default: 2, unit: "小时" }),
+        text("hold_text", "等我过目时先回对方的话", "别人会话里的回复要先给你过目时，对方先收到这一句。固定文字，不由模型写。", { placeholder: DEFAULTS.gate.hold_text }),
+        text("hold_timeout_text", "过目超时后回对方的话", "那张卡到期你没点，对方收到这一句。固定文字，不由模型写。", { placeholder: DEFAULTS.gate.hold_timeout_text }),
       ] },
       { title: "花费", fields: [
         num("improve_alert_usd", "自我改进提醒线", "一次自我改进（提案加回放）花到这个数就提醒你，照样跑完。默认 $3。", { default: 3, unit: "美元/次", widen: { when: "up", note: "自我改进要花得更多才会提醒你。" } }),

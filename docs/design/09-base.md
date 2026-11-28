@@ -288,7 +288,8 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
 
 - 原来的数字上限（`maxTurns ≤ 6`、工具调用 ≤ 4 次、他人请求共用日预算）2026-11-26 去掉（我定，§办3.5 限4）。他人会话的工具范围见 §底3.1 的三列表，不变。
 - **承诺检测**：自动发出前，代码用 light 档对草稿做一次结构化判断：有没有替我答应时间、金钱或事情，有没有代表我表态，有没有泄露 `shared/` 以外的私人信息。只要命中一项就转审批，卡片上显示命中原因。
-- **稳住对方**：转审批时，对方会收到一句**固定模板**（可在 `gate.yaml` 配置，不由模型生成），比如"收到～这个我得先确认一下"。审批超时也发固定模板。
+- **稳住对方**：转审批时，对方会收到一句**固定模板**（可在 `gate.yaml` 配置，不由模型生成），比如"收到～这个我得先确认一下"。审批超时也发固定模板。键名 `hold_text`、`hold_timeout_text` ※（W1d）。
+- 承诺检测调不通、答得不成形或超时，都按命中处理（转审批）※（W1d）。
 
 ### 底3.5 Auto 规则（M5，粒度：人 × 动作）
 - 只能由我在卡片上点"以后这类自动"生成，agent 没有任何写入途径。存在 `config/auto.yaml`（唯一真相源）。
@@ -322,7 +323,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
   - **残余风险**：有 sudo，核心守卫就只是软边界，挡不住有意为之。被注入的指令可以读 `secrets.env`、登录 `ssh_hosts` 里的机器、在 tailnet 里横向移动。所以碰到不可信内容先问我，我说进沙箱就用 sandbox（§办3.3）；主换到单独账号也挡不住有 sudo 的它。
 - **sandbox worker 的网络**分两层（P0 已验证，`deploy/worker/netfilter.sh` + `probes/worker-isolation.ts`）：
   - **iptables，按 owner 匹配 `sbot-w`**（链 `SBOT_W`，只插 OUTPUT 第一条，不碰 ufw 和 docker 的链；`sbot-netfilter.service` 开机加载）：
-    - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理）。
+    - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理；新主只用 7820–7828，7829 是冒烟测试主的端口 ※，链不用改）。
     - 其余一律拒绝：本机所有地址（`addrtype LOCAL`，包括公网 IP 和 `::1`）、tailnet、私网和 docker 网段、云元数据，**以及公网和 DNS**（2026-11-17 收紧，`SBOT_W_PUBLIC=allow` 可退回）。这一层管住的是 CLI 进程本身。
     - 为什么能关掉公网：CLI 进程本身不需要直连。模型调用走 LLM 代理；WebSearch 是服务端工具，也在代理后面；WebFetch 用 `settings.env.HTTPS_PROXY` 指到核心出网代理（sudo 会删掉 `HTTPS_PROXY` 环境变量，所以走 settings），同时 `skipWebFetchPreflight: true`。P0 实测：不关的话 WebFetch 由 CLI 直连目标网站，还会**另外直连 api.anthropic.com 做域名检查**（关了非必要流量也照样发），两条都绕过白名单。DNS 也关，因为向本机 DNS 发的查询本身就能外传数据。
     - 每个 worker run 固定传 `settings: { skipWebFetchPreflight: true, env: { HTTPS_PROXY: "http://127.0.0.1:<该 worker 的出网代理端口>", NO_PROXY: "127.0.0.1,localhost" } }`。

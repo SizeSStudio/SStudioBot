@@ -1,0 +1,13 @@
+{
+  "name": "@sbot/node",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The node program (docs/tech/05). Imports only protocol/. W1d: the local node's exec, fs and check over hub.sock.",
+  "bin": {
+    "sbot-node": "src/main.ts"
+  },
+  "dependencies": {
+    "zod": "4.6.7"
+  }
+}

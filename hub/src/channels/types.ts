@@ -71,6 +71,8 @@ export interface StreamHandle {
   dispose(): Promise<void>;
   readonly started: boolean;
   readonly failed: boolean;
+  /** what didn't fit on the card, for the caller to send as a follow-up */
+  overflow?(text: string): string;
 }
 
 export interface ChannelCaps { cards: boolean; streaming?: boolean; userIdentityRead?: boolean; mail?: boolean; commands?: boolean }

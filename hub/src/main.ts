@@ -12,7 +12,7 @@ import { openDb, type Db } from "./db/db.ts";
 import { home as homeOf, type Home } from "./home.ts";
 import { log } from "./log.ts";
 import * as notify from "./notify.ts";
-import { loadAll, useConfigDir } from "./config/load.ts";
+import { backupConf, loadAll, useConfigDir } from "./config/load.ts";
 import { ensureAgentHome, ensureConfigRepo, seedNotice } from "./config/seed.ts";
 import { addDefaultJobs } from "./config/default-jobs.ts";
 import { startAdminSocket, type Handler } from "./admin-socket.ts";
@@ -43,6 +43,8 @@ import { Sources, configureSources } from "./sources/index.ts";
 import { localPluginRunner } from "./sources/command.ts";
 import { Triage, readByMe, type SendApproval } from "./triage/triage.ts";
 import { proxyComplete } from "./triage/complete.ts";
+import { runBackup } from "./backup.ts";
+import { nodeCheck } from "./check.ts";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -68,7 +70,7 @@ export interface BootOpts {
 }
 
 /** A triage draft (triage.ts) filed as W1d's send approval: the only way it leaves, and only as me after I approve. */
-const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, {
+export const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, {
   kind: "send", title: a.title, draft: a.draft, run_id: a.run_id, requester: a.requester, channel: a.channel, as_identity: a.as_identity,
   target: a.target, context: a.context, origin_lane: "triage",
   checks: { hits: Array.isArray((a.checks as { hits?: unknown })?.hits) ? ((a.checks as { hits: unknown[] }).hits.filter((x) => typeof x === "string") as string[]) : ["承诺检测结果读不出"] },
@@ -79,7 +81,7 @@ const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, {
  * The channel side (03 「channels」「timers 和 Sentinel」): Feishu when channels.yaml has it, then timers, Sentinel,
  * sources and triage. Every wake-up goes to the dispatcher (kickInbox). Returns the stop, in reverse order.
  */
-async function startChannelSide(db: Db, proxyBase: string): Promise<() => Promise<void>> {
+async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: Dispatcher, node: NodeLink): Promise<() => Promise<void>> {
   const ours = feishuConfigured() && !channel("feishu");
   if (ours) registerChannel(new FeishuChannel());
   const feishu = () => channel("feishu") as FeishuChannel | undefined;
@@ -89,10 +91,18 @@ async function startChannelSide(db: Db, proxyBase: string): Promise<() => Promis
   const f = feishu();
   // a command plugin runs as its own user on Linux (worker-exec plugin mode, not built yet) — never as the hub ※
   configureSources({ lark: f?.lark, runner: process.platform === "linux" ? undefined : localPluginRunner });
-  const scheduler = new Scheduler({ onFire: kickInbox });
+  const scheduler = new Scheduler({
+    onFire: kickInbox, check: nodeCheck(node, h.root),
+    // the nightly backup (default job `backup`); a thrown error is the job's `failed`, which Sentinel reports
+    handlers: { backup: async () => { await runBackup(db, h, backupConf()); } },
+  });
   const sentinel = new Sentinel({ userReady: f ? () => userIdentityReady(f.lark) : undefined });
   const sources = new Sources();
-  const triage = new Triage({ complete: proxyComplete(db, proxyBase), submitSend: sendApproval(db), readIds: f ? readByMe(f.lark) : undefined, kick: kickInbox });
+  // a group draft: W1d's runner in the others' read-only scope, W1d's commitment check, out only as a send approval
+  const triage = new Triage({
+    complete: proxyComplete(db, proxyBase), runDraft: (j) => dispatcher.runDraft(j), commitCheck: proxyCommitChecker(db, proxyBase),
+    submitSend: sendApproval(db), readIds: f ? readByMe(f.lark) : undefined, kick: kickInbox,
+  });
   scheduler.start(); sentinel.start(); sources.start(); triage.start();
   return async () => {
     triage.stop(); sources.stop(); sentinel.stop(); scheduler.stop();
@@ -142,7 +152,8 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
     const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
-      onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined) });
+      onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined),
+      stream: (c) => channel(c.turn.channel)?.stream?.(c) });
     // before anything can take new rows: what the last process left half done (§底1.2)
     dispatcher.recover();
     await node.listen(h.node);
@@ -150,7 +161,7 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     // channels before the outbox drains: a row for a channel that isn't registered yet would be marked unrouted
     setDb(db);   // the ported ledger/timer modules use the ambient db (db/ambient.ts)
     opened.push({ close: () => setDb(undefined) });
-    const stopSide = await startChannelSide(db, proxyBase);
+    const stopSide = await startChannelSide(db, h, proxyBase, dispatcher, node);
     opened.push({ close: stopSide });
     outbox.start();
     opened.push({ close: () => outbox.stop() });

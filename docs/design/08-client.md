@@ -83,7 +83,7 @@ clients/               npm workspace，自己的 lockfile
 
 - **同类**（《Agent 工作台产品设计与系统架构调研》，§附1 参考）：四款 TypeScript 产品都是 Electron 桌面加 Expo / RN 手机。Paseo 一个人维护，手机和 Web 用 Expo、桌面 Electron，一套界面，和我们最像；Orca、T3 Code、Cindy 是桌面 React、手机 RN 两套界面。
 - **好处**：手机上的长列表、手势、相机、Health Connect、以后的系统通知（D15）都走原生。
-- **代价**：markdown、diff、代码块要用 RN 控件渲染，Web 生态的现成组件大多用不上（Paseo 为此 fork 了一个 markdown 渲染包）。渲染包要能关掉原始 HTML 和远程图片（不可信内容，§触6.8）。2026-11-27 定了：markdown-it + cjk-friendly + remend，token → RN 组件的渲染器只做映射；diff 只在桌面用 `@pierre/diffs`，安卓看文件列表或去 git 上看；全表见 `docs/tech/07-clients.md`。
+- **代价**：markdown、diff、代码块要用 RN 控件渲染，Web 生态的现成组件大多用不上（Paseo 为此 fork 了一个 markdown 渲染包）。渲染包要能关掉原始 HTML 和远程图片（不可信内容，§触6.8）。2026-11-27 定了：markdown-it + cjk-friendly + remend，token → RN 组件的渲染器只做映射；diff 两端都先列文件、点开一个看一个，桌面用 `@pierre/diffs`（不用 wasm），安卓看原文块，太大的去 git 上看；全表见 `docs/tech/07-clients.md`。
 - **不用 Expo 的云服务**：构建和更新见 §触6.2。推送直接发 FCM，不经 Expo 的推送服务（Paseo 是先发给 Expo，Expo 再转 FCM）；见下面的系统通知。
 - **传输**：WebSocket 上的加密通道（§触6.4、§触6.7）。RN 和 Electron 都自带 WebSocket，不用 `expo/fetch`；Noise 在 Hermes 上的速度 spike 里实测（§触6.9）。
 - **Electron**：`contextIsolation`、`sandbox` 开，`nodeIntegration` 关；只加载包里的文件；origin 用固定的自定义协议，第一次发版前定死（换了 origin，存着的设备密钥就没了）；严格 CSP；外链交给系统浏览器，先确认。

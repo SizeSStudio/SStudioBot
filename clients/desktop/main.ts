@@ -180,13 +180,18 @@ app.whenReady().then(async () => {
     await new Promise((r) => setTimeout(r, 1000)) // late requests (fonts, lazy images) would show up now
     const rendered = done ? await w.webContents.executeJavaScript(`document.querySelectorAll('[data-testid="selftest-sample"]').length`) : 0
     const clean = external.length === 0 && cspErrors.length === 0
-    const report = { selftest: done ? 'rendered' : 'timeout', samples: rendered, backend, external: [...external], cspErrors: [...cspErrors] }
+    // the hostile diffs must have gone through @pierre/diffs (its shadow root has lines), not the plain fallback,
+    // or the zero counts say nothing about it
+    const diffs = done ? await w.webContents.executeJavaScript(`[...document.querySelectorAll('[data-testid="selftest-diff"] diffs-container')].filter((e) => (e.shadowRoot?.textContent ?? '').trim().length > 0).length`) : 0
+    // and the HTML in them stayed text: no element a sample carries turned up inside a shadow root
+    const injected = done ? await w.webContents.executeJavaScript(`[...document.querySelectorAll('[data-testid="selftest-diff"] diffs-container')].reduce((n, e) => n + (e.shadowRoot?.querySelectorAll('img, script, iframe, object, embed, form, a, link[href]:not([rel="stylesheet"])').length ?? 0), 0)`) : -1
+    const report = { selftest: done ? 'rendered' : 'timeout', samples: rendered, diffs, injected, backend, external: [...external], cspErrors: [...cspErrors] }
     // canary: a remote fetch from the page must be refused by the CSP and seen here, or the counts above prove nothing
     await w.webContents.executeJavaScript(`fetch('https://canary.invalid/x').catch(() => 0)`)
     await new Promise((r) => setTimeout(r, 500))
     const canary = cspErrors.length > report.cspErrors.length && external.length === report.external.length
     console.log(JSON.stringify({ ...report, canary: canary ? 'refused and seen' : 'NOT SEEN' }))
-    code = done && rendered > 0 && clean && canary ? 0 : 1
+    code = done && rendered > 0 && diffs > 0 && injected === 0 && clean && canary ? 0 : 1
   } catch (e) {
     console.error('selftest:', e instanceof Error ? e.message : String(e))
   }

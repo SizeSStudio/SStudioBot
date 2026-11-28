@@ -20,6 +20,11 @@ import { CodeBlock } from '../render/CodeBlock.tsx'
 import { Markdown } from '../render/Markdown.tsx'
 import { parseMarkdown, StreamingMarkdown } from '../render/md.ts'
 import { ChatList } from './ChatList'
+import { Link } from 'expo-router'
+import { DiffBlob, shaOf } from '../task/DiffBlob.tsx'
+import { DiffView } from '../task/DiffView'
+import { splitDiff } from '../task/diff.ts'
+import { taskLine } from '../task/status.ts'
 import type { ChatRow } from './types.ts'
 
 type Row = ChatRow & ({ kind: 'row'; row: TimelineRow } | { kind: 'live'; live: Live })
@@ -77,7 +82,9 @@ function ToolRow({ d, live }: { d: Item; live?: Live }) {
     // tool output streams only to connections that expanded it (02)
     if (d.status === 'running') void (next ? conn.expand(key) : conn.collapse(key))
   }
-  const body = d.body as { args?: unknown; result?: unknown; preview?: string } | null
+  const body = d.body as { args?: unknown; result?: unknown; preview?: string; diff?: unknown } | null
+  // an edit tool's own diff (tool_end.diff): untrusted text, split and shown like any other diff
+  const diff = useMemo(() => (open && typeof body?.diff === 'string' ? splitDiff(body.diff) : null), [open, body?.diff])
   return (
     <View className="mx-3 my-0.5">
       <Pressable onPress={toggle} accessibilityRole="button">
@@ -88,6 +95,7 @@ function ToolRow({ d, live }: { d: Item; live?: Live }) {
           {body?.preview !== undefined ? <CodeBlock text={body.preview} lang="" open={false} /> : null}
           {body?.args !== undefined ? <CodeBlock text={json(body.args)} lang="json" open={false} /> : null}
           {live?.text ? <CodeBlock text={live.text} lang="" open /> : body?.result !== undefined ? <CodeBlock text={typeof body.result === 'string' ? body.result : json(body.result)} lang="" open={false} /> : null}
+          {diff ? <DiffView diff={diff} testID="tool-diff" /> : null}
           <HtmlOpen body={d.body} />
           {d.blob ? <Text className="text-muted-foreground text-xs">全文 {Math.ceil(d.blob.size / 1024)} KB 在主上</Text> : null}
         </View>
@@ -98,6 +106,7 @@ function ToolRow({ d, live }: { d: Item; live?: Live }) {
 
 function ItemRow({ d }: { d: Item }) {
   if (d.kind === 'tool') return <ToolRow d={d} />
+  if (d.kind === 'notice' && d.name === 'diff') return <DiffNotice body={d.body} />
   if (d.kind === 'notice') return <View className="mx-3 my-1"><Text className="text-muted-foreground text-xs">{textOf(d.body)}</Text><HtmlOpen body={d.body} /></View>
   return (
     <View className="mx-3 my-1 rounded-lg p-3 border border-border">
@@ -108,12 +117,25 @@ function ItemRow({ d }: { d: Item }) {
   )
 }
 
-function CardRow({ title, status, kind }: { title: string; status: string; kind: string }) {
+/** a `diff` step (the node's diff of one edit, put in a blob by the hub): pulled only when I open it */
+function DiffNotice({ body }: { body: unknown }) {
+  const b = (body && typeof body === 'object' ? body : {}) as { diff_ref?: unknown; stat?: unknown }
+  const sha = shaOf(b.diff_ref)
+  if (!sha) return <Text className="mx-3 text-muted-foreground text-xs">（改动，没有内容）</Text>
+  return <View className="mx-3 my-0.5"><DiffBlob sha={sha} stat={b.stat as never} label="改动" /></View>
+}
+
+/** a task in the lane that started it: where it stands, and a way into its own thread */
+function TaskCard({ t }: { t: Task }) {
+  const line = taskLine(t)
   return (
-    <View className="mx-3 my-1 rounded-lg p-3 border border-border bg-card">
-      <Text className="text-muted-foreground text-xs">{kind} · {status}</Text>
-      <Text selectable className="text-foreground">{title}</Text>
-    </View>
+    <Link href={{ pathname: '/task/[id]', params: { id: t.id } }} asChild>
+      <Pressable testID="task-card" accessibilityRole="link" className="mx-3 my-1 rounded-lg p-3 border border-border bg-card">
+        <Text className={`text-xs ${line.tone === 'you' ? 'text-destructive' : 'text-muted-foreground'}`}>任务 · {line.label}{t.agent ? ` · ${t.agent}` : ''}</Text>
+        <Text selectable className="text-foreground" numberOfLines={4}>{t.goal}</Text>
+        {line.detail ? <Text className="text-muted-foreground text-xs" numberOfLines={2}>{line.detail}</Text> : null}
+      </Pressable>
+    </Link>
   )
 }
 
@@ -136,7 +158,7 @@ function renderRow(item: Row, busyLane: boolean): ReactElement {
     case 'input': return <InputRow rec={row.rec as Rec<'input'>} busyLane={busyLane} />
     case 'item': return <ItemRow d={row.rec.data as Item} />
     case 'approval': return <ApprovalCard rec={row.rec as Rec<'approval'>} />
-    case 'task': { const t = row.rec.data as Task; return <CardRow kind="任务" status={t.status} title={t.goal} /> }
+    case 'task': return <TaskCard t={row.rec.data as Task} />
   }
 }
 

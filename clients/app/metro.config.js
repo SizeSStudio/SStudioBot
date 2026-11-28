@@ -15,9 +15,19 @@ config.resolver.disableHierarchicalLookup = true
 // lowlight's entry also imports every highlight.js language (1.5 MB of source); we only want createLowlight and
 // register 16 ourselves
 const lowlightCore = path.join(path.dirname(require.resolve('lowlight')), 'lib/index.js')
+// @pierre/diffs (desktop diff view) can also highlight with wasm (its `highlights` backend, shiki's oniguruma): the
+// CSP has no wasm-unsafe-eval and we only use 'shiki-js', so those dynamic imports get a stub that throws
+const noWasm = path.join(__dirname, 'src/task/no-wasm.js')
+const WASM = new Set(['shiki/wasm', 'shiki/engine/oniguruma'])
+// its wasm word diff the same way: straight to jsdiff, which it falls back to anyway
+const patchesJsdiff = path.join(__dirname, 'src/task/patches-jsdiff.js')
 const upstream = config.resolver.resolveRequest
 config.resolver.resolveRequest = (ctx, name, platform) => {
   if (name === 'lowlight') return { type: 'sourceFile', filePath: lowlightCore }
+  if (name === '@pierre/patches') return { type: 'sourceFile', filePath: patchesJsdiff }
+  if (WASM.has(name) || (name === './backends/highlights.js' && ctx.originModulePath.includes(`${path.sep}@pierre${path.sep}diffs${path.sep}`))) {
+    return { type: 'sourceFile', filePath: noWasm }
+  }
   return (upstream ?? ctx.resolveRequest)(ctx, name, platform)
 }
 

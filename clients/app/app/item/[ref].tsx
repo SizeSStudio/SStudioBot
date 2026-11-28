@@ -3,7 +3,7 @@
 // the notification said. A personal one is no different: its content only ever comes from the hub, on this device.
 import { useEffect, useState } from 'react'
 import { Link, Redirect, useLocalSearchParams } from 'expo-router'
-import { ScrollView, Text, View } from 'react-native'
+import { ScrollView, Text } from 'react-native'
 import { Ref } from '../../../../protocol/api/push.ts'
 import { ApprovalsRes } from '../../../../protocol/api/read.ts'
 import { actions, conn, store } from '../../src/conn/client.ts'
@@ -20,6 +20,7 @@ export default function ItemPage() {
   if (!ref) return <Shell><Text className="text-muted-foreground">这个链接不对</Text></Shell>
   if (entity === 'thread') return <Redirect href={{ pathname: '/thread/[id]', params: { id } }} />
   if (entity === 'approval') return <ApprovalItem id={id} />
+  if (entity === 'task') return <Redirect href={{ pathname: '/task/[id]', params: { id } }} />
   return <Other entity={entity} id={id} />
 }
 
@@ -54,14 +55,6 @@ function ApprovalItem({ id }: { id: string }) {
   )
 }
 
-function Other({ entity, id }: { entity: string; id: string }) {
-  const task = useEntity(store, 'task', entity === 'task' ? id : undefined)
-  const lane = task?.data.origin_lane
-  const thread = lane ? store.threadByLane(lane) : undefined
-  return (
-    <Shell>
-      {task ? <Text selectable className="text-foreground">任务 · {task.data.status}　{task.data.goal}</Text> : <Text className="text-muted-foreground">{entity === 'task' ? '这个任务不在这台上（任务页随 W4 来）' : '这类还打不开'}</Text>}
-      {thread ? <Link href={{ pathname: '/thread/[id]', params: { id: thread.data.id } }} className="text-foreground underline">去所在的线程</Link> : null}
-    </Shell>
-  )
+function Other({ entity }: { entity: string; id: string }) {
+  return <Shell><Text className="text-muted-foreground">这类还打不开（{entity.slice(0, 40)}）</Text></Shell>
 }

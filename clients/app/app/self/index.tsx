@@ -41,6 +41,7 @@ export default function Self() {
       ) : null}
 
       <Link href="/self/devices" className="text-foreground underline">设备</Link>
+      <Link href="/self/nodes" testID="nodes-link" className="text-foreground underline">节点</Link>
     </View>
   )
 }

@@ -1,7 +1,9 @@
 // End to end with nothing faked on the wire: the connection state machine and the store, over Node's WebSocket, through
 // W2a's relay and the hub's RelayLink / Session to W2b's /api/v1 dispatcher and pump (scripts/clients-e2e-hub.ts, a
 // child process since clients/ may not import hub/ or relay/). Pair with a code → bootstrap → live ev/delta → the
-// network drops and it fills in by seq (nothing missing, nothing twice) → hub offline 4404 waits → W3a writes over the wire → removed 4410 stops.
+// network drops and it fills in by seq (nothing missing, nothing twice) → hub offline 4404 waits → W3a writes over the wire →
+// W4 a task on a (fake) node: dispatch, steps, a diff, 看一眼 / 问我 cards, steer, 清理 → removed 4410 stops.
+// Every wait is time-boxed: `until` per condition, `ctl` per harness answer, and --test-timeout for each test.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -15,7 +17,12 @@ import { makeActions } from "../src/conn/actions.ts";
 import { Connection, deviceIdOfKey, type ConnState, type Pairing, type Signer, type SocketLike } from "../src/conn/machine.ts";
 import { readPairCode } from "../src/conn/pairCode.ts";
 import { Writes } from "../src/conn/writes.ts";
-import { pullAndOpenHtml } from "../src/html/pull.ts";
+import { pullAndOpenHtml, pullBlob } from "../src/html/pull.ts";
+import { answersOf, detailOf, pick } from "../src/chat/permission.ts";
+import { decodeText, shaOf, splitDiff } from "../src/task/diff.ts";
+import { steerOutcome } from "../src/task/status.ts";
+import { taskLane } from "../src/conn/actions.ts";
+import type { Approval, Item, Task } from "../../../protocol/api/entities.ts";
 import { Store } from "../src/store/store.ts";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -34,8 +41,15 @@ createInterface({ input: hub.stdout }).on("line", (line) => {
   else if (typeof v.id === "number") { waiters.get(v.id)?.(v); waiters.delete(v.id); }
 });
 let ctlId = 0;
-const ctl = (cmd: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> =>
-  new Promise((resolve) => { const id = ++ctlId; waiters.set(id, resolve); hub.stdin.write(JSON.stringify({ id, cmd, ...args }) + "\n"); });
+const ctl = (cmd: string, args: Record<string, unknown> = {}, ms = 15_000): Promise<Record<string, unknown>> =>
+  new Promise((resolve, reject) => {
+    const id = ++ctlId;
+    // the harness answers in order; one that never does fails this test instead of hanging the run
+    const timer = setTimeout(() => { waiters.delete(id); reject(new Error(`harness didn't answer ${cmd} in ${ms} ms\n${hubLog.join("")}`)); }, ms);
+    timer.unref();
+    waiters.set(id, (v) => { clearTimeout(timer); resolve(v); });
+    hub.stdin.write(JSON.stringify({ id, cmd, ...args }) + "\n");
+  });
 
 // every socket the machine opens is a real one; we only count them, and what goes out on them
 const urls: string[] = [];
@@ -243,6 +257,123 @@ test("W3 over the real wire: chunked blob pull for HTML and client_op_id write r
   const pr = await act.presence({ foreground: true, viewing: `thread:${th.data.id}` });
   assert.equal(pr.ok, true, `presence (W3b): ${JSON.stringify(pr)}`);
   assert.equal(conn.state.s, "live", "connection stays healthy after writes");
+  w.clear();
+});
+
+test("W4 over the real wire: dispatch to a node, its steps and diff arrive, 看一眼 / 问我 answered, steer, 清理, cancel", async () => {
+  const w = new Writes({ conn, store });
+  const act = makeActions(w, store, () => saved?.device_id ?? null);
+  /** what the hub sent down to the node (it goes out from the engine's loop: polled, time-boxed) */
+  const sentTo = async (re: string, ms = 8000) => {
+    const end = Date.now() + ms;
+    for (;;) {
+      const got = (await ctl("node_sent", { re })).got as { body: Record<string, unknown> }[];
+      if (got.length) return got;
+      if (Date.now() > end) assert.fail(`the node never got ${re}\n${hubLog.join("")}`);
+      await new Promise((r) => setTimeout(r, 30));
+    }
+  };
+  assert.equal((await ctl("node_hello", { steer: true })).status, 200);
+  await until("the node in the store", () => store.get("node", "local")?.data.status === "online");
+  assert.deepEqual(store.get("node", "local")!.data.agents, [{ kind: "claude", version: "0.0.1" }, { kind: "codex", version: "0.0.2" }]);
+
+  // 派活: confirmed; the answer is the task, the stream brings its thread
+  const r = await act.startTask({ goal: "把示例仓库的 README 改通顺", node: "local", agent: "claude", repo: "/home/demo/repo" });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const id = ((r as { body: { task: Task } }).body.task).id;
+  const lane = taskLane(id);
+  await until("running on the node", () => store.get("task", id)?.data.status === "running" && !!store.get("task", id)?.data.session_ref);
+  await until("its thread", () => !!store.threadByLane(lane));
+  assert.equal(store.get("task", id)!.data.caps?.steer, true, "caps from the node's hello");
+
+  // steps: progress, a tool with its diff, a message, the edit's diff as a blob
+  const DIFF = "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n@@ -1 +1 @@\n-旧的一句\n+<img src=https://evil.example/x.png>新的一句";
+  assert.equal((await ctl("node_events", { task: id, events: [
+    { k: "progress", text: "在读 README" },
+    { k: "tool_start", item: "tu1", name: "Edit", args: { path: "README.md" } },
+    { k: "tool_end", item: "tu1", ok: true, result: "ok", diff: DIFF },
+    { k: "diff", item: "tu1", text: DIFF, stat: { files: [{ path: "README.md", added: 1, removed: 1 }], added: 1, removed: 1 } },
+    { k: "message", item: "m1", text: "改好了第一段" },
+  ] })).status, 200);
+  const items = () => store.timeline(lane).filter((x) => x.entity === "item").map((x) => x.rec.data as Item);
+  await until("steps in the task thread", () => items().some((i) => i.kind === "assistant") && items().some((i) => i.name === "diff"));
+  assert.ok(items().some((i) => i.kind === "notice" && (i.body as { text?: string }).text === "在读 README"));
+  const tool = items().find((i) => i.kind === "tool")!;
+  assert.equal(tool.status, "done");
+  assert.equal(splitDiff(String((tool.body as { diff?: string }).diff)).files[0]!.path, "README.md");
+  // the diff step points at a blob: pulled over the relay in chunks, split, shown as text
+  const sha = shaOf((items().find((i) => i.name === "diff")!.body as { diff_ref?: string }).diff_ref);
+  assert.ok(sha);
+  const got = await pullBlob(sha!, 4 * 1024 * 1024, { request: (m, p, o) => conn.request(m, p, o), chunkBytes: 64 });
+  assert.ok(got.ok);
+  const d = splitDiff(decodeText((got as { bytes: Uint8Array }).bytes));
+  assert.deepEqual([d.files.length, d.added, d.removed], [1, 1, 1]);
+  assert.ok(d.files[0]!.text.includes("<img src=https://evil.example/x.png>"), "kept as text (never rendered)");
+
+  // 看一眼: the whole command reaches the card; the answer is locked to the version on screen
+  const long = `rm -rf build && echo ${"示".repeat(3000)} && echo 尾巴`;
+  const opts = [{ id: "allow_once", label: "这次可以", kind: "allow_once" }, { id: "reject_once", label: "不行", kind: "reject_once" }];
+  const g = await ctl("node_permission", { task: id, request_id: "perm-e2e-1", title: "要跑一条长命令", detail: { tool: "Bash", command: long, cwd: "/home/demo/repo" }, options: opts });
+  const gid = String(g.approval_id);
+  await until("the glance card", () => store.get("approval", gid)?.data.status === "pending");
+  await until("the task waits on it", () => store.get("task", id)?.data.waiting_approval === gid);
+  const ga = store.get("approval", gid)!.data as Approval;
+  assert.equal(ga.kind, "glance");
+  assert.equal(detailOf(ga.request).command, long, "not cut: its tail is there");
+  const wrong = await act.decide(ga, ga.draft_version + 1, { action: "answer", option_id: "allow_once" });
+  assert.equal(wrong.ok, false, "a version I wasn't shown is refused");
+  w.dismiss(wrong.op);
+  const ok = await act.decide(ga, ga.draft_version, { action: "answer", option_id: "allow_once" });
+  assert.equal(ok.ok, true, JSON.stringify(ok));
+  await until("approved", () => store.get("approval", gid)?.data.status === "approved");
+  await until("the node got the answer", () => store.get("task", id)?.data.status === "running");
+  assert.equal((await sentTo("permissions/perm-e2e-1$"))[0]!.body.option_id, "allow_once");
+
+  // 问我 with two questions (one multiSelect): `answers`, only once each has one
+  const QS = [{ question: "标题用哪种？", options: [{ label: "短的" }, { label: "长的" }] }, { question: "顺便改哪些？", multiSelect: true, options: [{ label: "错字" }, { label: "链接" }] }];
+  const q = await ctl("node_permission", { task: id, kind: "ask", request_id: "ask-e2e-1", title: "两个问题", detail: { questions: QS }, options: [] });
+  const qid = String(q.approval_id);
+  await until("the ask card", () => store.get("approval", qid)?.data.status === "pending");
+  const qa = store.get("approval", qid)!.data as Approval;
+  const qs = detailOf(qa.request).questions;
+  assert.equal(qs.length, 2);
+  let picks = pick({}, qs[0]!, "短的");
+  assert.equal(answersOf(qs, picks), null, "not until both are answered");
+  picks = pick(pick(picks, qs[1]!, "错字"), qs[1]!, "链接");
+  const answers = answersOf(qs, picks)!;
+  assert.equal((await act.decide(qa, qa.draft_version, { action: "answer", answers })).ok, true);
+  await until("ask answered", () => store.get("approval", qid)?.data.status !== "pending");
+  const sentAsk = (await sentTo("permissions/ask-e2e-1$"))[0]!.body;
+  assert.deepEqual(sentAsk.answers, { "标题用哪种？": "短的", "顺便改哪些？": "错字, 链接" });
+
+  // steer: optimistic in the lane; the hub's answer says whether it went into this turn
+  await until("running again", () => store.get("task", id)?.data.status === "running" && !store.get("task", id)?.data.waiting_approval);
+  const s1 = await act.steerTask(id, "顺便把标题也改了");
+  assert.equal(s1.ok, true, JSON.stringify(s1));
+  assert.equal(steerOutcome(s1.ok ? s1.body as { applied: boolean } : null), "插进这一轮了");
+  await ctl("node_steer", { applied: false });
+  const s2 = await act.steerTask(id, "再加一段致谢");
+  assert.equal(steerOutcome(s2.ok ? s2.body as { applied: boolean } : null), "这一轮接不了，排到下一轮开头");
+  await until("my lines in the task thread", () => store.timeline(lane).filter((x) => x.entity === "input").length >= 2);
+
+  // move while a turn runs: refused in place (先停)
+  const mv = await act.moveTask(id, { agent: "codex" });
+  assert.equal(mv.ok, false);
+  assert.equal(mv.status, 409);
+  w.dismiss(mv.op);
+
+  // 清理 a worktree that's cleanable, from the node page's list
+  await ctl("worktree_cleanable", { task: id, path: "/home/demo/repo/.sbot-wt/demo" });
+  const n = await conn.request("GET", "/api/v1/nodes");
+  const wts = (n.body as { worktrees: { path: string }[] }).worktrees;
+  assert.ok(wts.some((x) => x.path === "/home/demo/repo/.sbot-wt/demo"));
+  const cl = await act.cleanupWorktree("local", "/home/demo/repo/.sbot-wt/demo");
+  assert.equal(cl.ok, true, JSON.stringify(cl));
+  assert.equal((await sentTo("worktrees/cleanup$")).length, 1);
+
+  // cancel: it ends, and the task thread says so
+  assert.equal((await act.cancelTask(id)).ok, true);
+  await until("cancelled", () => store.get("task", id)?.data.status === "cancelled");
   w.clear();
 });
 

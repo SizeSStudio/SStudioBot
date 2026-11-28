@@ -7,7 +7,7 @@ import { createServer, type Server } from "node:http";
 import { inspect } from "node:util";
 import type { AddressInfo } from "node:net";
 import { Client, LoggerLevel } from "@larksuiteoapi/node-sdk";
-import { SdkBackend } from "../src/channels/feishu/sdk.ts";
+import { SdkBackend, watchFrames } from "../src/channels/feishu/sdk.ts";
 
 const APP_ID = "cli_fakeappid0001", SECRET = "fake-app-secret-not-real-654321";
 
@@ -53,4 +53,49 @@ test("characterisation: the SDK's own logging carries the secret (why it always 
     assert.ok(leaked, "SDK 1.77.0 logs the raw request with app_secret in it; if this changes, update 08 P9 and this test");
     assert.ok(raw.length > 0, "the SDK logged the failure");
   } finally { m.server.close(); }
+});
+
+test("SdkBackend: after the SDK gives up (system busy from the endpoint) it starts again, backing off; close() stops that", async () => {
+  // the SDK treats every endpoint code but internal_error as final; P9's netcut showed how long a give-up would last
+  const hits: number[] = [];
+  const server = createServer((req, res) => {
+    req.resume();
+    req.on("end", () => {
+      if (req.url?.startsWith("/callback/ws/endpoint")) hits.push(Date.now());
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ code: 1, msg: "mock: system busy", data: {} }));
+    });
+  });
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const said: string[] = [], errors: string[] = [];
+  // the WSClient only starts with an app id shaped like a real one (cli_ + 16 hex); made up, upper case so leak-guard
+  // (lower-case ids) doesn't take it for a real one
+  const b = new SdkBackend({ appId: "cli_0000000000FA4E00", appSecret: SECRET, domain: url, say: (l) => said.push(l), restartMs: 40, restartMaxMs: 160 });
+  try {
+    await b.start(() => {}, { ready() {}, reconnected() {}, error: (m) => errors.push(m) });
+    const end = Date.now() + 5000;
+    while (hits.length < 4 && Date.now() < end) await new Promise((r) => setTimeout(r, 20));
+    assert.ok(hits.length >= 4, `asked for the endpoint again after giving up (${hits.length} times)`);
+    assert.ok(errors.length >= 3 && errors.every((e) => !e.includes(SECRET)));
+    const gaps = hits.slice(1).map((t, i) => t - hits[i]!);
+    assert.ok(gaps[1]! >= 70, `backs off (gaps ${gaps.join(", ")} ms)`);
+    assert.ok(said.some((l) => /starting it again in/.test(l)));
+    await b.close();
+    const n = hits.length;
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(hits.length, n, "no new attempt after close()");
+    assert.ok(!said.join("\n").includes(SECRET));
+  } finally { await b.close(); server.close(); }
+});
+
+test("watchFrames: a data frame that isn't `event` is said once per type, and still handed to the SDK", async () => {
+  const said: string[] = [], got: string[] = [];
+  const ws = { handleEventData: async (d: any) => { got.push(d.headers[0].value); } };
+  watchFrames(ws, (l) => said.push(l));
+  const frame = (type: string) => ({ headers: [{ key: "type", value: type }], payload: new Uint8Array() });
+  for (const t of ["event", "card", "card", "event"]) await ws.handleEventData(frame(t));
+  assert.deepEqual(got, ["event", "card", "card", "event"], "every frame still reaches the SDK");
+  assert.equal(said.length, 1);
+  assert.match(said[0]!, /type card dropped by the SDK/);
 });

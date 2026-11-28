@@ -190,9 +190,9 @@
   - 依赖：官方 SDK 的依赖树里有没有 install 脚本、有多大。
 - 选：两边都过选依赖少、不起子进程的那个；只有一边过就选它；都不过 → 回来找我。
 
-结果（2026-11-28；**没有测试应用，只做了依赖审计、读源码和测试架子，真测都在最后一条「等测试应用」**；代码在分支 `probe/p9` 的 `probes/p9/`，README 有跑法）：
+结果（2026-11-28；先做了依赖审计、读源码和测试架子，同一天用线上应用真测了不要人的几项，见下面「真测」；代码在分支 `probe/p9` 的 `probes/p9/`，README 有跑法）：
 
-- **暂定官方 SDK（`@larksuiteoapi/node-sdk` 1.77.0，精确锁）※ 待测试应用实测确认**。纸面上点击和 CardKit 两项它过，依赖里没有原生模块，不起子进程；lark-cli 的 CardKit 一项按旧耗时推算不过，确认又发在落库之前，不合 03 的「写 `inbox`、提交、确认」。按纸面结果套 08 的规则（只有一边过就选它）。用法有几条必须照做，见下。
+- **定官方 SDK（`@larksuiteoapi/node-sdk` 1.77.0，精确锁）**，11-28 真测没推翻。依赖里没有原生模块，不起子进程。lark-cli 真测两项不过：CardKit 每次调用约 2.9 s（串行 0.34 次/秒）；`event consume` 是独占的，应用上已有别的长连接就拒绝启动，新旧并行、`shadow` → `live` 都做不了。它的确认还发在落库之前，不合 03 的「写 `inbox`、提交、确认」。套 08 的规则（只有一边过就选它）。点击 50 次还没真测（要人，见点击清单）。用法有几条必须照做，见下。
 - ※ **断网时的点击（我定的，等你过目）**：卡片回调飞书不重投，两个后端都补不回来，这是飞书的性质，分不出两个后端的高下，所以门槛里的「期间的事件」不含点击，回调单列。断线期间的点击算丢：卡片还在，恢复后再点；审批本身在主的 `approvals` 里，客户端也能批，不只靠飞书卡片（飞书是渠道之一，§触6.6）。重连后主把还挂着的审批卡重新刷一遍状态，点过没生效的能看出来：W1e 的插件在重连时补漏消息、给了改卡的 `updateCard`，刷审批卡要读 `approvals`，归 W1d 接（03 approvals）。
 - **范围**：这个选择只管 bot 身份的收事件、卡片回调、发消息、CardKit。user 身份轮询群（§读2.2）、查已读、飞书邮箱，旧代码靠 lark-cli 的 user 登录（`--as user`），P9 没测。※ 这部分先照旧用主机器上装的 lark-cli（已装程序，不进 lockfile）；SDK 能带 user token 调接口（`withUserAccessToken`），但授权和续期要自己做。W1e 定了：先不换，user 身份的几样留在 `hub/src/channels/feishu/user.ts` 一个文件里（`Lark` 类型），以后换只动它。
 
@@ -216,27 +216,51 @@
 用法和风险（读 SDK 1.77.0 和 lark-cli 源码、飞书官方文档）：
 
 - **确认和响应**：`WSClient` 等处理函数 resolve 之后才回 `{code:200, data}`，抛错回 500；处理函数的返回值就是卡片回调响应（toast 等）。所以 3 秒预算在我们的处理函数里，03 的「只写 inbox、提交、确认」够用。要用低层 `WSClient` + `EventDispatcher`，不用高层 `LarkChannel`（它对卡片回调不带响应体，去重键是 `messageId:openId:actionId`）。
-- **载荷**：SDK 把 `header` 和 `event` 拍平，处理函数拿到 `event_id`、`operator{open_id, union_id, user_id}`、`action.value`、`token`（延迟更新令牌，30 分钟内可用 2 次）、`context.open_message_id` 和 `open_chat_id`。`user_id` 要另开权限，用 `open_id` 校验 owner。SDK 只处理 `event` 类型的帧，`card` 类型的忽略；推断卡片回调以 `event` 帧到达，待实测确认。
+- **载荷**：SDK 把 `header` 和 `event` 拍平，处理函数拿到 `event_id`、`operator{open_id, union_id, user_id}`、`action.value`、`token`（延迟更新令牌，30 分钟内可用 2 次）、`context.open_message_id` 和 `open_chat_id`。`user_id` 要另开权限，用 `open_id` 校验 owner。SDK 只处理 `event` 类型的帧，别的类型（如 `card`）不交给处理函数、不确认、不出声；推断卡片回调以 `event` 帧到达，真测时没有点击（要人），待点击清单 2 确认。主的插件包了一层 `watchFrames`（`sdk.ts`），非 `event` 帧每种类型说一次，不会悄悄丢。
 - **每种订阅的类型都要注册处理函数**：没注册的事件照样回 200 然后丢，没有任何提示（测试架子里有这一条）。
-- **重连**：SDK 向 `/callback/ws/endpoint` 取连接地址和 `ClientConfig`；连接关了就自动重连：第一次等 `0..ReconnectNonce` 秒的随机数，之后每 `ReconnectInterval` 秒一次，次数默认不限；SDK 默认值 nonce 30 s、interval 120 s、ping 120 s，服务端下发的覆盖它。所以断 30 秒后最坏可能要 `nonce + interval`（默认约 150 s）才连回，要看服务端实际下发的值。**半开的链路默认发现不了**：要设 `wsConfig.pingTimeout`（默认关）和 `handshakeTimeoutMs`，否则 TCP 悄悄死了不会触发重连；架子里测过 stall 能被看门狗发现。`onError`（取不到地址、重连次数用尽）要接，不然永久断了没人知道。
+- **重连**：SDK 向 `/callback/ws/endpoint` 取连接地址和 `ClientConfig`；连接关了就自动重连：第一次等 `0..ReconnectNonce` 秒的随机数，之后每 `ReconnectInterval` 秒一次，次数默认不限；SDK 默认值 nonce 30 s、interval 120 s、ping 120 s，服务端下发的覆盖它。所以断 30 秒后最坏可能要 `nonce + interval`（默认约 150 s）才连回，要看服务端实际下发的值。**半开的链路默认发现不了**：要设 `wsConfig.pingTimeout`（默认关）和 `handshakeTimeoutMs`，否则 TCP 悄悄死了不会触发重连；架子里测过 stall 能被看门狗发现。`onError`（取不到地址、重连次数用尽）要接，不然永久断了没人知道。真测时读源码补的：`/callback/ws/endpoint` 回的码除了 `internal_error`（1000040343）都算终结（`system_busy` 1、`exceed_conn_limit` 1000040350 等），SDK 报一次 `onError` 就再也不连；主的 `SdkBackend` 在 `onError` 后自己重新 `start()`，1 分钟起、翻倍、最多 10 分钟（`hub/test/feishu-sdk.test.ts` 有一条）。
 - **去重和补漏**：`WSClient` 自己不去重。事件处理失败时飞书按 15 秒、5 分钟、1 小时、6 小时重投（最多 4 次），**回调不重投**；断线期间推的事件是否同样重投，待实测。按 04 的表：消息按 `message_id` 进 `inbox` 的 UNIQUE（lark-cli 的字段说明也建议用它），卡片回调按 `event_id`。重连后用会话历史补漏——旧 `catchUp()` 只补我和 bot 的私聊，新插件要定补哪些会话。
 - **长连接限制**（官方文档）：只支持自建应用；每个应用最多 50 条，事件随机发给其中一条（所以新旧两边不能同时吃一个应用，09）。
 - **日志泄露密钥**：`TokenManager` 取令牌失败时 `logger.error(e)` 打整个 `AxiosError`，其中 `config.data` 是含 `app_secret` 的请求体；`Client.request` 失败也打原始错误（含 Bearer 令牌的请求头）。这违反「密钥只写不读、不进日志」，必须传自己的 `logger`（只留名字、消息、HTTP 状态、API 码并过打码）。架子里有一条对照：同样的失败，SDK 默认日志里能找到 secret，我们的找不到。升级 SDK 要重跑这两条。W1e 在主里也钉了一条（`hub/test/feishu-sdk.test.ts`，本地假服务器）：1.77.0 自己的日志里有 secret，`SdkBackend` 的日志和错误里没有；哪天升级后不再泄露，那条会故意失败，提醒改这里。
 - **CardKit 限频（官方文档）**：流式卡片内容更新接口 1000 次/分、50 次/秒（页面没写按应用还是按卡片），单张卡实体另限 10 次/秒（流式模式下不计）；每秒 2 次是 120 次/分，单张卡有余量，若 1000 次/分按应用计，同时流式的卡超过 8 张就超；流式模式每 10 分钟自动关；流式开着时点击不能更新卡片，要先关流式。消息更新（PATCH）5 次/秒/条，卡片 14 天内可改，需要 `update_multi`；限频错误是 HTTP 429 或 99991400。
-- **lark-cli 事件模式**：一个 EventKey 一个 `event consume` 进程，背后一个脱机的 bus 守护进程（最后一个消费者走后 30 秒退出）；Go SDK 收到事件后立刻确认，再经 bus 分给消费者，bus 内存去重（5 分钟、1 万条）、每个消费者 100 条缓冲、满了丢最旧的；没有消费者的事件确认后就没了。没有 CardKit 子命令，只能用 `api`。本机没有 bus 而应用已有别的长连接时（`online_instance_cnt > 0`）拒绝启动。
+- **lark-cli 事件模式**：一个 EventKey 一个 `event consume` 进程，背后一个脱机的 bus 守护进程（最后一个消费者走后 30 秒退出）；Go SDK 收到事件后立刻确认，再经 bus 分给消费者，bus 内存去重（5 分钟、1 万条）、每个消费者 100 条缓冲、满了丢最旧的；没有消费者的事件确认后就没了。没有 CardKit 子命令，只能用 `api`。本机没有 bus 而应用已有别的长连接时（`online_instance_cnt > 0`）拒绝启动——真测确认：两个 key 都报 `failed_precondition`、退出码 2，一直退避重启连不上。1.0.98 只给 `LARKSUITE_CLI_APP_ID` / `APP_SECRET` 环境变量时 REST 报 `token_missing`，设了它们 `config` 又拒绝执行；探针改成在自己的临时配置目录里 `config init --app-secret-stdin` 一次（密钥走 stdin，不进环境、不上命令行）。
 - 来源（open.feishu.cn/document/ 下）：`server-docs/event-subscription-guide/overview`、`event-subscription-guide/callback-subscription/callback-overview`、`feishu-cards/card-callback-communication`、`cardkit-v1/streaming-updates-openapi-overview`、`cardkit-v1/card-element/content`、`server-docs/im-v1/message-card/patch`、`server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case`（长连接）、`server-docs/api-call-guide/frequency-control`。
 
 测试架子（`npm test`，24 项，Node 24.22.3 和 25.8.1 都过，没连飞书）：手写 pbbp2 的假长连接服务器 + 假 lark-cli，验证确认在处理函数之后、响应体带回、500、分片、重连后重投被去重、stall 被看门狗发现、令牌失败日志无密钥、50 次点击的统计、限流被报出、断网对账能算出漏掉的消息、lark-cli 子进程的 HOME 隔离。这些只证明架子和 SDK 的这几条行为在本地对，**不替代真测**。
 
-**等你准备（飞书测试应用）**——有应用后在 `probes/p9/` 照 README 跑，结果补进这里：
+### 真测（2026-11-28，共用线上应用）
 
-1. `clicks` 两个后端各一遍（我点 50 次）：确认耗时、`operator_id`、更新成功数、读回。
-2. `netcut` 两个后端、`reset` 和 `stall` 各一遍，断 30 秒、等 6 分钟以上：重连用了多久（取决于服务端下发的 `ReconnectInterval`）、消息漏几条（断线期间的事件重不重投）、重投带来几次重复、点击缺几次、断线时点按钮飞书里显示什么；lark-cli 要先看 `pass.through_proxy`（它的 WebSocket 认不认 `HTTPS_PROXY`，没验证过）。
-3. `stream` 两个后端各一遍：2 次/秒 2 分钟有没有 429、lark-cli 实际每秒几次。
-4. 卡片回调是不是以 `event` 帧到达 SDK 的、载荷字段和上面一致；服务端实际下发的 `PingInterval`、`ReconnectInterval`、`ReconnectNonce`。
-5. CardKit 的 1000 次/分到底按应用还是按卡片计。
-6. user 身份读群和邮箱能不能不靠 lark-cli（不在 P9 的门槛里；W1e 暂时照旧用 lark-cli）。
-7. W1e 的飞书插件（`hub/src/channels/feishu/`）在测试应用上走一遍：`shadow` → `live`，私聊一轮、`/tasks`、工作台话题、卡片点两次（只进一行）、别人点被拒、断网后 `catchUp` 补回的消息。
+- **怎么测的**：没有单独的测试应用，用线上机器人应用（你定的）。服务器上每次一个新的一次性 home（`/srv/data/sbot/testhomes/live-*`，端口 7829–7831），旧核心照跑不动。`hub/test/live-creds.ts` 在服务器上用 sudo 从线上拷 app id、app secret、我的 open_id，文件到文件，不打印、不上命令行；只读线上文件。只往两处发：我和机器人的私聊、新建的测试群「sbot 测试」（只有我和机器人，`live-creds.ts` 查成员，多一个人就拒绝）。跑法：`hub/test/live-home.sh` 顶部；探针加了共用模式（`P9_SHARED_LIVE_APP=1`，只报告别的长连接，不拦）。
+- **共用应用的代价**：测试 hub 连着的时候应用上有两条长连接（旧核心的 lark-cli 一条），飞书把每个事件、每次点击随机给一条。所以断线期间的事件重不重投、点击数这几项现在量不准，W7 切换后旧核心下线再补。
+- **长连接起止（UTC）**：P9 `config` 12:17:31–12:17:52；主 auto 12:29:16–12:29:56、12:31:46–12:35:09、12:39:10–12:39:55、12:40:54–12:42:12、12:45:31–12:46:21（20/20 那次）；lark-cli `config` 12:59:10–13:00:10（没连上，被拒）；P9 `netcut reset` 13:00:41–13:03:56；`netcut stall` 13:05:05–13:08:20。每次跑完都查过服务器上没有测试进程，应用回到 1 条长连接。
+- **④ 服务端下发的值**：`/callback/ws/endpoint` 和 pong 一致：`PingInterval` 90 s、`ReconnectInterval` 90 s、`ReconnectNonce` 25 s、`ReconnectCount` -1（不限）。比 SDK 默认值（120/120/30）短。`stall` 那次收到 5 个数据帧，都是 `event`；其中有 `im.message.message_read_v1`（线上应用订阅了已读事件），探针和主都没注册，SDK 确认后丢、打一行 warn——主查已读走 user 身份，不用它；W7 切换时在开发者后台退订或注册个空处理函数，二选一。卡片回调的帧类型没量到（没有点击）。
+- **② 断网 30 秒**（SDK，经本地代理切断）：`reset` 恢复后 82.3 s 才连回——断的时候第一次重连（0–25 s 的随机数后）撞上断网，下一次就在 90 s 后；最坏是恢复后约 90 s。`stall`（链路不断、包不走）恢复后 19.9 s 连回：看门狗（`pingTimeout` 10 s）发现半开再走重连。两次都重连上、没有重复；消息漏不漏、点击缺几次要人在断线时发和点，而且事件分给旧核心一半，没量（见点击清单 3）。所以断一下飞书这头最多约 1.5 分钟收不到，私聊靠重连后的 `catchUp` 补，点击算丢（上面 ※）。lark-cli 没测：长连接起不来（见上）。
+- **③ CardKit 流式，2 次/秒**：
+
+| | 计划 | 成功 | 限流 99991400 | 其他错 | 实际 次/秒 | 单次耗时 p50 |
+|---|---|---|---|---|---|---|
+| SDK 串行，1 张卡 2 分钟 | 240 | 240 | 0 | 0 | 1.32 | 750 ms |
+| SDK 不等上一次（`--pipeline`），1 张卡 2 分钟 | 240 | 240 | 0 | 0 | 1.98 | — |
+| lark-cli 串行，1 张卡 30 s | 60 | 60 | 0 | 0 | 0.34 | 2887 ms |
+| lark-cli 不等上一次，1 张卡 30 s | 60 | 48 | 0 | 12（300317） | 1.37 | 2959 ms |
+
+  - 新加坡到飞书连一次往返约 250 ms，SDK 单次约 750 ms，串行到不了 2 次/秒；不被限流。主的 CardStream 是「一次只有一个在途、后来的覆盖前面的」，约 1.3 次/秒，字不会丢，只是更新粗一点，够用，不改。
+  - 300317 是 `sequence` 乱序：并发发出的更新互相超车。要 2 次/秒就得按序发、不等回包，同时保证 `sequence` 单调，CardStream 现在不这么做也就不会撞上。
+- **⑤ 1000 次/分按应用计**：SDK 不等上一次，12 张卡同时各 2 次/秒（1440 次/分）跑 90 s：计划 2160，限流 264 次（99991400，第一次在 79.6 s），乱序 13 次；**每张卡都恰好被限 22 次**。按卡计每张只有 120 次/分，不会被限，所以是按应用的总量。结论：同时流式的卡最多约 8 张（每张 2 次/秒），W7 前和旧核心的 CardKit 共用这份额度。
+- **⑦ W1e 插件**（`hub/test/live-feishu.ts auto`，20/20）：`shadow` 不开长连接（应用上的连接数不变）、`send()` 只记日志 → `live` 连上（多一条）→ 给我私聊发一条真消息 → 私聊一轮：回的是真 CardKit 卡片，流式更新没有失败，没有另发文字 → `/tasks`：在私聊里回了卡片，**但不是代码处理的，进了模型**（见下）→ 工作台话题：测试群当工作台，回复在那个话题的 thread 里 → 测试群当普通群，假的「别人 @我」→ 分拣 → 草稿 → 真审批卡发到我私聊（管理出口）→ 批之前没有以我名义发任何东西 → 批（设备 `cli`）→ 以我名义的发送到了假 lark-cli，正好是批过的那句、回复那条消息、`--as user` → 真卡 PATCH 成「已批」（读回要 `card_msg_content_type=raw_card_content`，不然 JSON 2.0 卡读回是占位）→ `catchUp` 对真私聊历史跑完 → 日志里没有 app secret → 关掉后应用回到 1 条长连接。入站消息是注入的（指向真发出的那条），真入站、卡片亲手点、断线补回在 `session`（点击清单 1）。
+- **发现**：
+  - `/tasks` 当时不是确定性命令：真测用的 main 在 W3a（#60）之前，只有 `/stop` `/new`（dispatch）和 `/pair` `/devices`（link）由代码回，`/tasks` 落到模型。#60 已把 `/tasks` 等做成确定性命令（`channels/commands.ts`）；W7 前在线上应用上复测一次。
+  - SDK 遇到非 `event` 帧悄悄丢 → `watchFrames`（上面）；SDK 终结错误后不再连 → `SdkBackend` 自己重开（上面）。两条都带测试。
+  - 探针的 lark-cli 后端靠环境变量给凭据在 1.0.98 上不通 → 改成 `config init --app-secret-stdin`（只在探针；主的 `user.ts` 用 home 里 `lark/` 的登录，不受影响）。
+- **⑥ user 身份不靠 lark-cli（纸面）**：做得到。lark-cli 1.0.98 的 `auth login` 是 Device Flow（`--no-wait` 给链接、`--device-code` 收尾），所以不要公网回调地址；主可以自己发起、把链接发到我私聊或客户端、轮询拿到 user token 和 refresh token，存进 `secrets.env` 那一类只写的存储、到期前续，调接口用 SDK 的 `withUserAccessToken`。要做的：授权和续期、令牌不进日志和上下文、范围和现在 lark-cli 登录的一样（im、mail 等）。没真测：要你在浏览器里授权一次。W1e 的决定不变（先照旧用 lark-cli，关在 `feishu/user.ts`）。
+
+**点击清单（约 10 分钟，你在飞书里点，我在服务器上起脚本）**——旧核心照跑，你发的、点的大约一半会被它收走（它会照常回你），没反应就再来一次：
+
+1. **主 session（约 5 分钟）**：`ssh <server> 'bash -s -- hub hub/test/live-feishu.ts session 7830' < hub/test/live-home.sh`（先照 `live-home.sh` 顶部把代码同步到服务器）。照提示做三步：私聊发一句（看真入站 → 流式卡片）；测试群里的审批卡连点两次「批准」（看只批一次、只发一条、点击都带 operator）；断开 40 秒期间私聊发「补1」「补2」（看 `catchUp` 补回来）。
+2. **P9 点击（约 4 分钟）**：`ssh <server> 'bash -s -- p9 clicks --backend sdk --clicks 20 --timeout-s 600' < hub/test/live-home.sh`，在测试群的卡上点到卡片显示 20/20（大约要点 40 下）。量确认耗时、`operator_id`、更新成功数，顺带看卡片回调是不是 `event` 帧（④ 剩下的一半）。50 次的门槛等 W7 旧核心下线后再跑一遍。
+3. **断网时发消息（可选，约 4 分钟）**：`... p9 netcut --backend sdk --mode reset --cut-s 30 --settle-s 360`，断的时候在测试群发几条、点几下卡。共用应用下数会被旧核心分走一半，只能看个大概；W7 后再做准。
+4. **别人点被拒——待第二个人**：要第二个人在卡上点。测试群现在只许我和机器人（`live-creds.ts` 多一个成员就拒绝），到时候临时拉人、测完移出，或者 W7 后做。
+5. **以我名义真发（没做）**：auto 里以我名义的发送到的是假 lark-cli。真发要在测试 home 里给 lark-cli 做一次 user 登录（Device Flow，你在浏览器点一次）；这次只拿到拷 app id 和 secret 的授权，没做。要做就说一声，只发到测试群。
 
 ## P10 换模型时有未完的工具调用（IC-11）
 

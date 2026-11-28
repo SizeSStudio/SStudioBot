@@ -52,6 +52,13 @@ async function plugin(config: Record<string, string>, secrets?: string) {
 
 const msg = (o: Partial<Incoming>): Incoming => ({ kind: "message", eventId: "ev1", messageId: "om_m0001", chatId: DM, chatType: "p2p",
   operatorId: OWNER, senderType: "user", messageType: "text", content: JSON.stringify({ text: "你好" }), createTime: 1_700_000_000_000, ...o });
+/** an approvals row as W1d files it for a send as me; returns its id */
+function approval(db: { run: (sql: string, ...a: any[]) => { lastInsertRowid: number | bigint } }, o: Record<string, unknown> = {}) {
+  const a = { kind: "send", status: "approved", as_identity: "user", channel: "feishu", target_json: JSON.stringify({ chat_id: GROUP }),
+    draft: "好的，明天给", final_text: null, expires_at: Date.now() + 3600_000, ...o };
+  return Number(db.run("INSERT INTO approvals(kind, status, as_identity, channel, target_json, draft, final_text, expires_at, ts) VALUES(?,?,?,?,?,?,?,?,?)",
+    a.kind, a.status, a.as_identity, a.channel, a.target_json, a.draft, a.final_text, a.expires_at, Date.now()).lastInsertRowid);
+}
 const row = (o: Partial<OutboxRow>): OutboxRow => ({ id: 1, channel: "feishu", kind: "text", as_identity: "bot", target_json: JSON.stringify({ chat_id: GROUP }), payload: "hi", ...o });
 
 test("inbox port: one row per (source, source_msg_id); others' messages wait for triage", async () => {
@@ -98,6 +105,7 @@ test("card clicks: only mine count, one inbox row per event_id, no token stored"
   assert.equal(rows[0]!.lane, CARD_LANE);
   assert.equal(rows[0]!.source, "feishu:card");
   assert.deepEqual(JSON.parse(rows[0]!.payload_json).value, { k: "appr", id: 7, o: "ok" });
+  assert.equal(JSON.parse(rows[0]!.payload_json).owner, true);
   assert.ok(!rows[0]!.payload_json.includes("token"));
   assert.equal(kicks.length, 1);
 });
@@ -110,11 +118,16 @@ test("messages: my DM is a turn or a command, others only feed triage, excluded 
   const inbox = db.all<{ lane: string; kind: string; payload_json: string }>("SELECT lane, kind, payload_json FROM inbox ORDER BY id");
   assert.deepEqual(inbox.map((r) => [r.lane, r.kind]), [[OWNER_DM_LANE, "user"], [OWNER_DM_LANE, "command"]]);
   assert.equal(JSON.parse(inbox[1]!.payload_json).cmd, "tasks");
+  assert.ok(inbox.every((r) => JSON.parse(r.payload_json).owner === true), "my DM turns carry the owner flag (W1d ownerTyped)");
   assert.equal(JSON.parse(inbox[1]!.payload_json).arg, "open");
   assert.equal(db.one<{ v: string }>("SELECT v FROM kv WHERE k='channels.feishu.owner_dm_chat'")!.v, DM);
 
   assert.equal(p.onMessage(msg({ messageId: "om_m0003", chatId: GROUP, chatType: "group", operatorId: OTHER }), "event"), false);
   assert.equal(db.one<{ n: number }>("SELECT count(*) n FROM inbox")!.n, 2, "others never reach the inbox");
+  assert.equal(p.onMessage(msg({ messageId: "om_m0007", chatId: "oc_p2pother001", operatorId: OTHER, content: JSON.stringify({ text: "/tasks" }) }), "event"), false,
+    "someone else's DM is only recorded, never a turn or a command");
+  assert.equal(db.one("SELECT 1 FROM inbox WHERE source_msg_id='om_m0007'"), undefined);
+  assert.equal(db.one<{ k: string }>("SELECT sender_kind k FROM messages WHERE id='om_m0007'")!.k, "other");
   assert.equal(db.one<{ s: string }>("SELECT triage_status s FROM messages WHERE id='om_m0003'")!.s, "pending");
 
   p.onMessage(msg({ messageId: "om_m0004", chatId: EXCLUDED, chatType: "group", operatorId: OTHER }), "event");
@@ -123,6 +136,7 @@ test("messages: my DM is a turn or a command, others only feed triage, excluded 
   p.onMessage(msg({ messageId: "om_m0005", chatId: WB, chatType: "group", rootId: "om_root01", content: JSON.stringify({ text: "@_user_1 看下" }) }), "event");
   const wb = db.one<{ lane: string; payload_json: string }>("SELECT lane, payload_json FROM inbox WHERE source_msg_id='om_m0005'")!;
   assert.equal(wb.lane, "feishu:wb:om_root01");
+  assert.equal(JSON.parse(wb.payload_json).owner, true, "workbench turns too");
   assert.equal(JSON.parse(wb.payload_json).text, "看下", "mentions stripped");
 
   p.onMessage(msg({ messageId: "om_m0006", senderType: "app" }), "event");
@@ -130,11 +144,12 @@ test("messages: my DM is a turn or a command, others only feed triage, excluded 
 });
 
 test("send: as me only with an approval and only text; bot sends carry the idempotency key", async () => {
-  const { b, p, larkCalls } = await plugin(live(), SECRETS);
+  const { db, b, p, larkCalls } = await plugin(live(), SECRETS);
+  const id = approval(db);
   await assert.rejects(p.send(row({ as_identity: "user" })), /approval/);
-  await assert.rejects(p.send(row({ as_identity: "user", approval_id: 5, kind: "card" })), /only text/);
+  await assert.rejects(p.send(row({ as_identity: "user", approval_id: id, kind: "card" })), /only text/);
   assert.equal(larkCalls.length, 0);
-  const r = await p.send(row({ as_identity: "user", approval_id: 5, payload: "好的，明天给", idem_key: "k1" }));
+  const r = await p.send(row({ as_identity: "user", approval_id: id, payload: "好的，明天给", idem_key: "k1" }));
   assert.equal(r.msg_id, "om_asuser0001");
   assert.equal(larkCalls[0]!.stdin, "好的，明天给");
   assert.ok(larkCalls[0]!.args.includes("--as") && larkCalls[0]!.args.includes("user") && larkCalls[0]!.args.includes("k1"));
@@ -148,6 +163,28 @@ test("send: as me only with an approval and only text; bot sends carry the idemp
   assert.equal(b.calls[1]!.path, "/open-apis/im/v1/messages/om_reply01/reply");
   assert.equal(b.calls[1]!.data.msg_type, "interactive");
   assert.equal(b.calls[1]!.data.reply_in_thread, true);
+});
+
+test("send as me: only exactly what was approved — status, kind, text, chat and the message replied to all checked", async () => {
+  const { db, p, larkCalls } = await plugin(live(), SECRETS);
+  const as = (approval_id: number, o: Partial<OutboxRow> = {}) => p.send(row({ as_identity: "user", approval_id, payload: "好的，明天给", ...o }));
+  await assert.rejects(as(999), /not found/);
+  for (const status of ["pending", "rejected", "expired", "superseded", "invalidated"]) await assert.rejects(as(approval(db, { status })), new RegExp(`is ${status}`));
+  await assert.rejects(as(approval(db, { kind: "plan" })), /not a send as the user/);
+  await assert.rejects(as(approval(db, { as_identity: "bot" })), /not a send as the user/);
+  await assert.rejects(as(approval(db, { expires_at: Date.now() - 1 })), /send-by/);
+  await assert.rejects(as(approval(db), { payload: "好的，明天给！" }), /text differs/, "edited after approval");
+  await assert.rejects(as(approval(db, { final_text: "改过的稿" })), /text differs/, "the approved version is final_text when there is one");
+  await assert.rejects(as(approval(db), { target_json: JSON.stringify({ chat_id: "oc_groupfake002" }) }), /another chat/);
+  await assert.rejects(as(approval(db, { target_json: JSON.stringify({ chat_id: GROUP, message_id: "om_q0001" }) }), { target_json: JSON.stringify({ chat_id: GROUP, msg_id: "om_q0002" }) }), /another message/);
+  await assert.rejects(as(approval(db, { target_json: JSON.stringify({ chat_id: GROUP, message_id: "om_q0001" }) })), /another message/, "approved as a reply, not a fresh message");
+  assert.equal(larkCalls.length, 0, "nothing reached lark-cli");
+
+  const ok = await as(approval(db, { final_text: "改过的稿", target_json: JSON.stringify({ chat_id: GROUP, message_id: "om_q0001", in_thread: true }) }),
+    { payload: "改过的稿", target_json: JSON.stringify({ chat_id: GROUP, msg_id: "om_q0001", thread_id: "omt_1" }) });
+  assert.equal(ok.msg_id, "om_asuser0001");
+  assert.equal(larkCalls.length, 1);
+  assert.equal(larkCalls[0]!.stdin, "改过的稿");
 });
 
 test("cards and message content", () => {

@@ -23,6 +23,27 @@ import { OWNER_DM_KEY, OWNER_DM_LANE, ownerDmChat } from "./state.ts";
 export { OWNER_DM_KEY, OWNER_DM_LANE, ownerDmChat };
 
 export const CARD_LANE = "card";
+
+/**
+ * 底线 check right before sending in my name: an approval id on the outbox row is not enough. The approval must be an
+ * approved `send` as the user, not past its send_by, and what goes out — text, chat, and the message replied to — must
+ * be exactly what I approved. Any mismatch throws and nothing is sent.
+ */
+function approvedAsSent(o: OutboxRow, chat: string | undefined, replyTo: string | undefined) {
+  const a = one("SELECT kind, status, as_identity, channel, target_json, draft, final_text, expires_at FROM approvals WHERE id=?", o.approval_id!);
+  const no = (why: string) => { throw new Error(`refusing to send as the user: approval #${o.approval_id} ${why}`); };
+  if (!a) return no("not found");
+  if (a.kind !== "send" || a.as_identity !== "user") return no("is not a send as the user");
+  if (a.status !== "approved") return no(`is ${a.status}`);
+  if (a.channel != null && a.channel !== "feishu") return no("is for another channel");
+  if (a.expires_at != null && Number(a.expires_at) < Date.now()) return no("is past its send-by time");
+  if (o.payload !== (a.final_text ?? a.draft)) return no("text differs from what was approved");
+  let t: Record<string, unknown> = {};
+  try { t = JSON.parse(String(a.target_json ?? "{}")); } catch { return no("has an unreadable target"); }
+  const aChat = t.chat_id ?? t.chat, aReply = t.message_id ?? t.msg_id;
+  if (!chat || aChat !== chat) return no("is for another chat");
+  if ((aReply ?? null) !== (replyTo ?? null)) return no("replies to another message");
+}
 /** commands answered by code, never by the model (§触6.6) */
 const COMMAND = /^\/(stop|new|tasks|approvals|todo|pair|devices|model|usage|job|improve|group|help)\b\s*([\s\S]*)$/i;
 
@@ -132,7 +153,7 @@ export class FeishuChannel implements ChannelPlugin {
     // the card update token is not stored: cards are updated with the bot's own identity (PATCH), so it is never needed
     const r = this.#host!.ingest({
       lane: CARD_LANE, kind: "card", source: "feishu:card", source_msg_id: e.eventId,
-      payload: { v: 1, value: v, msg: e.messageId, chat: e.chatId, ts: e.createTime ?? Date.now() },
+      payload: { v: 1, value: v, msg: e.messageId, chat: e.chatId, ts: e.createTime ?? Date.now(), owner: true },   // checked above
     });
     if (r.fresh) this.#host!.kick();
     return { toast: { type: "info", content: "收到" } };
@@ -170,7 +191,9 @@ export class FeishuChannel implements ChannelPlugin {
     const turn: TurnContext = { lane, surface, chat: e.chatId, msg_id: e.messageId, thread: turnThread ?? e.threadId, src: `owner@${surface}` };
     const r = this.#host!.ingest({
       lane, kind, source: "feishu", source_msg_id: e.messageId, turn,
-      payload: { text, ts, message_type: e.messageType, root_id: e.rootId, ...(cmd ? { cmd: cmd[1]!.toLowerCase(), arg: cmd[2]!.trim() } : {}) },
+      // W1d's ownerTyped reads this flag: only a message whose sender is my Feishu id may carry it
+      payload: { text, ts, message_type: e.messageType, root_id: e.rootId, ...(isOwner ? { owner: true } : {}),
+        ...(cmd ? { cmd: cmd[1]!.toLowerCase(), arg: cmd[2]!.trim() } : {}) },
       message: { ...message, lane, domain: surface === "feishu:dm" ? undefined : "work" },
     });
     if (r.fresh && lane === OWNER_DM_LANE) {
@@ -226,6 +249,7 @@ export class FeishuChannel implements ChannelPlugin {
       // 底线: anything in my name goes out only after its approval card was approved
       if (o.approval_id == null) throw new Error("refusing to send as the user without an approval");
       if (o.kind !== "text") throw new Error("only text can be sent as the user");
+      approvedAsSent(o, chat, replyTo);
       return { msg_id: await sendAsUser(this.lark, { chat_id: chat, msg_id: replyTo, in_thread: inThread }, o.payload, o.idem_key ?? `sbot-ob-${o.id}`) };
     }
     let msg_type = "post", content: string;

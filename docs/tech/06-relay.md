@@ -106,7 +106,7 @@
   4. 它发起、还在跑的 run 停掉（runs 上记着发起设备）。
   5. `push_token` 清空。
 - 通知（走 §触1.1 路由表）：新设备配上、删设备按**安全告警**发；从没见过的 IP 段按**通知**发 ※（手机换基站 IP 段常变，按安全告警会夜里吵）。W3 推送之前三种都走 `notify.admin` ※。
-- 通道里的 `req` 交给 W2b 的 `api.dispatch(req, { device_id, role, conn })`，入口的 `authorize` 是 `link/roles.ts` 的；通道关了调 `api.closeConn(conn)` 收掉它的流。设备的写（`PATCH|DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites`，核心在 `hub/src/link/service.ts`）W3 `client_ops` 之前只在 `hub-admin.sock` 上接，通道里发来是 W2b 的 404 或 405 ※；列表走 W2b 的 `GET /api/v1/devices`。`/pair`、`/devices` 只认飞书我自己私聊那条 lane（`feishu:dm:owner`），别处当普通文字。
+- 通道里的 `req` 交给 W2b 的 `api.dispatch(req, { device_id, role, conn })`，入口的 `authorize` 是 `link/roles.ts` 的；通道关了调 `api.closeConn(conn)` 收掉它的流。设备的写（`PATCH|DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites`）W3a 起是 `api/writes.ts` 的写路由，带 `client_op_id`，通道和 `hub-admin.sock` 走同一条（邀请和删除的核心仍在 `hub/src/link/service.ts`）；列表走 W2b 的 `GET /api/v1/devices`。`/pair`、`/devices` 只认飞书我自己私聊那条 lane（`feishu:dm:owner`），别处当普通文字。
 - 删了的设备再连：认证失败。要用就重新配对，是一台新设备。
 
 ## 角色

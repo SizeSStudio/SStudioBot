@@ -22,12 +22,14 @@ const PRIVATE: RegExp[] = [/^self(\/|$)/, /^body(\/|$)/, /(^|\/)timeline(\.md)?(
 /**
  * undefined = allowed; otherwise the reason, which is returned to the model as-is.
  * typed: everything whole. system (timers, approvals, tasks, system events): no whole files under self/, body, timeline
- * or birth data — item level only, through self_list. others: none of it at all.
+ * or birth data — item level only, through self_list. others: none of it at all. `shared`: a turn I typed in a shared
+ * place (turn.ts privacyCol passes "system" for it), so the reason says where, not who.
  */
-export function selfGuard(path: string, col: Col, agentHome?: string): string | undefined {
+export function selfGuard(path: string, col: Col, agentHome?: string, shared = false): string | undefined {
   if (col === "typed") return undefined;
   const rel = relToAgentHome(path, agentHome);
   if (!PRIVATE.some((re) => re.test(rel))) return undefined;
+  if (shared) return `这里是工作台或管理群，不是私聊也不是客户端：${rel} 在这里读不了整份；用 self_list 看具体条目，最多提一两句。`;
   return col === "system"
     ? `这个文件（${rel}）只在我亲手发消息的那一轮整份读。定时任务、审批、任务和系统事件触发的这一轮读不了整份；用 self_list 看具体条目，只引用相关的一两条。`
     : `这里不是我的对话，self/、身体记录和时间线都读不到（${rel}）。`;

@@ -169,9 +169,9 @@ ok(db.one<{ by: string }>("SELECT created_by AS by FROM device_invites WHERE use
 const inv = await adminRequest(h.run, "POST", "/api/v1/devices/invites", { role: "client" });
 const apiCode = keep(decodePairCode(InviteRes.parse(inv.body).link));
 const tablet = await paired(apiCode, "冒烟平板丙");
-ok(inv.status === 200 && tablet.st === "open", `POST /api/v1/devices/invites (hub-admin.sock; the paired-client route of W3) → paired (${ms(tablet.ms)})`);
+ok(inv.status === 200 && tablet.st === "open", `POST /api/v1/devices/invites (hub-admin.sock; over the relay too since W3a) → paired (${ms(tablet.ms)})`);
 const viaRelay = await phone.ch.req("POST", "/api/v1/devices/invites", { role: "client" });
-ok(viaRelay.status === 404, "the same route over the relay is 404 until W3 (06 ※)");
+ok(viaRelay.status === 400, "the same route over the relay: since W3a it is there, and a write without client_op_id is 400");
 ok((await settle(await pair(cliCode, new DeviceKey(), "拿用过的码"))) !== "open", "a used code: refused");
 phone.ch.close(); desk.ch.close(); tablet.ch.close();
 await Promise.all([phone.ch.closed, desk.ch.closed, tablet.ch.closed]);

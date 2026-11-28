@@ -71,7 +71,8 @@ test("node is 403 on every /api/v1 route, client is 403 on /node/v1; one check a
   assert.equal(meta.status, 200);
   assert.equal(MetaRes.parse(meta.body).hub_sha, "testsha");
   assert.equal((await api.dispatch(req("GET", "/api/v1/nope"), CLIENT)).status, 404);
-  assert.equal((await api.dispatch(req("POST", "/api/v1/threads"), CLIENT)).status, 405, "writes are W3");
+  assert.equal((await api.dispatch(req("DELETE", "/api/v1/threads"), CLIENT)).status, 405, "unsupported method");
+  assert.equal((await api.dispatch(req("POST", "/api/v1/threads"), CLIENT)).status, 400, "write requires client_op_id");
 });
 
 // ── bootstrap and lists ──────────────────────────────────────────────────────────────────────────────────────

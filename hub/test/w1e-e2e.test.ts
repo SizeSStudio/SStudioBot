@@ -137,9 +137,9 @@ test("(b) a send approval as me: card → my click → decide → outbox → sen
     const cards = JSON.parse(s.db.one<{ c: string }>("SELECT cards_json AS c FROM approvals WHERE id = ?", id)!.c);
     assert.deepEqual(cards, [{ channel: "feishu", chat: ADMIN, msg_id: "om_fakesent0001" }], "the plugin noted where its card landed");
 
-    // the click, with the value the rendered button really carries
+    // the click, with the value the rendered button really carries (including draft_version v)
     const value = buttonValue(JSON.parse(cardCall.data.content), "approve");
-    assert.deepEqual(value, { k: "appr", id, o: "approve" });
+    assert.deepEqual(value, { k: "appr", id, v: 1, o: "approve" });
     const toast = s.b.handler!({ kind: "card", eventId: "ev_fake0001", operatorId: OWNER_FEISHU, messageId: "om_fakesent0001", chatId: ADMIN, value }) as any;
     assert.equal(toast.toast.type, "info");
     await s.d.idle();

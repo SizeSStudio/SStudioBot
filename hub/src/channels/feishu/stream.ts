@@ -138,8 +138,8 @@ export class CardStream implements StreamHandle {
     const t = this.#ctx.turn;
     tx(() => {
       run("UPDATE outbox SET status='sent', payload=? WHERE id=?", final, this.#rowId);
-      run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, lane) VALUES(?,?,?,?,?,?,?,?,?)`,
-        `card:${this.#cardId}`, t.surface, t.chat ?? null, t.thread ?? null, "sbot", "bot", Date.now(), final, this.#ctx.lane);
+      run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, domain, lane) VALUES(?,?,?,?,?,?,?,?,?,?)`,
+        `card:${this.#cardId}`, t.surface, t.chat ?? null, t.thread ?? null, "sbot", "bot", Date.now(), final, t.surface === "feishu:dm" ? "personal" : "work", this.#ctx.lane);
     });
   }
 

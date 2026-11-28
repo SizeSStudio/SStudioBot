@@ -2,7 +2,8 @@
 // frame from an authenticated connection, the admin socket for the CLI, tests in-process. Order:
 //   1. authorize(caller, req) — the ONE authorization call; node → 403 for all of /api/v1 (authz.ts)
 //   2. route → validate query/body with protocol/api's schemas (400) → view functions → body
-// W2 serves reads only. Write routes come in W3 with client_ops (02 「写操作」); until then they are 404.
+// Reads are here; the write routes (W3a) are writes.ts, each inside its client_ops transaction (ops.ts). The CLI's
+// device writes come the same way (hub-admin.sock → dispatch), with a client_op_id of its own.
 // Responses carry untrusted text as data (JSON strings); nothing is pre-rendered.
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -20,11 +21,11 @@ import type { Db, Row } from "../db/db.ts";
 import { log } from "../log.ts";
 import { authorize, type Authorize, type Caller } from "./authz.ts";
 import { Pump, type Conn, type PumpOpts } from "./pump.ts";
+import { writeRoutes, type DeviceWrites, type Runs } from "./writes.ts";
+import type { Out } from "./ops.ts";
 import { approvalView, deviceView, headSeq, nodeView, runView, taskView, threadView, timeline } from "./views.ts";
 
-export type { Caller, Conn };
-/** What the link writes back as the `res` frame. */
-export interface Out { status: number; body?: unknown; seq?: number }
+export type { Caller, Conn, Out };
 /** A caller on a connection that can carry a stream (the link); the admin socket and tests may leave `conn` out. */
 export interface DispatchCaller extends Caller { conn?: Conn }
 
@@ -36,6 +37,11 @@ export interface ApiDeps {
   pump?: PumpOpts;
   /** default: link/roles.ts (main.ts passes it explicitly) */
   authorize?: Authorize;
+  /** the dispatcher (queue position, stop); missing: stop says stopped:false */
+  runs?: Runs;
+  /** the link's invites and removal; missing: those routes 404 */
+  devices?: DeviceWrites;
+  redraftTriage?: (approvalId: number) => void;
 }
 
 const TIMELINE_BOOT = 20, PAGE = 50, PAGE_MAX = 200, LIST_MAX = 200;
@@ -72,6 +78,7 @@ export class Api {
       r("GET", "/api/v1/approvals", (q) => this.#approvals(q)),
       r("GET", "/api/v1/devices", (q) => this.#devices(q)),
       r("GET", "/api/v1/blobs/([^/]{1,80})", (q, _c, m) => this.#blob(q, m[1]!)),
+      ...writeRoutes({ db: d.db, blobs: d.blobs, runs: d.runs, devices: d.devices, redraftTriage: d.redraftTriage }).map((w) => r(w.method, w.path, w.fn)),
     ];
   }
 
@@ -107,7 +114,7 @@ export class Api {
   bootstrap(): BootstrapRes {
     const { db, blobs } = this;
     return db.tx(() => {
-      const threads = db.all<Row>("SELECT * FROM threads WHERE status = 'open' ORDER BY pinned DESC, last_item_at DESC").map(threadView);
+      const threads = db.all<Row>("SELECT * FROM threads WHERE status = 'open' ORDER BY pinned DESC, last_item_at DESC").map((r) => threadView(db, r));
       const timelines: BootstrapRes["timelines"] = {};
       for (const t of threads) timelines[t.id] = timeline(db, blobs, t.lane, undefined, TIMELINE_BOOT)!;
       return {
@@ -145,7 +152,7 @@ export class Api {
     return db.tx(() => {
       const rows = st === "all" ? db.all<Row>("SELECT * FROM threads ORDER BY pinned DESC, last_item_at DESC")
         : db.all<Row>("SELECT * FROM threads WHERE status = ? ORDER BY pinned DESC, last_item_at DESC", st);
-      const body: ThreadsRes = { seq: headSeq(db), threads: rows.map(threadView) };
+      const body: ThreadsRes = { seq: headSeq(db), threads: rows.map((r) => threadView(db, r)) };
       return { status: 200, body };
     });
   }
@@ -160,7 +167,7 @@ export class Api {
       if (!t) return bad("no such thread", 404);
       const page = timeline(db, blobs, String(t.lane), q.before, limit);
       if (!page) return bad("before is not a cursor from next_before");
-      const body: ThreadItemsRes = { seq: headSeq(db), thread: threadView(t), ...page };
+      const body: ThreadItemsRes = { seq: headSeq(db), thread: threadView(db, t), ...page };
       return { status: 200, body };
     });
   }

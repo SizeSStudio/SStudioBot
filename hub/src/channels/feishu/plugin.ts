@@ -67,20 +67,25 @@ const STATUS_LINE: Record<string, [string, NonNullable<Card["tone"]>]> = {
   invalidated: ["你已经回过了，这张作废", "grey"], cancelled: ["撤了", "grey"],
 };
 
-/** An outbox card payload → a Feishu card. Approval cards (approvals.ts cardOf) click back as {k:"appr", id, o}. */
+/**
+ * An outbox card payload → a Feishu card. Approval cards (approvals.ts cardOf) click back as {k:"appr", id, v, o}:
+ * `v` is the draft_version on the card, so a click on text that has since changed is refused (card-rows.ts).
+ */
 function cardFor(payload: string): FeishuCard {
-  const c = JSON.parse(payload) as (Card & { approval_id?: number; status?: string }) | FeishuCard;
+  const c = JSON.parse(payload) as (Card & { approval_id?: number; status?: string; draft_version?: number }) | FeishuCard;
   if (c && typeof c === "object" && "schema" in c) return c;
-  const x = c as Card & { approval_id?: number; status?: string };
+  const x = c as Card & { approval_id?: number; status?: string; draft_version?: number };
   const done = x.status && x.status !== "pending" ? STATUS_LINE[x.status] ?? [x.status, "grey" as const] : undefined;
   return renderCard({
     ...x, lines: x.lines ?? [], options: done ? [] : x.options ?? [], question: done ? undefined : x.question,
     ...(done ? { lines: [...(x.lines ?? []), `**${done[0]}**`], tone: done[1] } : {}),
-    ...(x.approval_id != null && !done ? { value: { k: "appr", id: x.approval_id } } : {}),
+    ...(x.approval_id != null && !done ? { value: { k: "appr", id: x.approval_id, ...(typeof x.draft_version === "number" ? { v: x.draft_version } : {}) } } : {}),
   });
 }
 /** commands answered by code, never by the model (§触6.6) */
-const COMMAND = /^\/(stop|new|tasks|approvals|todo|pair|devices|model|usage|job|improve|group|help)\b\s*([\s\S]*)$/i;
+const COMMAND = /^\/(stop|new|cancel|tasks|approvals|todo|pair|devices|model|usage|job|improve|group|help)\b\s*([\s\S]*)$/i;
+/** what a workbench topic takes as a command (§触6.9 并行 F: stop and cancel in topics, and the lists); the rest is talk */
+const TOPIC_COMMANDS = new Set(["stop", "new", "cancel", "tasks", "approvals", "todo", "help"]);
 
 export const ownerFeishu = (): string | undefined => peopleConf().owner?.ids?.feishu;
 /** registered only when channels.yaml has a feishu block */
@@ -214,13 +219,16 @@ export class FeishuChannel implements ChannelPlugin {
     let lane: string | undefined, kind: "user" | "command" = "user", turnThread: string | undefined;
     const cmd = COMMAND.exec(text);
     if (isOwner && p2p) { lane = OWNER_DM_LANE; if (cmd) kind = "command"; }
-    else if (isOwner && surface === "feishu:workbench") { lane = `feishu:wb:${e.rootId || e.messageId}`; turnThread = e.threadId ?? e.rootId ?? e.messageId; }
+    else if (isOwner && surface === "feishu:workbench") {
+      lane = `feishu:wb:${e.rootId || e.messageId}`; turnThread = e.threadId ?? e.rootId ?? e.messageId;
+      if (cmd && TOPIC_COMMANDS.has(cmd[1]!.toLowerCase())) kind = "command";
+    }
     // the admin chat: my lines there are commands (/group, 回滚 <sha>, 更新 seed) or thread replies to cards (改稿)
     else if (isOwner && surface === "feishu:console") { lane = "feishu:console"; kind = "command"; }
 
     if (!lane) {
       // everyone else, and my own lines in other chats: triage material only (the observer sees groups the bot isn't in)
-      this.#host!.record({ ...message, lane: null });
+      this.#host!.record({ ...message, lane: null, domain: "work" });
       return false;
     }
     if (lane === OWNER_DM_LANE && ownerDmChat() !== e.chatId) kvSet(OWNER_DM_KEY, e.chatId);
@@ -228,9 +236,11 @@ export class FeishuChannel implements ChannelPlugin {
     const r = this.#host!.ingest({
       lane, kind, source: "feishu", source_msg_id: e.messageId, turn,
       // W1d's ownerTyped reads this flag: only a message whose sender is my Feishu id may carry it
+      // operator: a reply in an approval card's topic is a redraft, and approvals check who asked ※
       payload: { text, ts, message_type: e.messageType, root_id: e.rootId, ...(isOwner ? { owner: true } : {}),
+        ...(isOwner && e.rootId ? { operator: e.operatorId } : {}),
         ...(cmd ? { cmd: cmd[1]!.toLowerCase(), arg: cmd[2]!.trim() } : {}) },
-      message: { ...message, lane, domain: surface === "feishu:dm" ? undefined : "work" },
+      message: { ...message, lane, domain: lane === OWNER_DM_LANE ? "personal" : "work" },
     });
     if (r.fresh && lane === OWNER_DM_LANE) {
       run(`INSERT INTO chat_cursors(chat_id, surface, last_msg_ts, last_msg_id, updated_at) VALUES(?,?,?,?,?)

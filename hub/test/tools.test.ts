@@ -26,10 +26,10 @@ async function setup() {
 }
 
 let n = 0;
-function ctxFor(db: Db, h: Home, src: string): ToolCtx {
+function ctxFor(db: Db, h: Home, src: string, lane = "console:main"): ToolCtx {
   const run_id = `r_test_${++n}`;
-  db.run("INSERT INTO runs(id, lane, session_key, role, tier, status, started) VALUES (?, 'client:main', 'client:main', 'main', 'chat', 'running', ?)", run_id, Date.now());
-  return { db, h, run_id, lane: "client:main", src, col: colOf(src), turn: { channel: "client", surface: "client", src }, replies: 0 };
+  db.run("INSERT INTO runs(id, lane, session_key, role, tier, status, started) VALUES (?, ?, ?, 'main', 'chat', 'running', ?)", run_id, lane, lane, Date.now());
+  return { db, h, run_id, lane, src, col: colOf(src), turn: { channel: "client", surface: "client", src }, replies: 0 };
 }
 const sideEffects = (db: Db, run_id: string) => db.one<{ n: number }>("SELECT side_effects AS n FROM runs WHERE id = ?", run_id)!.n;
 

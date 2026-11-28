@@ -22,9 +22,14 @@ export function clientChannel(db: Db): OutChannel {
     id: "client", caps: { cards: true, streaming: true },
     async send(o) {
       if (o.kind === "text") {
-        db.run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, lane)
-                VALUES (?, 'client', ?, ?, 'sbot', 'bot', ?, ?, ?)`,
-          `outbox:${o.id}`, (o.target.chat as string | undefined) ?? null, (o.target.thread as string | undefined) ?? null, Date.now(), o.payload, o.lane);
+        const lane = o.lane ?? null;
+        const domain = lane
+          ? (db.one<{ domain: string }>("SELECT domain FROM threads WHERE lane = ?", lane)?.domain
+            ?? (lane === "console:main" || lane === "feishu:dm:owner" ? "personal" : "work"))
+          : "work";
+        db.run(`INSERT OR IGNORE INTO messages(id, surface, chat_id, thread_id, sender_id, sender_kind, ts, text, domain, lane)
+                VALUES (?, 'client', ?, ?, 'sbot', 'bot', ?, ?, ?, ?)`,
+          `outbox:${o.id}`, (o.target.chat as string | undefined) ?? null, (o.target.thread as string | undefined) ?? null, Date.now(), o.payload, domain, lane);
       }
       return { ok: true, msg_id: `outbox:${o.id}` };
     },

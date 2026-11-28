@@ -35,6 +35,8 @@ import { setDb } from "./db/ambient.ts";
 import { channel, registerChannel, startChannels, stopChannels, unregisterChannel } from "./channels/registry.ts";
 import { channelHost } from "./channels/host.ts";
 import { cardRows } from "./channels/card-rows.ts";
+import { cardReplies, channelCommands } from "./channels/commands.ts";
+import { ensureMainThread } from "./api/writes.ts";
 import { FeishuChannel, feishuConfigured } from "./channels/feishu/plugin.ts";
 import { observerHooks } from "./channels/feishu/observer.ts";
 import { userIdentityReady } from "./channels/feishu/user.ts";
@@ -92,7 +94,7 @@ export const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, 
  * The channel side (03 「channels」「timers 和 Sentinel」): Feishu when channels.yaml has it, then timers, Sentinel,
  * sources and triage. Every wake-up goes to the dispatcher (kickInbox). Returns the stop, in reverse order.
  */
-async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: Dispatcher, node: NodeLink): Promise<() => Promise<void>> {
+async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: Dispatcher, node: NodeLink, side: { triage?: Triage }): Promise<() => Promise<void>> {
   const ours = feishuConfigured() && !channel("feishu");
   if (ours) registerChannel(new FeishuChannel());
   const feishu = () => channel("feishu") as FeishuChannel | undefined;
@@ -114,8 +116,10 @@ async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: 
     complete: proxyComplete(db, proxyBase), runDraft: (j) => dispatcher.runDraft(j), commitCheck: proxyCommitChecker(db, proxyBase),
     submitSend: sendApproval(db), readIds: f ? readByMe(f.lark) : undefined, kick: kickInbox,
   });
+  side.triage = triage;
   scheduler.start(); sentinel.start(); sources.start(); triage.start();
   return async () => {
+    side.triage = undefined;
     triage.stop(); sources.stop(); sentinel.stop(); scheduler.stop();
     await stopChannels();
     observerHooks.ownerMessage = () => {};
@@ -133,19 +137,14 @@ export function statusOf(hub: Pick<Hub, "db" | "startedAt" | "hubKey" | "link">)
 }
 
 /**
- * hub-admin.sock: the CLI is the client device `cli` (03 link). Reads go through the one api dispatcher. The device
- * writes (sbot pair, devices rm; 06) are served here first, after the same role check: W2b keeps /api/v1 writes for
- * W3's client_ops, so until then they exist on this socket only, not on relay channels ※.
+ * hub-admin.sock: the CLI is the client device `cli` (03 link). Everything goes through the one api dispatcher, writes
+ * included (W3: the device writes moved there, inside client_ops; adminRequest gives each write its own op id).
  */
-export function router(hub: Pick<Hub, "api" | "link">): Handler {
+export function router(hub: Pick<Hub, "api">): Handler {
   const cli = { device_id: "cli", role: "client" } as const;
   return async (req: Req) => {
-    if (authorize(cli, req).ok) {
-      const w = await hub.link.route(req, cli);
-      if (w) return w;
-    }
     const out = await hub.api.dispatch(req, cli);
-    return { status: out.status, body: out.body };
+    return { status: out.status, body: out.body, ...(out.seq != null ? { seq: out.seq } : {}) };
   };
 }
 
@@ -180,11 +179,22 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
     // the one role check (link/roles.ts) at the dispatcher's entry, for every transport
-    const api = createApi({ db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt, hubKey, link }), authorize });
-    const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
+    // triage is started with the channels below; a redraft for one of its cards goes to it (approvals.requestRedraft)
+    const side: { triage?: Triage } = {};
+    const redraftTriage = (id: number) => { void side.triage?.redraft(id); };
+    const late: { d?: Dispatcher } = {};   // the api is made first (the dispatcher streams into its pump)
+    const api = createApi({
+      db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt, hubKey, link }), authorize,
+      runs: { activeRun: (l) => late.d?.activeRun(l), stopLane: (l) => late.d?.stopLane(l) ?? false },
+      devices: link, redraftTriage,
+    });
+    ensureMainThread(db);
+    const dispatcher = late.d = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
       onItem: (run, lane, e) => api.pump.onItem(run, lane, e),
       onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined),
-      stream: (c) => channel(c.turn.channel)?.stream?.(c), command: link.command });
+      stream: (c) => channel(c.turn.channel)?.stream?.(c),
+      // §触6.9 并行 F: the lists and /help, then W2a's /pair and /devices
+      command: channelCommands(db, link.command), cardReply: cardReplies(db, redraftTriage) });
     // 06 删设备 step 4: stop a run the removed device started, if it is still its lane's run
     link.stopRun = (run, lane) => { if (dispatcher.activeRun(lane) === run) dispatcher.stopLane(lane); };
     // before anything can take new rows: what the last process left half done (§底1.2)
@@ -194,7 +204,7 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     // channels before the outbox drains: a row for a channel that isn't registered yet would be marked unrouted
     setDb(db);   // the ported ledger/timer modules use the ambient db (db/ambient.ts)
     opened.push({ close: () => setDb(undefined) });
-    const stopSide = await startChannelSide(db, h, proxyBase, dispatcher, node);
+    const stopSide = await startChannelSide(db, h, proxyBase, dispatcher, node, side);
     opened.push({ close: stopSide });
     outbox.start();
     opened.push({ close: () => outbox.stop() });

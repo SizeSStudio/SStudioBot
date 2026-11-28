@@ -55,7 +55,10 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 
 ## 写操作和 `client_ops`
 
-- 写请求带 `client_op_id`（客户端生成的 UUID）。主在业务写入的同一事务里写 `client_ops(device_id, client_op_id, result_json, ts)`；同一个键再来，直接回存着的结果。
+- 写请求带 `client_op_id`（客户端生成的 UUID）。主在业务写入的同一事务里写 `client_ops(device_id, client_op_id, result_json, ts)`；同一个键再来，直接回存着的结果（同 status、body、seq）。拒绝（4xx）也存，重试听到同一句；5xx 不存，可以再试。
+- 同一个键、换了请求（方法、路径或 body 不同；body 按键排序后比）不算重试，回 409、什么都不做（W3a）。`result_json` 里带这次请求的摘要 `req`（sha256 前 32 位）。发消息同理：同一个键、换了文字或 thread → 409。
+- 结果本身是秘密的不存原样：`POST /api/v1/devices/invites` 的配对码只在第一次回答里，重试回 409「这次的配对码已经发出去了」※。
+- 成功写入之后、要在库外做的事（比如让 triage 重新起草）在事务提交后做一次；重试拿存着的结果，不再做。
 - 发消息用 `inbox` 的唯一键：`source = "device:<device_id>"`、`source_msg_id = client_op_id`（§触6.4）。
 - 节点来的写入键是 `task_id:attempt:tool_call_id`（或 `task_id:attempt:event_seq`）。
 - **清理**：每天一次删 `ts` 早于 30 天的行 ※（理由：客户端重试最多跨几次断线，30 天远够；表不无限长）。
@@ -96,7 +99,7 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 | `GET /api/v1/usage` | 用量（含节点报的剩余额度） | — |
 | `GET /api/v1/config/:file`、`PUT /api/v1/config/:file { yaml, hash }` | 配置；密钥只列名字 | 乐观锁 |
 | `PUT /api/v1/secrets/:name { value }` | 写密钥，只写不读 | 确认后才算 |
-| `GET /api/v1/devices`、`PATCH/DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites { role }` | 设备、加一台 | 确认后才算 |
+| `GET /api/v1/devices`、`PATCH/DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites { role }` | 设备、加一台（W3a 起配对过的客户端经中继也能调，`hub-admin.sock` 照旧） | 确认后才算 |
 | `POST /api/v1/presence { foreground, viewing? }` | 在场（§触1.1） | 不回 seq，不进 `client_ops` |
 | `POST /api/v1/reads { entity, id }` | 已读 | 乐观 |
 | `PUT /api/v1/devices/self/push-token { token }` | FCM 令牌（07）；`null` 清掉 | 确认后才算 |

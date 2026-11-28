@@ -21,7 +21,8 @@ export const Ev = z.object({
   op: z.enum(["upsert", "delete"]), data: json.optional(),
 });
 export const Delta = z.object({ t: z.literal("delta"), run: z.string(), item: z.string(), chunk_seq: seq, text: z.string() });
-export const Snap = z.object({ t: z.literal("snapshot"), run: z.string(), item: z.string(), text: z.string(), tool: z.string().optional() });
+// chunk_seq (W2b): how many chunks `text` already holds, so the next delta to take is chunk_seq + 1
+export const Snap = z.object({ t: z.literal("snapshot"), run: z.string(), item: z.string(), text: z.string(), tool: z.string().optional(), chunk_seq: seq.optional() });
 export const Beat = z.object({ t: z.literal("beat"), seq, status: json.optional() });
 export const Reset = z.object({ t: z.literal("reset") });
 // 06: device_id = hex(sha256(Ed25519 public key)); signatures are base64url

@@ -123,7 +123,7 @@ change_log(seq INTEGER PRIMARY KEY AUTOINCREMENT, ts, entity, ref, op)  -- op: u
 ```ts
 type Durable = { seq: number; ts: number; entity: Entity; id: string; op: "upsert" | "delete"; data?: unknown };
 type Delta   = { t: "delta"; run: string; item: string; chunk_seq: number; text: string };   // chunk_seq：这一项里递增的批号
-type Snap    = { t: "snapshot"; run: string; item: string; text: string; tool?: string };
+type Snap    = { t: "snapshot"; run: string; item: string; text: string; tool?: string; chunk_seq?: number }; // chunk_seq：已含几段
 type Beat    = { t: "beat"; seq: number; status?: unknown };
 type Reset   = { t: "reset" };                                                         // 序号太旧，重新 bootstrap
 ```

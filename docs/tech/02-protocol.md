@@ -39,7 +39,7 @@ type Res    = { t: "res"; id: number; status: number; body?: unknown; seq?: numb
 type Cancel = { t: "cancel"; id: number };                                              // 不要了的 req（比如翻页、拉取）
 type Ev     = { t: "ev"; seq: number; ts: number; entity: string; id: string; op: "upsert" | "delete"; data?: unknown };
 type Delta  = { t: "delta"; run: string; item: string; chunk_seq: number; text: string };
-type Snap   = { t: "snapshot"; run: string; item: string; text: string; tool?: string };
+type Snap   = { t: "snapshot"; run: string; item: string; text: string; tool?: string; chunk_seq?: number };  // chunk_seq：text 里已有几段，下一条 delta 取它 + 1
 type Beat   = { t: "beat"; seq: number; status?: unknown };                              // 20 秒一次
 type Reset  = { t: "reset" };
 type Auth   = { t: "auth"; device_id: string; sig: string };                             // 06
@@ -47,8 +47,10 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 ```
 
 - `path` 就是 `/api/v1/...`（客户端）或 `/node/v1/...`（节点），状态码沿用 HTTP 含义：400 参数错、403 角色不许、404、409 版本冲突（带最新内容）、410 已作废。
-- 一条连接最多一个事件流：`POST /api/v1/stream { after }`，`res` 之后主开始推 `ev`、`delta`、`snapshot`、`beat`。`after` 早于 `change_log` 保留期就回 `reset`（§触6.4）。
-- 展开、折起：`POST /api/v1/stream/expand { item }`、`.../collapse { item }`；只有展开了的连接收那一项的 `delta` 和 `snapshot`（§触6.4）。
+- 一条连接最多一个事件流：`POST /api/v1/stream { after }`，`res` 之后主开始推 `ev`、`delta`、`snapshot`、`beat`；同一连接再发一次就换掉前一个 ※（收到 `reset` 后在原连接上重新 bootstrap、再开流）。`after` 早于 `change_log` 保留期、或比主的最新 seq 还新（换过库）就回 `res { reset: true }` 加一个 `reset` 帧，之后什么都不发（§触6.4）※。
+- `beat.seq` 是这条连接的游标（已经补到哪），不是库里最新的 seq：断线后拿它当 `after` 不会跳过没发到的 ※。
+- `delta` / `snapshot` 的 `item`：正在写的一段回复还没有 `run_items` 行，用 `<run_id>:a<n>`（n 是这轮第几段，从 0 起）※；这轮的 assistant `item` 事件到了、或 `run` 不再是 running，就丢掉这轮正在流的文本。工具调用用 `run_items` 的 id。`chunk_seq` 每项从 1 起。
+- 展开、折起：`POST /api/v1/stream/expand { item }`、`.../collapse { item }`；只有展开了的连接收那一项工具调用的 `delta` 和 `snapshot`；回复正文的 `delta` 每条客户端连接都收（§触6.4「折起来的不推流」说的是工具调用）※。
 - 未知字段、未知 `t`、未知 `entity` 一律忽略，不报错（只做加法的前提）。
 
 ## 写操作和 `client_ops`
@@ -62,7 +64,7 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 ## 大载荷
 
 - 长输出、diff、完整的工具结果不进事件。事件里只带 `{ ref: "blob:<sha256>", size, preview }`。
-- 拉取：`GET /api/v1/blobs/<sha>?offset=&len=`，一次最多 512 KiB（base64 后放进 1 MiB 的帧），回 `{ data_b64, total, next_offset }`；客户端顺序拉，中途 `cancel` 就停。
+- 拉取：`GET /api/v1/blobs/<sha>?offset=&len=`，一次最多 512 KiB（base64 后放进 1 MiB 的帧），回 `{ data_b64, total, next_offset }`，`next_offset` 为 null 表示到头 ※；客户端顺序拉，中途 `cancel` 就停。
 - blob 存在主的 `$SBOT_HOME/blobs/<sha256>`（内容寻址）。被引用的跟着引用留；没人引用、超过 1 天的由每日 GC 删 ※（04 §11）。
 
 ## `/api/v1` 路由（第一版）

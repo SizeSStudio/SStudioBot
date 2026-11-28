@@ -51,7 +51,9 @@ fi
 
 # 3) unit + 14-day journal namespace
 install -m 0644 "$here/sbot-relay.service" /etc/systemd/system/sbot-relay.service
-install -m 0644 "$here/journald@sbot-relay.conf" /etc/systemd/journald@sbot-relay.conf
+# systemd reads a namespace's settings from journald@<namespace>.conf; the repo file has a plainer name
+ns=sbot-relay
+install -m 0644 "$here/journald-namespace.conf" "/etc/systemd/journald@$ns.conf"
 systemctl daemon-reload
 systemctl enable sbot-relay.service
 systemctl restart sbot-relay.service

@@ -21,7 +21,7 @@ TimeoutStopSec=5
 MemoryMax=256M
 TasksMax=64
 LimitNOFILE=8192
-# metadata logs, 14 days (journald@sbot-relay.conf sets MaxRetentionSec for this namespace)
+# metadata logs, 14 days (install.sh puts deploy/relay/journald-namespace.conf in place for this namespace: MaxRetentionSec)
 LogNamespace=sbot-relay
 
 NoNewPrivileges=yes

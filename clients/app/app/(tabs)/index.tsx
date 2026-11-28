@@ -1,15 +1,18 @@
-// The main conversation (lane console:main), read-only until W3 adds the composer.
+// The main conversation (lane console:main): the timeline and the composer.
 import { Link } from 'expo-router'
 import { Text, View } from 'react-native'
 import { store } from '../../src/conn/client.ts'
+import { Composer } from '../../src/chat/Composer.tsx'
 import { Timeline } from '../../src/chat/Timeline.tsx'
 import { useList } from '../../src/store/hooks.ts'
+import { useViewing } from '../../src/ui/presence.tsx'
 
 const MAIN = 'console:main'
 
 export default function Chat() {
   const threads = useList(store, 'thread')
   const main = threads.find((t) => t.data.lane === MAIN)
+  useViewing(main ? `thread:${main.data.id}` : null)
   return (
     <View testID="first-screen" className="flex-1 bg-background">
       <View className="flex-row items-center gap-3 px-3 py-2 border-b border-border">
@@ -17,6 +20,7 @@ export default function Chat() {
         <Link href="/self" className="text-muted-foreground text-xs underline">它自己</Link>
       </View>
       <Timeline lane={MAIN} threadId={main?.data.id} />
+      {main ? <Composer thread={main.data} /> : null}
     </View>
   )
 }

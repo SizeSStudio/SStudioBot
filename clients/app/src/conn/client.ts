@@ -1,10 +1,16 @@
-// The app's one connection and one store (07 「连接」「store」), wired to this platform's socket, key and pairing.
-// Screens read the store through hooks and the connection state through useConn().
+// The app's one connection and one store (07 「连接」「store」), wired to this platform's socket, key and pairing;
+// W3: the write layer on top (writes, actions), presence and the FCM token. Screens read the store through hooks and
+// the connection state through useConn().
 import { useSyncExternalStore } from 'react'
 import { device } from '../device/device'
 import { Store } from '../store/store.ts'
+import { pushPref, tokenSource } from '../push/notify'
+import { PushRegistrar, type PushState } from '../push/push.ts'
+import { makeActions } from './actions.ts'
 import { setupCrypto } from './crypto'
 import { Connection, type ConnState, type Pairing } from './machine.ts'
+import { Presence } from './presence.ts'
+import { Writes } from './writes.ts'
 
 export const cryptoBackend = setupCrypto()
 export const store = new Store()
@@ -19,6 +25,17 @@ export const conn = new Connection({
   store,
   onPaired: async (p) => { await device.savePairing(p); setPaired(p) },
 })
+
+export const writes = new Writes({ conn, store })
+export const actions = makeActions(writes, store, () => paired?.device_id ?? null)
+export const presence = new Presence({ send: (p) => { void actions.presence(p) } })
+export const push = new PushRegistrar({
+  source: tokenSource,
+  pref: pushPref,
+  send: async (token) => { const r = await actions.setPushToken(token); return r.ok ? { ok: true, body: r.body } : { ok: false, error: r.error } },
+  hasToken: () => (paired ? store.get('device', paired.device_id)?.data.push === true : false),
+})
+conn.subscribe((s) => { if (s.s === 'live') { presence.reconnected(); void push.sync() } })
 
 let booted: Promise<void> | null = null
 /** On launch: a stored pairing connects; on the desktop a code main is holding (after the CSP reload) pairs. */
@@ -44,6 +61,7 @@ export async function pair(text: string, name: string): Promise<{ ok: true } | {
 /** Unpair here (the hub still lists this device until it is removed there; 07 设备页). */
 export async function unpair(): Promise<void> {
   conn.stop()
+  writes.clear()
   store.reset()
   await device.forget()
   setPaired(null)
@@ -63,4 +81,8 @@ export function useConn(): ConnState {
 
 export function usePairing(): Pairing | null {
   return useSyncExternalStore((f) => { pairedSubs.add(f); return () => { pairedSubs.delete(f) } }, () => paired, () => paired)
+}
+
+export function usePush(): PushState {
+  return useSyncExternalStore((f) => push.subscribe(f), () => push.state, () => push.state)
 }

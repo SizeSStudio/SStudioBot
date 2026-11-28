@@ -16,6 +16,9 @@ export type SbotBridge = {
     onLink(cb: (link: string) => void): void
   }
   link: { open(url: string): Promise<boolean> }
+  /** W3: agent HTML → main checks sha256(bytes) = sha, writes <temp>/sbot-html/<sha>.html, opens it in the system
+   * browser; false = refused. Older desktop builds don't have it. */
+  html?: { open(sha: string, bytes: Uint8Array): Promise<boolean> }
 }
 
 export const bridge: SbotBridge | undefined =

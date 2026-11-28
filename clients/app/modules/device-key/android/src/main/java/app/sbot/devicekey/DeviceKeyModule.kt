@@ -149,6 +149,20 @@ class DeviceKeyModule : Module() {
       Unit
     }
 
+    // interface preferences only (07: theme, the phone-notifications switch); never content, never secrets
+    AsyncFunction("getPref") { key: String ->
+      if (!key.matches(Regex("^[a-z_]{1,32}$"))) throw IllegalArgumentException("bad key")
+      context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString("pref_$key", null)
+    }
+
+    AsyncFunction("setPref") { key: String, value: String? ->
+      if (!key.matches(Regex("^[a-z_]{1,32}$"))) throw IllegalArgumentException("bad key")
+      context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().apply {
+        if (value == null) remove("pref_$key") else putString("pref_$key", value.take(200))
+      }.commit()
+      Unit
+    }
+
     AsyncFunction("info") { ->
       mapOf("sdk" to Build.VERSION.SDK_INT, "strongbox" to hasStrongBox())
     }

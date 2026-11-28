@@ -5,13 +5,17 @@
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { AUTH_PREFIX, b64u, fromB64u, PAIR_PREFIX, signedBytes } from "../../../protocol/pair.ts";
+import { makeActions } from "../src/conn/actions.ts";
 import { Connection, deviceIdOfKey, type ConnState, type Pairing, type Signer, type SocketLike } from "../src/conn/machine.ts";
 import { readPairCode } from "../src/conn/pairCode.ts";
+import { Writes } from "../src/conn/writes.ts";
+import { pullAndOpenHtml } from "../src/html/pull.ts";
 import { Store } from "../src/store/store.ts";
 
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -199,6 +203,48 @@ test("requests on the live connection: paging, a 404, and device writes are not 
   assert.equal((await conn.request("GET", "/api/v1/nope")).status, 404);
   // invites / rename / remove live on hub-admin.sock until W3: the client must not depend on them
   assert.equal((await conn.request("POST", "/api/v1/devices/invites", { body: { role: "client" } })).status, 404);
+});
+
+test("W3 over the real wire: chunked blob pull for HTML and client_op_id write rollback on unmerged W3 routes", async () => {
+  // 1) Real GET /api/v1/blobs/:sha over Noise: a >16 KB item stores a real blob on the hub
+  const { run } = await ctl("run", { lane: LANE });
+  const big = `<!doctype html><p>${"样稿正文".repeat(2200)}</p>`;
+  await ctl("message", { lane: LANE, run, text: big });
+  await ctl("end_run", { run });
+  await until("big item with blob ref arrived", () =>
+    store.timeline(LANE).some((r) => r.entity === "item" && !!(r.rec.data as { blob?: { ref: string } | null }).blob));
+  const blobItem = store.timeline(LANE).find((r) => r.entity === "item" && !!(r.rec.data as { blob?: { ref: string } | null }).blob)!;
+  const blob = (blobItem.rec.data as { blob: { ref: string; size: number } }).blob;
+  const sha = blob.ref.slice("blob:".length);
+  let pulledLen = 0;
+  const opened = await pullAndOpenHtml({ sha, name: "draft.html", size: blob.size }, {
+    chunkBytes: 8192,
+    request: (m, p, o) => conn.request(m, p, o),
+    open: async (s, bytes) => {
+      assert.equal(s, sha);
+      assert.equal(createHash("sha256").update(bytes).digest("hex"), sha);
+      pulledLen = bytes.byteLength;
+      return true;
+    },
+  });
+  assert.deepEqual(opened, { ok: true });
+  assert.equal(pulledLen, blob.size);
+
+  // 2) Writes + client_op_id over real Noise/relay to main's W2b hub (W3a/W3b routes aren't merged yet → 404):
+  // req carrying client_op_id parses cleanly on the hub and optimistic overlay rolls back cleanly in place
+  const th = store.threadByLane(LANE)!;
+  const origTitle = th.data.title;
+  const w = new Writes({ conn, store });
+  const act = makeActions(w, store, () => saved?.device_id ?? null);
+  const p = act.patchThread(th.data.id, { title: "乐观改名" });
+  assert.equal(store.get("thread", th.data.id)?.data.title, "乐观改名");
+  const r = await p;
+  assert.equal(r.ok, false);
+  if (!r.ok) assert.equal(r.status, 404);
+  assert.equal(store.get("thread", th.data.id)?.data.title, origTitle, "rolled back after 404");
+  assert.equal((await act.presence({ foreground: true, viewing: `thread:${th.data.id}` })).ok, false);
+  assert.equal(conn.state.s, "live", "connection stays healthy after 404 writes");
+  w.clear();
 });
 
 test("a removed device: CLOSE 4410 → auth_failed (removed), and it stops retrying; a new connection gets 4401", async () => {

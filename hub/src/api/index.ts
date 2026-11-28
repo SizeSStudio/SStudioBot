@@ -4,6 +4,7 @@
 //   2. route → validate query/body with protocol/api's schemas (400) → view functions → body
 // Reads are here; the write routes (W3a) are writes.ts, each inside its client_ops transaction (ops.ts). The CLI's
 // device writes come the same way (hub-admin.sock → dispatch), with a client_op_id of its own.
+// /node/v1 (W4): after the same authorize() (only role `node` gets there), to `node` (tasks/node-api.ts).
 // Responses carry untrusted text as data (JSON strings); nothing is pre-rendered.
 import { closeSync, existsSync, openSync, readSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -17,17 +18,25 @@ import {
   ApprovalsQuery, BLOB_CHUNK, BlobQuery, DevicesQuery, ThreadItemsQuery, ThreadsQuery,
   type ApprovalsRes, type BlobRes, type DevicesRes, type ThreadItemsRes, type ThreadsRes,
 } from "../../../protocol/api/read.ts";
+import { TasksQuery, type NodesRes, type TaskRes, type TasksRes } from "../../../protocol/api/tasks.ts";
 import type { Db, Row } from "../db/db.ts";
+import type { NodePeer } from "../link/session.ts";
 import { log } from "../log.ts";
 import { authorize, type Authorize, type Caller } from "./authz.ts";
 import { Pump, type Conn, type PumpOpts } from "./pump.ts";
 import { writeRoutes, type DeviceWrites, type Runs } from "./writes.ts";
+import { taskWriteRoutes, type TaskWrites } from "./task-writes.ts";
 import type { Out } from "./ops.ts";
-import { approvalView, deviceView, headSeq, nodeView, runView, taskView, threadView, timeline } from "./views.ts";
+import { approvalView, deviceView, headSeq, nodeView, runView, taskView, threadView, timeline, worktreeView } from "./views.ts";
 
 export type { Caller, Conn, Out };
-/** A caller on a connection that can carry a stream (the link); the admin socket and tests may leave `conn` out. */
-export interface DispatchCaller extends Caller { conn?: Conn }
+/**
+ * A caller on a connection that can carry a stream (the link); the admin socket and tests may leave `conn` out.
+ * `peer`: a node's connection, for the hub's requests back down (only role `node` has one).
+ */
+export interface DispatchCaller extends Caller { conn?: Conn; peer?: NodePeer }
+/** Node → hub routes (tasks/node-api.ts). The caller is a `node`: authorize() already said so. */
+export type NodeRoutes = (req: Req, caller: DispatchCaller) => Promise<Out>;
 
 export interface ApiDeps {
   db: Db;
@@ -42,10 +51,15 @@ export interface ApiDeps {
   /** the link's invites and removal; missing: those routes 404 */
   devices?: DeviceWrites;
   redraftTriage?: (approvalId: number) => void;
+  /** /node/v1 (W4); without it every /node/v1 path is 404 */
+  node?: NodeRoutes;
+  /** the task engine's writes (W4a); missing: the task write routes 404 */
+  tasks?: TaskWrites;
 }
 
 const TIMELINE_BOOT = 20, PAGE = 50, PAGE_MAX = 200, LIST_MAX = 200;
 const ENDED_TASK = "('done','failed','cancelled')";
+const TASK_STATUSES = ["queued", "running", "waiting", "waiting_node", "interrupted", "done", "failed", "cancelled"];
 
 const bad = (error: string, status = 400): Out => ({ status, body: { error } });
 function parse<T extends z.ZodType>(s: T, v: unknown): z.infer<T> | undefined {
@@ -53,7 +67,7 @@ function parse<T extends z.ZodType>(s: T, v: unknown): z.infer<T> | undefined {
   return r.success ? r.data : undefined;
 }
 
-type Handler = (req: Req, caller: DispatchCaller, m: RegExpExecArray) => Out;
+type Handler = (req: Req, caller: DispatchCaller, m: RegExpExecArray) => Out | Promise<Out>;
 
 export class Api {
   readonly db: Db; readonly blobs: string; readonly pump: Pump;
@@ -79,6 +93,10 @@ export class Api {
       r("GET", "/api/v1/devices", (q) => this.#devices(q)),
       r("GET", "/api/v1/blobs/([^/]{1,80})", (q, _c, m) => this.#blob(q, m[1]!)),
       ...writeRoutes({ db: d.db, blobs: d.blobs, runs: d.runs, devices: d.devices, redraftTriage: d.redraftTriage }).map((w) => r(w.method, w.path, w.fn)),
+      ...(d.tasks ? taskWriteRoutes({ db: d.db, blobs: d.blobs, engine: d.tasks }) : []).map((w) => r(w.method, w.path, w.fn)),
+      r("GET", "/api/v1/tasks", (q) => this.#tasks(q)),
+      r("GET", "/api/v1/tasks/(t\\d{1,15})", (_q, _c, m) => this.#task(m[1]!)),
+      r("GET", "/api/v1/nodes", () => this.#nodes()),
     ];
   }
 
@@ -87,6 +105,13 @@ export class Api {
     const verdict = this.#authorize(caller, req);
     if (!verdict.ok) return bad(verdict.error, verdict.status);
     const [path, qs] = req.path.split("?", 2) as [string, string | undefined];
+    if (path.startsWith("/node/v1/")) {
+      if (!this.#d.node) return bad(`no route ${req.method} ${path}`, 404);
+      try { return await this.#d.node(req, caller); } catch (e) {
+        log("api", "node handler failed", { path, err: String((e as Error)?.message ?? e).slice(0, 200) });
+        return bad("internal error", 500);
+      }
+    }
     // a query may come in the path (the CLI's adminRequest) or as `query`; `query` wins on a clash
     if (qs) req = { ...req, query: { ...Object.fromEntries(new URLSearchParams(qs)), ...(req.query ?? {}) } };
     let methodOk = false;
@@ -94,7 +119,8 @@ export class Api {
       const m = rt.re.exec(path);
       if (!m) continue;
       if (rt.method !== req.method) { methodOk = true; continue; }
-      try { return rt.fn(req, caller, m); } catch (e) {
+      // await: a task write waits for its node, and its rejection must land in this catch too
+      try { return await rt.fn(req, caller, m); } catch (e) {
         log("api", "handler failed", { path, err: String((e as Error)?.message ?? e).slice(0, 200) });
         return bad("internal error", 500);
       }
@@ -123,7 +149,7 @@ export class Api {
         timelines,
         runs: db.all<Row>("SELECT * FROM runs WHERE status = 'running' ORDER BY started").map(runView),
         approvals: db.all<Row>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC LIMIT ?", LIST_MAX).map((r) => approvalView(db, blobs, r)),
-        tasks: db.all<Row>(`SELECT * FROM tasks WHERE status NOT IN ${ENDED_TASK} ORDER BY ts`).map((r) => taskView(blobs, r)),
+        tasks: db.all<Row>(`SELECT * FROM tasks WHERE status NOT IN ${ENDED_TASK} ORDER BY ts`).map((r) => taskView(blobs, r, db)),
         devices: db.all<Row>("SELECT * FROM devices WHERE removed_at IS NULL ORDER BY created_at").map(deviceView),
         nodes: db.all<Row>("SELECT * FROM nodes ORDER BY device_id").map((r) => nodeView(db, r)),
       };
@@ -193,6 +219,43 @@ export class Api {
     return db.tx(() => {
       const rows = db.all<Row>(`SELECT * FROM devices ${all ? "" : "WHERE removed_at IS NULL"} ORDER BY created_at`);
       const body: DevicesRes = { seq: headSeq(db), devices: rows.map(deviceView) };
+      return { status: 200, body };
+    });
+  }
+
+  /** GET /api/v1/tasks?status= — one status, open (not finished; the default) or all. Newest first. */
+  #tasks(req: Req): Out {
+    const q = parse(TasksQuery, req.query);
+    const st = q?.status ?? "open";
+    if (!q || !(st === "open" || st === "all" || TASK_STATUSES.includes(st))) return bad("status is open, all or one task status");
+    const { db, blobs } = this;
+    return db.tx(() => {
+      const rows = st === "all" ? db.all<Row>("SELECT * FROM tasks ORDER BY ts DESC LIMIT ?", LIST_MAX)
+        : st === "open" ? db.all<Row>(`SELECT * FROM tasks WHERE status NOT IN ${ENDED_TASK} ORDER BY ts DESC LIMIT ?`, LIST_MAX)
+        : db.all<Row>("SELECT * FROM tasks WHERE status = ? ORDER BY ts DESC LIMIT ?", st, LIST_MAX);
+      const body: TasksRes = { seq: headSeq(db), tasks: rows.map((r) => taskView(blobs, r, db)) };
+      return { status: 200, body };
+    });
+  }
+
+  #task(id: string): Out {
+    const { db, blobs } = this;
+    return db.tx(() => {
+      const r = db.one<Row>("SELECT * FROM tasks WHERE id = ?", id);
+      if (!r) return bad("no such task", 404);
+      const body: TaskRes = { seq: headSeq(db), task: taskView(blobs, r, db, { detail: true }) };
+      return { status: 200, body };
+    });
+  }
+
+  /** GET /api/v1/nodes — every node, and the worktrees I could clean (§办3.4: only when I press it). */
+  #nodes(): Out {
+    const { db } = this;
+    return db.tx(() => {
+      const body: NodesRes = {
+        seq: headSeq(db), nodes: db.all<Row>("SELECT * FROM nodes ORDER BY device_id").map((r) => nodeView(db, r)),
+        worktrees: db.all<Row>("SELECT * FROM worktrees WHERE state = 'cleanable' ORDER BY node, created_at").map(worktreeView),
+      };
       return { status: 200, body };
     });
   }

@@ -244,7 +244,7 @@ export class Dispatcher {
     for (;;) {
       await Promise.all([...[...this.#active.values()].map((a) => a.done), ...this.#drafts]);
       await new Promise((r) => setTimeout(r, 20));
-      const waiting = this.d.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox WHERE status = 'received' AND COALESCE(not_before, 0) <= ?", Date.now())!.n;
+      const waiting = this.d.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox WHERE status = 'received' AND lane NOT LIKE 'task:%' AND COALESCE(not_before, 0) <= ?", Date.now())!.n;
       if (!this.#active.size && !this.#drafts.size && !this.#ticking && !waiting) return;
       if (Date.now() > end) throw new Error("dispatcher not idle");
       if (waiting && !this.#ticking) this.kick();
@@ -265,10 +265,11 @@ export class Dispatcher {
   async #tick() {
     const { db } = this.d;
     // commands first: /stop must reach a running run
-    for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'command' ORDER BY id")) this.#command(r);
+    // task:<id> lanes are the task engine's (tasks/engine.ts): their input goes to the agent on the node, not to pi
+    for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'command' AND lane NOT LIKE 'task:%' ORDER BY id")) this.#command(r);
     // a reply in an approval card's topic (even in DM or workbench when re-sent via /approvals <id>) is a redraft
     if (this.d.cardReply) {
-      for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'user' AND json_extract(payload_json, '$.root_id') IS NOT NULL ORDER BY id")) {
+      for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'user' AND lane NOT LIKE 'task:%' AND json_extract(payload_json, '$.root_id') IS NOT NULL ORDER BY id")) {
         const answer = this.d.cardReply(r);
         if (answer !== undefined) {
           db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
@@ -284,7 +285,7 @@ export class Dispatcher {
     }
     if (this.d.onCard) await this.#cards(this.d.onCard);
     const lanes = db.all<{ lane: string }>(
-      `SELECT DISTINCT lane FROM inbox WHERE status = 'received' AND kind != 'command' ${this.#noCards} AND COALESCE(not_before, 0) <= ?`, Date.now());
+      `SELECT DISTINCT lane FROM inbox WHERE status = 'received' AND kind != 'command' AND lane NOT LIKE 'task:%' ${this.#noCards} AND COALESCE(not_before, 0) <= ?`, Date.now());
     for (const { lane } of lanes) {
       const a = this.#active.get(lane);
       if (a) { await this.#steer(lane, a); continue; }

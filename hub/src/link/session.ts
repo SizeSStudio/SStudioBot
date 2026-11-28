@@ -3,12 +3,15 @@
 //   hello  → message 1 in, message 2 out carrying a fresh 32-byte challenge
 //   auth   → the first frame must be `auth` (purpose "auth") or `pair` (purpose "pair"), signed over
 //            prefix || handshake hash || challenge
-//   open   → application frames; every `req` goes to the api dispatcher, which authorizes it first (roles.ts)
+//   open   → application frames; every `req` goes to the api dispatcher, which authorizes it first (roles.ts).
+//            A `node` session also carries the hub's own requests down (W4: /node/v1/sessions, turns, permission
+//            answers…); their `res` frames come back here. A client never gets a request from the hub, so a `res` from
+//            a client is ignored like any other frame it has no business sending.
 // Any failure before `open` closes with reason "auth" and says nothing about which step failed.
 import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { PROTOCOL } from "../../../protocol/version.ts";
 import { respond, NoiseProtocolError, type ClientHello, type Transport } from "../../../protocol/noise/channel.ts";
-import { encodeFrame, parseFrame, type Auth, type Frame, type Pair, type Req } from "../../../protocol/frames.ts";
+import { encodeFrame, parseFrame, type Auth, type Frame, type Pair, type Req, type Res } from "../../../protocol/frames.ts";
 import { AUTH_PREFIX, CLOSE_AUTH, CLOSE_PROTOCOL, CLOSE_REMOVED, CLOSE_VERSION, PAIR_PREFIX, b64u, fromB64u, signedBytes } from "../../../protocol/pair.ts";
 import type { Db } from "../db/db.ts";
 import type { HubKey } from "./keys.ts";
@@ -40,6 +43,11 @@ export type SessionDeps = {
   onNewIp(deviceId: string, ipMasked: string): void;
 };
 
+/** A request the hub sends down to a node (tasks/nodes.ts). The node answers with a `res` of the same id. */
+export interface NodePeer {
+  request(method: Req["method"], path: string, body: unknown, o?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Res>;
+}
+
 const ED25519_SPKI = Buffer.from("302a300506032b6570032100", "hex");
 
 /** Ed25519 over the domain-separated bytes. Anything malformed is just `false`. */
@@ -55,10 +63,12 @@ export function verifyEd25519(publicKey: Uint8Array, message: Uint8Array, sigB64
 // a device names itself; keep it printable for lists and notices
 const clean = (s: string, max: number) => s.replace(/[\u0000-\u001f\u007f\u2028\u2029]/g, "").trim().slice(0, max);
 
-export class Session implements Conn {
+export class Session implements Conn, NodePeer {
   state: "hello" | "auth" | "open" | "closed" = "hello";
   who: Caller | undefined;
   #d: SessionDeps;
+  #pending = new Map<number, { resolve: (r: Res) => void; reject: (e: Error) => void }>();
+  #next = 1;
   #t: Transport | undefined;
   #client: ClientHello | undefined;
   #challenge = new Uint8Array(randomBytes(32));
@@ -83,6 +93,7 @@ export class Session implements Conn {
     catch { return this.state === "open" ? this.close(C_PROTOCOL, "protocol") : this.#fail(); }
     if (this.state === "auth") return this.#first(f);
     if (f?.t === "req") void this.#serve(f);
+    else if (f?.t === "res" && this.who?.role === "node") this.#answered(f);
     // anything else from a device (unknown t, cancel before W2b streams) is ignored (02)
   }
 
@@ -151,6 +162,27 @@ export class Session implements Conn {
     this.send({ t: "res", id: req.id, status: out.status, ...(out.body === undefined ? {} : { body: out.body }), ...(out.seq === undefined ? {} : { seq: out.seq }) });
   }
 
+  /**
+   * One request down to a node (only a `node` session has these). Resolves with its `res`; rejects when the channel
+   * ends first, on `timeoutMs`, or on `signal` (then a `cancel` goes down). Ids are ours, separate from the node's.
+   */
+  request(method: Req["method"], path: string, body: unknown, o: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Res> {
+    if (this.state !== "open" || this.who?.role !== "node") return Promise.reject(new Error("这台节点没连着"));
+    const id = this.#next++;
+    return new Promise<Res>((resolve, reject) => {
+      let timer: NodeJS.Timeout | undefined;
+      const done = () => { clearTimeout(timer); o.signal?.removeEventListener("abort", onAbort); this.#pending.delete(id); };
+      const onAbort = () => { done(); this.send({ t: "cancel", id }); reject(new Error("已停下")); };
+      if (o.signal?.aborted) return reject(new Error("已停下"));
+      o.signal?.addEventListener("abort", onAbort, { once: true });
+      if (o.timeoutMs) { timer = setTimeout(() => { done(); reject(new Error("节点没回应")); }, o.timeoutMs); timer.unref(); }
+      this.#pending.set(id, { resolve: (r) => { done(); resolve(r); }, reject: (e) => { done(); reject(e); } });
+      this.send({ t: "req", id, method, path, ...(body === undefined ? {} : { body }) });
+    });
+  }
+
+  #answered(f: Res) { this.#pending.get(f.id)?.resolve(f); }
+
   /** One application frame to the device (split into Noise messages as needed). Never throws (Conn). */
   send(f: Frame) {
     if (this.state !== "open" || !this.#t) return;
@@ -177,6 +209,7 @@ export class Session implements Conn {
     clearTimeout(this.#timer);
     this.#t?.destroy();
     this.#t = undefined;
+    for (const p of [...this.#pending.values()]) p.reject(new Error("节点断开了"));
     if (was === "open") this.#d.ended(this);
   }
 }

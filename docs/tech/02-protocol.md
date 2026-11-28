@@ -111,7 +111,7 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 W3 定的（`protocol/api/write.ts`、`push.ts`）：
 - `client_op_id`：8–64 个 `[A-Za-z0-9_-]`（UUID）※；帧本身许到 128，写路由按 64 收（04 `client_ops`）。
 - 冲突的 body 一律 `{ error, <实体>: 现在的样子 }`：409 = 版本对不上，或这张卡已经被别处决定了（谁先点算谁，后到的拿到结果）；410 = 已过期、被新稿取代、已作废 ※。
-- 看一眼、问我都走 `decide`：`action: "answer"` + `option_id`（问我也可 `text`）；放行还是拒绝看 agent 给的选项的 `kind`。
+- 看一眼、问我都走 `decide`：`action: "answer"` + `option_id`（问我也可 `text`；AskUserQuestion 一次问几题时用 `answers`：题 → 答，W4a 加的可选字段）；放行还是拒绝看 agent 给的选项的 `kind`。卡被拒（或作废）时，节点收到的一定是一个拒绝类选项，不管点的是哪个（主那边 fail closed，03 tasks）。
 - 一般 thread 默认 `work` ※（可选 `personal`）；主线 thread 跟它的事的域。飞书镜像 thread 发消息回 409（D9 先只读）。
 - 新实体 `read`（id 是 ref）、`ease`（只有一个 id `ease`）；`approval` 加可选的 `snooze`、`snooze_until`，`device` 加可选的 `push`（有没有令牌），`thread` 加可选的 `mainline_id`；bootstrap 加可选的 `ease`、`reads`。全是可选字段，W2 的主和客户端互相解析不坏。
 - FCM 消息的 `data` 是 `PushData`（`ref`、`cat`、`channel`、`personal`、`push_id`）；`personal` 的标题和正文只说「有一条私人的」。

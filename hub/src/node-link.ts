@@ -2,7 +2,9 @@
 // account's group from SBOT_NODE_GROUP, else the hub's own), the socket 0660. Not under run/: run/ is 0700 for the
 // admin socket, and a node account that can't enter run/ couldn't reach a socket inside it whatever its mode.
 // Connecting is `role: node`, device id `local`, no pairing (same machine, file permissions, veto 3).
-// Requests go both ways on one connection: the node says hello; the hub sends /node/v1/exec and fs/* down.
+// Requests go both ways on one connection: the node says hello and reports (W4: events, tool calls, permissions —
+// all through the api dispatcher as device `local`, role `node`, so the one authorize() judges them too); the hub
+// sends /node/v1/exec, fs/*, sessions, turns … down.
 import { createServer, type Server, type Socket } from "node:net";
 import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -48,6 +50,8 @@ export function ensureNodeDir(dir: string, group = process.env.SBOT_NODE_GROUP):
 }
 
 type Pending = { resolve: (r: Res) => void; reject: (e: Error) => void };
+/** What main.ts plugs in: every `req` from the local node, as the caller `{ device_id: "local", role: "node" }`. */
+export type LocalHandler = (req: Req, peer: { request: NodeLink["peerRequest"] }) => Promise<{ status: number; body?: unknown }>;
 
 export class NodeLink implements NodeClient {
   #server: Server | undefined;
@@ -56,6 +60,10 @@ export class NodeLink implements NodeClient {
   #next = 1;
   hello: Hello | undefined;
   readonly targetSha: string;
+  /** set by main.ts (W4); without it only hello is served, as before */
+  handle: LocalHandler | undefined;
+  /** the node's connection ended (tasks/nodes.ts marks it offline) */
+  onGone: (() => void) | undefined;
 
   constructor(targetSha: string) { this.targetSha = targetSha; }
 
@@ -98,7 +106,7 @@ export class NodeLink implements NodeClient {
         try { f = parseFrame(t); } catch { sock.destroy(); return; }
         if (!f) continue;
         if (f.t === "res") { const p = this.#pending.get(f.id); if (p) { this.#pending.delete(f.id); p.resolve(f); } }
-        else if (f.t === "req") this.#serve(sock, f);
+        else if (f.t === "req") void this.#serve(sock, f);
       }
     });
     const gone = () => {
@@ -107,14 +115,24 @@ export class NodeLink implements NodeClient {
       this.hello = undefined;
       for (const [id, p] of this.#pending) { this.#pending.delete(id); p.reject(new Error("本机节点断开了")); }
       log("node-link", "node disconnected");
+      try { this.onGone?.(); } catch (e) { log("node-link", "onGone failed", { err: String((e as Error)?.message ?? e).slice(0, 200) }); }
     };
     sock.on("close", gone);
     sock.on("error", () => sock.destroy());
   }
 
-  #serve(sock: Socket, req: Req) {
+  async #serve(sock: Socket, req: Req) {
     const reply = (status: number, body?: unknown) => { if (!sock.destroyed) sock.write(encodeLen(encodeFrame({ t: "res", id: req.id, status, ...(body === undefined ? {} : { body }) }))); };
-    if (req.method === "POST" && req.path === "/node/v1/hello") {
+    const isHello = req.method === "POST" && req.path === "/node/v1/hello";
+    if (this.handle) {
+      let out: { status: number; body?: unknown };
+      try { out = await this.handle(req, { request: this.peerRequest }); }
+      catch (e) { log("node-link", "handler failed", { path: req.path, err: String((e as Error)?.message ?? e).slice(0, 200) }); out = { status: 500, body: { error: "internal error" } }; }
+      // exec/fs and defaultCwd() read the hello; only one this connection's handler accepted counts
+      if (isHello && out.status === 200 && this.#sock === sock) this.hello = Hello.parse(req.body);
+      return reply(out.status, out.body);
+    }
+    if (isHello) {
       const h = Hello.safeParse(req.body);
       if (!h.success) return reply(400, { error: "bad hello" });
       this.hello = h.data;
@@ -145,6 +163,18 @@ export class NodeLink implements NodeClient {
       sock.write(encodeLen(encodeFrame({ t: "req", id, method, path, body })));
     });
   }
+
+  /** The same request in tasks/nodes.ts's NodePeer shape (a timeout instead of only a signal). */
+  peerRequest = (method: Req["method"], path: string, body: unknown, o: { timeoutMs?: number; signal?: AbortSignal } = {}): Promise<Res> => {
+    if (!o.timeoutMs) return this.request(method, path, body, o.signal);
+    const ac = new AbortController();
+    const onAbort = () => ac.abort();
+    o.signal?.addEventListener("abort", onAbort, { once: true });
+    const timer = setTimeout(() => ac.abort(), o.timeoutMs);
+    timer.unref();
+    return this.request(method, path, body, ac.signal).catch((e) => { throw ac.signal.aborted && !o.signal?.aborted ? new Error("本机节点没回应") : e; })
+      .finally(() => { clearTimeout(timer); o.signal?.removeEventListener("abort", onAbort); });
+  };
 
   async exec(o: { cmd: string; cwd: string; env?: Record<string, string>; stdin?: string }, signal?: AbortSignal) {
     const r = await this.request("POST", "/node/v1/exec", o, signal);

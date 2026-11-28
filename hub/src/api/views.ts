@@ -2,9 +2,10 @@
 // so a client sees the same shape whichever way it arrived. Shapes are protocol/api/entities.ts. Bodies were redacted
 // when they were written (items.ts); free-text columns that weren't (run errors, task errors) are redacted here.
 // Text goes out as data: nothing here renders HTML or follows a link.
-import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
+import { existsSync, openSync, readFileSync, readSync, closeSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Approval, BlobRef, Device, EntityData, EntityName, Input, Item, Node, Run, Task, Thread, TimelineEntry } from "../../../protocol/api/entities.ts";
+import type { Approval, BlobRef, Device, DiffStat, EntityData, EntityName, Input, Item, Node, Run, Task, TaskPr, TaskSession, Thread, TimelineEntry, Worktree } from "../../../protocol/api/entities.ts";
+import { measureConf } from "../config/load.ts";
 import type { Ease, Read } from "../../../protocol/api/push.ts";
 import type { Db, Row } from "../db/db.ts";
 import { localMidnight } from "../time.ts";
@@ -129,12 +130,70 @@ export function approvalView(db: Db, blobs: string, r: Row): Approval {
   };
 }
 
-export const taskView = (blobs: string, r: Row): Task => ({
-  id: String(r.id), origin_lane: str(r.origin_lane), goal: String(r.goal), status: String(r.status), repo: str(r.repo),
-  node: str(r.node), agent: str(r.agent), attempt: Number(r.attempt), turn: Number(r.turn), quota_until: int(r.quota_until),
-  result: redactDeep(json(r.result_json)), diff_blob: blobRef(blobs, r.diff_ref), error: red(r.error), matter_id: int(r.matter_id),
-  started: int(r.started), ended: int(r.ended), ts: Number(r.ts),
+/**
+ * A task. With `db` (every path that has one) the W4 fields too: needs_you is computed here (04 §4: interrupted, or
+ * running with no output for measure.stuck_minutes and not waiting out a quota), never stored. `detail` (GET
+ * /tasks/:id) adds its sessions, worktrees, PRs and the finished diff's file list.
+ */
+export function taskView(blobs: string, r: Row, db?: Db, o: { detail?: boolean; now?: number } = {}): Task {
+  const base: Task = {
+    id: String(r.id), origin_lane: str(r.origin_lane), goal: String(r.goal), status: String(r.status), repo: str(r.repo),
+    node: str(r.node), agent: str(r.agent), attempt: Number(r.attempt), turn: Number(r.turn), quota_until: int(r.quota_until),
+    result: redactDeep(json(r.result_json)), diff_blob: blobRef(blobs, r.diff_ref), error: red(r.error), matter_id: int(r.matter_id),
+    started: int(r.started), ended: int(r.ended), ts: Number(r.ts),
+  };
+  if (!db) return base;
+  const id = String(r.id), now = o.now ?? Date.now();
+  const stuck = r.status === "running" && r.quota_until == null && r.last_output_at != null && Number(r.last_output_at) < now - measureConf().stuck_minutes * 60_000;
+  const waiting = db.one<{ id: number }>("SELECT id FROM approvals WHERE task_id = ? AND attempt = ? AND status = 'pending' AND kind IN ('glance','ask') ORDER BY id LIMIT 1", id, Number(r.attempt));
+  const caps = r.node && r.agent ? ((json(db.one<{ caps_json: string }>("SELECT caps_json FROM nodes WHERE device_id = ?", String(r.node))?.caps_json) ?? {}) as Record<string, unknown>)[String(r.agent)] : undefined;
+  const t: Task = {
+    ...base, workdir: str(r.workdir), mode: str(r.mode), session_ref: str(r.session_ref), last_output_at: int(r.last_output_at),
+    needs_you: r.status === "interrupted" || stuck,
+    waiting_approval: waiting ? String(waiting.id) : null,
+    queued_steers: Number(db.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox WHERE lane = ? AND status = 'received' AND kind = 'user'", `task:${id}`)?.n ?? 0),
+    ...(caps && typeof caps === "object" ? { caps: Object.fromEntries(Object.entries(caps).filter(([, v]) => typeof v === "boolean")) as Record<string, boolean> } : {}),
+  };
+  if (!o.detail) return t;
+  return {
+    ...t,
+    diff_stat: diffStat(blobs, r.diff_ref),
+    sessions: db.all<Row>("SELECT * FROM task_sessions WHERE task_id = ? ORDER BY opened_at", id).map((s) => sessionView(blobs, s)),
+    worktrees: db.all<Row>("SELECT * FROM worktrees WHERE task_id = ? ORDER BY created_at", id).map(worktreeView),
+    prs: db.all<Row>("SELECT * FROM task_prs WHERE task_id = ? ORDER BY id", id).map(prView),
+  };
+}
+
+export const sessionView = (blobs: string, r: Row): TaskSession => ({
+  node: String(r.node), agent: String(r.agent), session_ref: String(r.session_ref), workdir: str(r.workdir), proc: String(r.proc),
+  last_attempt: Number(r.last_attempt), handoff_blob: blobRef(blobs, r.handoff_ref), opened_at: Number(r.opened_at), released_at: int(r.released_at),
 });
+export const worktreeView = (r: Row): Worktree => ({
+  node: String(r.node), path: String(r.path), task_id: String(r.task_id), repo: String(r.repo), branch: String(r.branch), state: String(r.state),
+  cleanable_at: int(r.cleanable_at), deleted_at: int(r.deleted_at), deleted_by: str(r.deleted_by), created_at: Number(r.created_at),
+});
+export const prView = (r: Row): TaskPr => ({
+  id: String(r.id), task_id: String(r.task_id), node: String(r.node), url: String(r.url), repo: str(r.repo), number: int(r.number),
+  branch: str(r.branch), state: String(r.state), ci: str(r.ci), head_sha: str(r.head_sha), red_streak: Number(r.red_streak),
+  checked_at: int(r.checked_at), opened_at: Number(r.opened_at), closed_at: int(r.closed_at),
+});
+
+/** The files of a unified diff (git diff's `diff --git a/… b/…` headers), counted from the blob. Not there → null. */
+export function diffStat(blobs: string, ref: unknown): DiffStat | null {
+  const m = typeof ref === "string" ? /^blob:([0-9a-f]{64})$/.exec(ref) : null;
+  if (!m || !existsSync(join(blobs, m[1]!))) return null;
+  const files: DiffStat["files"] = [];
+  let cur: DiffStat["files"][number] | undefined;
+  for (const line of readFileSync(join(blobs, m[1]!), "utf8").split("\n")) {
+    const h = /^diff --git a\/(.+?) b\/(.+)$/.exec(line);
+    if (h) { files.push((cur = { path: h[2]!, added: 0, removed: 0 })); continue; }
+    if (!cur) continue;
+    if (line.startsWith("Binary files ")) cur.binary = true;
+    else if (line.startsWith("+") && !line.startsWith("+++ ")) cur.added++;
+    else if (line.startsWith("-") && !line.startsWith("--- ")) cur.removed++;
+  }
+  return { files, added: files.reduce((a, f) => a + f.added, 0), removed: files.reduce((a, f) => a + f.removed, 0) };
+}
 
 export const deviceView = (r: Row): Device => ({
   id: String(r.id), name: String(r.name), platform: str(r.platform), role: String(r.role), version: str(r.version),
@@ -195,7 +254,7 @@ export function fromRow<E extends EntityName>(db: Db, blobs: string, entity: E, 
     case "run": return runView(r) as EntityData[E];
     case "item": return itemView(db, blobs, r) as EntityData[E];
     case "approval": return approvalView(db, blobs, r) as EntityData[E];
-    case "task": return taskView(blobs, r) as EntityData[E];
+    case "task": return taskView(blobs, r, db) as EntityData[E];
     case "device": return deviceView(r) as EntityData[E];
     case "read": return readView(r) as EntityData[E];
     case "ease": return easeView(r) as EntityData[E];

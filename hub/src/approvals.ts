@@ -1,7 +1,8 @@
 // Approvals (§底3.2, §底3.3, §办3.3; 03 approvals). Only I decide: a client device, or a channel callback whose operator
 // is my id in people.yaml. A decision is one transaction: check state and draft_version → set state → decided_by →
 // what follows (send → one outbox row with the approved text; plan → an `approval` event back in the lane;
-// glance/ask → answer_json, which tasks (W4) carries back to the session).
+// glance/ask → answer_json and a row in the task's lane `task:<id>`, which tasks/engine.ts carries back to the
+// session: durable, so an answer given while the node is away still arrives when it is back).
 import type { Db, Row } from "./db/db.ts";
 import { gateConf, jobsConf, peopleConf } from "./config/load.ts";
 import { enqueue, toOutlet } from "./outbox.ts";
@@ -132,7 +133,8 @@ const byText = (by: Decider) => (by.kind === "device" ? `device:${by.device_id}`
 
 export interface Decision {
   decision: "approve" | "reject"; by: Decider; draft_version?: number; final_text?: string; note?: string;
-  answer?: { option_id?: string; text?: string };
+  /** glance / ask; `answers` is AskUserQuestion's question → answer (W4) */
+  answer?: { option_id?: string; text?: string; answers?: Record<string, string> };
 }
 /**
  * Why a write on a card didn't happen, for the API's status codes (02): not_me 403, missing 404, bad 400,
@@ -176,16 +178,18 @@ export function optionsOf(a: Row): { id: string; label: string; kind?: string }[
  *            reject, anything else approves
  *   ask    — an option id, or a free text answer
  */
-export function choose(a: Row, x: { action?: "approve" | "reject" | "answer"; option_id?: string; text?: string }): { decision: "approve" | "reject"; answer?: Decision["answer"] } | Refused {
+export function choose(a: Row, x: { action?: "approve" | "reject" | "answer"; option_id?: string; text?: string; answers?: Record<string, string> }): { decision: "approve" | "reject"; answer?: Decision["answer"] } | Refused {
   const kind = String(a.kind);
   if (kind === "glance" || kind === "ask") {
     if (x.action && x.action !== "answer") return no("bad", "看一眼、问我的卡要 action answer 加 option_id");
-    if (kind === "ask" && x.text && !x.option_id) return { decision: "approve", answer: { text: x.text } };
+    // ask: AskUserQuestion's question → answer map rides along (only on ask cards; a glance has no questions)
+    const answers = kind === "ask" && x.answers && Object.keys(x.answers).length ? { answers: redactDeep(x.answers) as Record<string, string> } : {};
+    if (kind === "ask" && (x.text || answers.answers) && !x.option_id) return { decision: "approve", answer: { ...(x.text ? { text: x.text } : {}), ...answers } };
     const opt = optionsOf(a).find((o) => o.id === x.option_id);
     if (!opt) return no("bad", `这张卡没有选项 ${x.option_id ?? "（没给）"}`);
     const k = String(opt.kind ?? "");
     const rejects = k ? /^(reject|deny)/.test(k) : opt.id === "reject" || opt.id === "deny";
-    return { decision: rejects ? "reject" : "approve", answer: { option_id: opt.id } };
+    return { decision: rejects ? "reject" : "approve", answer: { option_id: opt.id, ...(rejects ? {} : answers) } };
   }
   const d = x.action === "answer" ? x.option_id : x.action ?? x.option_id;
   if (d !== "approve" && d !== "reject") return no("bad", "这种卡只有 approve 或 reject");
@@ -222,6 +226,14 @@ export function decide(db: Db, id: number, d: Decision): DecideResult {
       ingest(db, {
         lane: String(a.origin_lane), kind: "approval", source: "approval", source_msg_id: `${id}:${d.decision}`,
         payload: { text: `（审批结果）#${id}「${a.title}」${status === "approved" ? "批了" : "没批"}${note ? `：${note}` : ""}`, approval_id: id, decision: d.decision },
+      });
+    }
+    // glance / ask of a task: the engine (tasks/engine.ts) carries the answer to the node; which option the node
+    // gets follows `status`, never the clicked id alone (answerFor, fail closed)
+    if ((a.kind === "glance" || a.kind === "ask") && a.task_id) {
+      ingest(db, {
+        lane: `task:${a.task_id}`, kind: "approval", source: "approval", source_msg_id: `${id}:answer`,
+        payload: { approval_id: id, decision: status, ts: Date.now() },
       });
     }
     refreshCards(db, db.one("SELECT * FROM approvals WHERE id = ?", id)!, status);
@@ -438,5 +450,25 @@ export function invalidateForOwnerMessage(db: Db, o: { chat?: string; after_ts?:
       refreshCards(db, a, "invalidated");
     }
     return rows.length;
+  });
+}
+
+/**
+ * A task's open glance / ask cards are moot (§办3.3): the node or agent restarted (`invalidated`), the task moved or
+ * was cancelled, or I typed into the task while it waited (`rejected` by owner_message, §办3.4: refuse it first).
+ * `attempt` limits it to cards of that attempt. Returns the rows as they were, for the caller to tell the node.
+ */
+export function voidTaskCards(db: Db, task_id: string, o: { attempt?: number; status: "invalidated" | "rejected"; by: string }): Row[] {
+  return db.tx(() => {
+    const rows = o.attempt === undefined
+      ? db.all("SELECT * FROM approvals WHERE task_id = ? AND status = 'pending' AND kind IN ('glance','ask')", task_id)
+      : db.all("SELECT * FROM approvals WHERE task_id = ? AND attempt = ? AND status = 'pending' AND kind IN ('glance','ask')", task_id, o.attempt);
+    for (const a of rows) {
+      const now = Date.now();
+      db.run("UPDATE approvals SET status = ?, decided_by = ?, decided_at = ? WHERE id = ? AND status = 'pending'", o.status, o.by, now, Number(a.id));
+      closePush(db, Number(a.id), "void", now);
+      refreshCards(db, db.one("SELECT * FROM approvals WHERE id = ?", Number(a.id))!, o.status);
+    }
+    return rows;
   });
 }

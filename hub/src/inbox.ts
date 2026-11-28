@@ -3,6 +3,7 @@
 // rows up; a kick just saves it waiting for its next tick.
 import type { Db } from "./db/db.ts";
 import type { TurnContext } from "./turn.ts";
+import { touchThread } from "./api/threads.ts";
 
 export type InboxKind = "user" | "command" | "card" | "timer" | "system" | "approval" | "task";
 
@@ -29,12 +30,18 @@ export function kickInbox() { try { kick(); } catch { /* the dispatcher's tick p
  * so. `payload.owner = true` is the channel's statement that the sender is my id (people.yaml) — set it only then.
  */
 export function ingest(db: Db, o: Ingest): { id: number; dup: boolean } {
-  const r = db.run(
-    `INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, turn_ctx_json, payload_json, device_id, not_before, ts)
-     VALUES (?,?,?,?,?,?,?,?,?)`,
-    o.lane, o.kind, o.source, o.source_msg_id, o.turn ? JSON.stringify(o.turn) : null, JSON.stringify(o.payload),
-    o.device_id ?? null, o.not_before ?? null, o.ts ?? Date.now(),
-  );
+  const ts = o.ts ?? Date.now();
+  // the lane's thread (a client sees the conversation) in the same tx as the row
+  const r = db.tx(() => {
+    const r = db.run(
+      `INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, turn_ctx_json, payload_json, device_id, not_before, ts)
+       VALUES (?,?,?,?,?,?,?,?,?)`,
+      o.lane, o.kind, o.source, o.source_msg_id, o.turn ? JSON.stringify(o.turn) : null, JSON.stringify(o.payload),
+      o.device_id ?? null, o.not_before ?? null, ts,
+    );
+    if (Number(r.changes) > 0) touchThread(db, o.lane, ts);
+    return r;
+  });
   if (Number(r.changes) === 0) {
     const hit = db.one<{ id: number }>("SELECT id FROM inbox WHERE source = ? AND source_msg_id = ?", o.source, o.source_msg_id)!;
     return { id: hit.id, dup: true };

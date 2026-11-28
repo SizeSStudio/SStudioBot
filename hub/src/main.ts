@@ -1,6 +1,7 @@
 // The hub process (03 「启动顺序」): config → db → config repo seed + default jobs → agent-home seed → secrets + redact
 // → proxy → inbox.recover → hub.sock (local node) → channels, timers, Sentinel, sources, triage → outbox, dispatcher →
-// hub-admin.sock → "hub up" → notices through the admin outlet. Shutdown is the reverse. push and api.pump come in W2.
+// api (read-only /api/v1 + event pump, W2b) → hub-admin.sock → "hub up" → notices through the admin outlet. Shutdown is
+// the reverse. push comes in W3.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +46,7 @@ import { Triage, readByMe, type SendApproval } from "./triage/triage.ts";
 import { proxyComplete } from "./triage/complete.ts";
 import { runBackup } from "./backup.ts";
 import { nodeCheck } from "./check.ts";
+import { createApi, type Api } from "./api/index.ts";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -59,7 +61,7 @@ export const VERSION = (JSON.parse(readFileSync(join(APP, "hub", "package.json")
 
 export interface Hub {
   h: Home; db: Db; admin: Server; startedAt: number;
-  proxy: import("node:http").Server; outbox: Outbox; node: NodeLink; dispatcher: Dispatcher; runner: Runner;
+  proxy: import("node:http").Server; outbox: Outbox; node: NodeLink; dispatcher: Dispatcher; runner: Runner; api: Api;
   close(): Promise<void>;
 }
 
@@ -120,10 +122,11 @@ export function statusOf(hub: Pick<Hub, "db" | "startedAt">): StatusRes {
   });
 }
 
-export function router(hub: Pick<Hub, "db" | "startedAt">): Handler {
+/** hub-admin.sock: the CLI is the client device `cli` (03 link); everything goes through the one api dispatcher. */
+export function router(hub: Pick<Hub, "api">): Handler {
   return async (req: Req) => {
-    if (req.method === "GET" && req.path === "/api/v1/status") return { status: 200, body: statusOf(hub) };
-    return { status: 404, body: { error: `no route ${req.method} ${req.path}` } };
+    const out = await hub.api.dispatch(req, { device_id: "cli", role: "client" });
+    return { status: out.status, body: out.body };
   };
 }
 
@@ -151,7 +154,9 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => proxy.close() });
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
+    const api = createApi({ db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt }) });
     const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
+      onItem: (run, lane, e) => api.pump.onItem(run, lane, e),
       onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined),
       stream: (c) => channel(c.turn.channel)?.stream?.(c) });
     // before anything can take new rows: what the last process left half done (§底1.2)
@@ -169,11 +174,14 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const sweeper = setInterval(() => { try { sweepApprovals(db); } catch (e) { log("main", "approval sweep failed", { err: String((e as Error).message).slice(0, 200) }); } }, 60_000);
     sweeper.unref();
     dispatcher.start();
+    api.start();
+    opened.push({ close: () => api.stop() });
 
     const hub: Hub = {
-      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner,
+      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api,
       async close() {
         clearInterval(sweeper);
+        api.stop();
         await dispatcher.stop();
         outbox.stop();
         await outbox.idle();

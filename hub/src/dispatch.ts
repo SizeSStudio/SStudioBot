@@ -22,6 +22,7 @@ import { toolsFor, toolNamed, type NodeClient, type ToolCtx } from "./tools/regi
 import { queueReply, replyGated } from "./reply.ts";
 import type { CommitChecker } from "./commit-check.ts";
 import { itemStart } from "./items.ts";
+import { touchThread } from "./api/threads.ts";
 import { promptFiles, systemPrompt } from "./runner/prompt.ts";
 import { submitApproval, invalidateForOwnerMessage } from "./approvals.ts";
 import { putBlob } from "./blobs.ts";
@@ -379,6 +380,7 @@ export class Dispatcher {
       db.run("UPDATE runs SET status = ?, stop_reason = ?, error = ?, err_fp = ?, ended = ? WHERE id = ?",
         status, rerunnable && scheduled.length ? "upstream_retry" : res.stop, res.error ?? null, fp, Date.now(), p.run_id);
       db.run("UPDATE inbox SET status = ? WHERE run_id = ? AND status = 'processing'", res.stop === "error" ? "failed" : "done", p.run_id);
+      touchThread(db, lane, Date.now());   // threads.last_item_at moves at run end too (04 §6)
 
       if (res.stop === "done") db.run("DELETE FROM kv WHERE k = ?", `breaker.${lane}`);
       if (fp) {

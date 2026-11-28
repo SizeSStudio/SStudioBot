@@ -33,6 +33,10 @@ export const SCHEMAS: Record<string, z.ZodType> = {
 /** Routes implemented so far ("METHOD path"). 02's table is the plan; this is what exists. */
 export const ROUTES: readonly string[] = [
   "GET /api/v1/meta", "GET /api/v1/status",
+  // W2b: read-only
+  "POST /api/v1/bootstrap", "POST /api/v1/stream", "POST /api/v1/stream/expand", "POST /api/v1/stream/collapse",
+  "GET /api/v1/threads", "GET /api/v1/threads/:id/items", "GET /api/v1/approvals", "GET /api/v1/devices",
+  "GET /api/v1/blobs/:sha",
   "POST /node/v1/hello",
   "POST /node/v1/exec", "POST /node/v1/fs/read", "POST /node/v1/fs/write",
 ];

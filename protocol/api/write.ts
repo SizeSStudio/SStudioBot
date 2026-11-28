@@ -150,4 +150,11 @@ export const WRITES: Readonly<Record<string, { kind: WriteKind; locked?: true }>
   "POST /api/v1/reads": { kind: "optimistic" },
   "PUT /api/v1/devices/self/push-token": { kind: "confirmed" },
   "PUT /api/v1/ease": { kind: "confirmed" },
+  // W4 (bodies in api/tasks.ts)
+  "POST /api/v1/tasks": { kind: "confirmed" },
+  "POST /api/v1/tasks/:id/steer": { kind: "optimistic" },
+  "POST /api/v1/tasks/:id/stop": { kind: "confirmed" },
+  "POST /api/v1/tasks/:id/cancel": { kind: "confirmed" },
+  "POST /api/v1/tasks/:id/move": { kind: "confirmed" },
+  "POST /api/v1/nodes/:id/worktrees/cleanup": { kind: "confirmed" },
 };

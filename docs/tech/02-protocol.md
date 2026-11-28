@@ -141,6 +141,8 @@ W3 定的（`protocol/api/write.ts`、`push.ts`）：
 | `POST /node/v1/backup/put { name, offset, data_b64 }` | 备份副本（03） |
 | `POST /node/v1/channel/send { channel, to, body }` | 主经节点上的渠道插件发出（已过闸门、审批） |
 
+- W4 落地的字段在 `protocol/node/v1.ts`、`protocol/node/hello.ts`，加的几处 ※：hello 带 `app_version`、`upgrade { from, to, ok, error? }`（上次升级失败就报）、`sessions`（重启后 state 文件里还有的）；回复带 `accepts_work`（协议低于 `min` 为 false，只升级不派活）、`owner_git`（PR 评论只认的我的 git 平台身份）；`steer` 回 `{ applied }`，false 就是排到下一轮；`DELETE sessions/:ref` 有活或有等待点回 409；`permissions/:request_id` 回 `{ ok, gone? }`，`gone` 是节点那边已经没有这条请求（重启过），主按 §办3.3 续上重问；`blobs` 带 `total`，到头那片校验 sha。
+- 客户端看的任务和节点在 `protocol/api/tasks.ts`、`entities.ts`：`Task` 加了 `sessions`、`worktrees`、`prs`、`diff_stat`、`needs_you`、`waiting_approval`、`queued_steers`、`caps`（都可选）；新实体 `node`（`nodes` 拼 `devices`，`sha`、`target_sha`、`upgrade_failed` 存在 `nodes.extra_json` ※）；步骤就是 `task:<id>` lane 的 `item`。
 - 节点不能调 `/api/v1`（403）：批不了审批、答不了看一眼、发起不了对话、读不到 `self/` 和命盘（§触6.7）。有测试。
 - 主发给节点的指令都是单次的；节点不存定时状态（§底4.1）。
 

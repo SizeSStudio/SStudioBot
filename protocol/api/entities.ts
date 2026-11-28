@@ -163,6 +163,68 @@ export const Approval = z.object({
 });
 export type Approval = z.infer<typeof Approval>;
 
+/** A diff's shape without its text: which files, how many lines each way. */
+export const DiffStat = z.object({
+  files: z.array(z.object({ path: z.string(), added: z.number().int().nonnegative(), removed: z.number().int().nonnegative(), binary: z.boolean().optional() })),
+  added: z.number().int().nonnegative(),
+  removed: z.number().int().nonnegative(),
+});
+export type DiffStat = z.infer<typeof DiffStat>;
+
+/** task_sessions (04 §4): every session a task had; the task's current one is `session_ref`. */
+export const TaskSession = z.object({
+  node: z.string(),
+  agent: z.string(),
+  session_ref: z.string(),
+  workdir: z.string().nullable(),
+  /** live | released | lost */
+  proc: z.string(),
+  last_attempt: z.number().int(),
+  /** the handoff text it was opened with (a later session after a move or a lost one) */
+  handoff_blob: BlobRef.nullable(),
+  opened_at: ms,
+  released_at: ms.nullable(),
+});
+export type TaskSession = z.infer<typeof TaskSession>;
+
+/** worktrees (04 §4). Cleaned only when I press 清理; the branch stays. */
+export const Worktree = z.object({
+  node: z.string(),
+  path: z.string(),
+  task_id: z.string(),
+  repo: z.string(),
+  branch: z.string(),
+  /** in_use | kept | cleanable | deleting | deleted */
+  state: z.string(),
+  cleanable_at: ms.nullable(),
+  deleted_at: ms.nullable(),
+  deleted_by: z.string().nullable(),
+  created_at: ms,
+});
+export type Worktree = z.infer<typeof Worktree>;
+
+/** task_prs (04 §4): a PR a task opened and its CI as the last check saw it. */
+export const TaskPr = z.object({
+  id: z.string(),
+  task_id: z.string(),
+  node: z.string(),
+  url: z.string(),
+  repo: z.string().nullable(),
+  number: z.number().int().nullable(),
+  branch: z.string().nullable(),
+  /** open | merged | closed */
+  state: z.string(),
+  /** pending | green | red | none */
+  ci: z.string().nullable(),
+  head_sha: z.string().nullable(),
+  /** reds in a row; the third goes to a notification (04 §14) */
+  red_streak: z.number().int(),
+  checked_at: ms.nullable(),
+  opened_at: ms,
+  closed_at: ms.nullable(),
+});
+export type TaskPr = z.infer<typeof TaskPr>;
+
 /** tasks (04 §4). */
 export const Task = z.object({
   id: z.string(),
@@ -185,8 +247,60 @@ export const Task = z.object({
   started: ms.nullable(),
   ended: ms.nullable(),
   ts: ms,
+  // W4 (optional: an older hub leaves them out)
+  /** the current session's directory on the node (a worktree path when one was made) */
+  workdir: z.string().nullable().optional(),
+  /** host | sandbox (Claude Code on a Linux node) */
+  mode: z.string().nullable().optional(),
+  session_ref: z.string().nullable().optional(),
+  /** the node's last report; it doesn't produce events of its own (04 §10.1), the steps do */
+  last_output_at: ms.nullable().optional(),
+  /** 「需要你处理」(04 §4): interrupted, or running with no output for measure.stuck_minutes; computed when read */
+  needs_you: z.boolean().optional(),
+  /** a glance / ask card of this attempt is pending: its approval id */
+  waiting_approval: z.string().nullable().optional(),
+  /** steers queued for the next turn (the agent can't take them mid-turn, or a card is open) */
+  queued_steers: z.number().int().nonnegative().optional(),
+  /** what the agent can do on its node, from the node's hello: {steer, resume, permissions, ask, …} */
+  caps: z.record(z.string(), z.boolean()).optional(),
+  /** the finished diff's files, for the Android file list (07 diff); the text itself is `diff_blob` */
+  diff_stat: DiffStat.nullable().optional(),
+  sessions: z.array(TaskSession).optional(),
+  worktrees: z.array(Worktree).optional(),
+  prs: z.array(TaskPr).optional(),
 });
 export type Task = z.infer<typeof Task>;
+
+/** nodes (04 §4) joined with its devices row. Only changes of state make events, not heartbeats. */
+export const Node = z.object({
+  /** devices.id; `local` is the node on the hub's own machine */
+  id: z.string(),
+  name: z.string(),
+  platform: z.string().nullable(),
+  os: z.string().nullable(),
+  /** the node program's version */
+  version: z.string().nullable(),
+  /** the commit it runs, and the hub's (they differ while it upgrades) */
+  sha: z.string().nullable(),
+  target_sha: z.string().nullable(),
+  /** online | offline | draining | outdated */
+  status: z.string(),
+  status_at: ms.nullable(),
+  /** [{kind, version}] */
+  agents: z.unknown(),
+  /** {<agent>: {steer, resume, rewind, permissions, ask}} */
+  caps: z.unknown(),
+  /** what the agents report left of their subscription: {<agent>: {left, resets_at}} */
+  quotas: z.unknown(),
+  max_parallel: z.number().int().nullable(),
+  /** the last self-upgrade, when it failed: {from, to, error} */
+  upgrade_failed: z.unknown(),
+  /** tasks running or waiting on it now */
+  running: z.number().int().nonnegative(),
+  /** worktrees I can clean up there */
+  cleanable: z.number().int().nonnegative(),
+});
+export type Node = z.infer<typeof Node>;
 
 /** devices (04 §5). No public key, no push token. */
 export const Device = z.object({
@@ -213,6 +327,7 @@ export const ENTITY_DATA = {
   thread: Thread, input: Input, run: Run, item: Item, approval: Approval, task: Task, device: Device,
   // W3: `read` id = its ref; `ease` has the one id "ease"
   read: Read, ease: Ease,
+  node: Node,
 } as const;
 export type EntityName = keyof typeof ENTITY_DATA;
 export const ENTITY_NAMES = Object.keys(ENTITY_DATA) as EntityName[];

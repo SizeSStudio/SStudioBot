@@ -4,7 +4,7 @@
 // Text goes out as data: nothing here renders HTML or follows a link.
 import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { join } from "node:path";
-import type { Approval, BlobRef, Device, EntityData, EntityName, Input, Item, Run, Task, Thread, TimelineEntry } from "../../../protocol/api/entities.ts";
+import type { Approval, BlobRef, Device, EntityData, EntityName, Input, Item, Node, Run, Task, Thread, TimelineEntry } from "../../../protocol/api/entities.ts";
 import type { Ease, Read } from "../../../protocol/api/push.ts";
 import type { Db, Row } from "../db/db.ts";
 import { localMidnight } from "../time.ts";
@@ -121,6 +121,25 @@ export function easeView(r: Row | undefined, now = Date.now()): Ease {
   return { on: true, since: v.since, day: Math.max(1, Math.round((localMidnight(now) - localMidnight(v.since)) / 86400_000) + 1) };
 }
 
+/**
+ * nodes joined with devices (the local node has no devices row: it never pairs). sha, target_sha, upgrade_failed and
+ * the node's name live in extra_json, written by the nodes module (W4a); running and cleanable are counted here.
+ */
+export function nodeView(db: Db, r: Row): Node {
+  const x = (json(r.extra_json) ?? {}) as Record<string, unknown>;
+  const id = String(r.device_id);
+  const d = db.one<Row>("SELECT name, platform FROM devices WHERE id = ?", id);
+  const n = (sql: string) => Number(db.one<{ n: number }>(sql, id)?.n ?? 0);
+  return {
+    id, name: str(d?.name) ?? (id === "local" ? "本机" : str(x.name) ?? id.slice(0, 8)), platform: str(d?.platform), os: str(r.os),
+    version: str(r.version), sha: str(x.sha), target_sha: str(x.target_sha), status: String(r.status), status_at: int(r.status_at),
+    agents: json(r.agents_json), caps: json(r.caps_json), quotas: json(r.quota_json), max_parallel: int(r.max_parallel),
+    upgrade_failed: x.upgrade_failed ?? null,
+    running: n("SELECT COUNT(*) AS n FROM tasks WHERE node = ? AND status IN ('running','waiting','waiting_node')"),
+    cleanable: n("SELECT COUNT(*) AS n FROM worktrees WHERE node = ? AND state = 'cleanable'"),
+  };
+}
+
 /** The table and key behind each entity the stream carries. */
 const SOURCE: Record<EntityName, { sql: string; key: (ref: string) => string | number }> = {
   thread: { sql: "SELECT * FROM threads WHERE id = ?", key: (r) => r },
@@ -133,6 +152,7 @@ const SOURCE: Record<EntityName, { sql: string; key: (ref: string) => string | n
   read: { sql: "SELECT * FROM reads WHERE ref = ?", key: (r) => r },
   // ease is always there (off when the kv row is missing): the LEFT JOIN gives one row either way
   ease: { sql: "SELECT kv.v FROM (SELECT ? AS id) one LEFT JOIN kv ON kv.k = 'ease' AND one.id = 'ease'", key: (r) => r },
+  node: { sql: "SELECT * FROM nodes WHERE device_id = ?", key: (r) => r },
 };
 
 export const isEntity = (e: string): e is EntityName => Object.hasOwn(SOURCE, e);
@@ -148,6 +168,7 @@ export function fromRow<E extends EntityName>(db: Db, blobs: string, entity: E, 
     case "device": return deviceView(r) as EntityData[E];
     case "read": return readView(r) as EntityData[E];
     case "ease": return easeView(r) as EntityData[E];
+    case "node": return nodeView(db, r) as EntityData[E];
   }
   throw new Error(`no view for ${String(entity)}`);
 }

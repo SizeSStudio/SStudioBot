@@ -294,7 +294,9 @@ CREATE INDEX push_queue_sent ON push_queue(sent_at) WHERE quota = 1;
 ```
 - 补推、在场后推、夜里攒、暂缓，都是这张表里一行的状态。重启后照表接着走（§触1.1「补推队列落表」）。
 - 类别「不补」的，`sent` 以后直接 `done`。
-- 当天额度 = `quota=1 AND sent_at >= 今天 0 点` 的行数，取代旧的 kv `proactive.<day>`。
+- 当天额度 = `quota=1 AND sent_at >= 今天 0 点` 的行数，取代旧的 kv `proactive.<day>`。哪类 `quota=1` 由 `hub/src/push/table.ts` 定（03 push）。
+- 省心收掉的行 `void`、`sent_json` 是 `[{via:"ease"}]`；正看着的 `done`、`[{via:"viewing"}]`；进了早报的 `done`、`[{via:"morning"}]`。
+- 已读关行（`done`）时跳过 `snooze` 不为空的行 ※：暂缓是我要的提醒。
 - 暂缓改了，要显式发被推条目的 entity，别的设备才会收起那张卡。
 - **在场不落表**：只在内存里。
 
@@ -364,7 +366,7 @@ CREATE INDEX timers_task ON timers(task_id, status) WHERE task_id IS NOT NULL;
 CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT) STRICT, WITHOUT ROWID;
 ```
 - 照旧用的键：`job.<name>.last`、`job.<name>.retry`、`dream.*`、`quiet.held`、`matter_review.*`、`self.changes`、`seed.state`、`observer.*`、`sentinel.*`、`improve.last_run`、`source.<id>.*`、`task.seq`、`triage.notified_at`、`release.*`、`graph.built`、`upgrade.lens_jobs`、`groupcard:<msgid>`。
-- W3 加：`ease` = `{on, since}`（省心，§寸6；只有 push 写，同事务显式发 `ease` 实体 ※；切换另记 `config_changes`）。
+- W3 加：`ease` = `{on, since}`（省心，§寸6；只有 push 写，同事务显式发 `ease` 实体 ※；切换另记 `config_changes`，`file = ease`）；`ease.asked` = 第 3 天问过的那次省心的 `since` ※（一次省心只问一次）。
 - 挪走或不用的：
   - `feishu.owner_dm_chat` → `channel.feishu.owner_dm_chat`（channels/feishu 自己的状态）；
   - `proactive.<day>` → 按 push_queue 算；

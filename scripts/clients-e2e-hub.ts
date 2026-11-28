@@ -19,8 +19,10 @@ import { removeDevice } from "../hub/src/link/devices.ts";
 import { ingest } from "../hub/src/inbox.ts";
 import { itemEnd, itemStart } from "../hub/src/items.ts";
 import { tempHome } from "../hub/test/helpers.ts";
+import { useConfigDir } from "../hub/src/config/load.ts";
 
 const h = tempHome("clients-e2e");
+useConfigDir(h.config);   // push (W3b) reads gate.yaml's presence settings; an empty config dir = the defaults
 const db = openDb(h.db);
 const api = createApi({ db, blobs: h.blobs, hubSha: () => "e2esha", authorize, pump: { tickMs: 20, beatMs: 200 } });
 api.start();

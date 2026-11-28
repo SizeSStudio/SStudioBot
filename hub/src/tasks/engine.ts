@@ -32,6 +32,7 @@ import { touchThread } from "../api/threads.ts";
 import { submitApproval, voidTaskCards } from "../approvals.ts";
 import { redact, redactDeep, StreamRedactor } from "../tools/redact.ts";
 import { log } from "../log.ts";
+import { enqueue } from "../push/queue.ts";
 import { NodeOffline, type NodeRegistry } from "./nodes.ts";
 import { callNodeTool } from "./tools.ts";
 
@@ -865,12 +866,8 @@ export function answerFor(a: Row): { option_id?: string; text?: string; answers?
   return { ...(o ? { option_id: o.id } : {}), ...extra };
 }
 
-/**
- * A line for push (W3b drains push_queue: presence, night, quota). Once per ref. ※ written here until W3b's push
- * module has an enqueue of its own.
- */
+/** A line for push (push/queue.ts decides presence, night, quota from the route table). Once per ref. */
 export function pushNotice(db: Db, ref: string, ln: string, text: string, cat = "notice") {
-  db.run("INSERT OR IGNORE INTO push_queue(cat, ref, lane, domain, text, state, not_before, enq_at) VALUES (?,?,?, 'work', ?, 'wait', ?, ?)",
-    cat, ref, ln, redact(text).slice(0, 300), Date.now(), Date.now());
+  enqueue(db, { cat, ref, lane: ln, domain: "work", text: redact(text).slice(0, 300) });
 }
 

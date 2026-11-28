@@ -27,7 +27,9 @@ import { Pump, type Conn, type PumpOpts } from "./pump.ts";
 import { writeRoutes, type DeviceWrites, type Runs } from "./writes.ts";
 import { taskWriteRoutes, type TaskWrites } from "./task-writes.ts";
 import type { Out } from "./ops.ts";
-import { approvalView, deviceView, headSeq, nodeView, runView, taskView, threadView, timeline, worktreeView } from "./views.ts";
+import { approvalView, deviceView, easeView, headSeq, nodeView, readView, runView, taskView, threadView, timeline, worktreeView } from "./views.ts";
+import { pushRoutes } from "./push-routes.ts";
+import { Push } from "../push/queue.ts";
 
 export type { Caller, Conn, Out };
 /**
@@ -55,6 +57,8 @@ export interface ApiDeps {
   node?: NodeRoutes;
   /** the task engine's writes (W4a); missing: the task write routes 404 */
   tasks?: TaskWrites;
+  /** push (W3b): presence, reads, FCM token, 省心; missing: one is made here and never started (tests) */
+  push?: Push;
 }
 
 const TIMELINE_BOOT = 20, PAGE = 50, PAGE_MAX = 200, LIST_MAX = 200;
@@ -70,7 +74,7 @@ function parse<T extends z.ZodType>(s: T, v: unknown): z.infer<T> | undefined {
 type Handler = (req: Req, caller: DispatchCaller, m: RegExpExecArray) => Out | Promise<Out>;
 
 export class Api {
-  readonly db: Db; readonly blobs: string; readonly pump: Pump;
+  readonly db: Db; readonly blobs: string; readonly pump: Pump; readonly push: Push;
   readonly #d: ApiDeps;
   readonly #authorize: Authorize;
   readonly #routes: { method: Req["method"]; re: RegExp; fn: Handler }[];
@@ -79,6 +83,7 @@ export class Api {
     this.#d = d; this.db = d.db; this.blobs = d.blobs;
     this.#authorize = d.authorize ?? authorize;
     this.pump = new Pump(d.db, d.blobs, d.pump);
+    this.push = d.push ?? new Push({ db: d.db });
     const r = (method: Req["method"], path: string, fn: Handler) => ({ method, re: new RegExp(`^${path}$`), fn });
     this.#routes = [
       r("GET", "/api/v1/meta", () => ({ status: 200, body: this.meta() })),
@@ -97,6 +102,7 @@ export class Api {
       r("GET", "/api/v1/tasks", (q) => this.#tasks(q)),
       r("GET", "/api/v1/tasks/(t\\d{1,15})", (_q, _c, m) => this.#task(m[1]!)),
       r("GET", "/api/v1/nodes", () => this.#nodes()),
+      ...pushRoutes(d.db, this.push).map((w) => r(w.method, w.path, w.fn)),
     ];
   }
 
@@ -143,15 +149,22 @@ export class Api {
       const threads = db.all<Row>("SELECT * FROM threads WHERE status = 'open' ORDER BY pinned DESC, last_item_at DESC").map((r) => threadView(db, r));
       const timelines: BootstrapRes["timelines"] = {};
       for (const t of threads) timelines[t.id] = timeline(db, blobs, t.lane, undefined, TIMELINE_BOOT)!;
+      const approvals = db.all<Row>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC LIMIT ?", LIST_MAX).map((r) => approvalView(db, blobs, r));
+      // read marks of what this snapshot shows (threads, pending approvals)
+      const refs = [...threads.map((t) => `thread:${t.id}`), ...approvals.map((a) => `approval:${a.id}`)];
+      const reads = refs.length
+        ? db.all<Row>(`SELECT * FROM reads WHERE ref IN (${refs.map(() => "?").join(",")})`, ...refs).map(readView) : [];
       return {
         seq: headSeq(db),
         threads,
         timelines,
         runs: db.all<Row>("SELECT * FROM runs WHERE status = 'running' ORDER BY started").map(runView),
-        approvals: db.all<Row>("SELECT * FROM approvals WHERE status = 'pending' ORDER BY id DESC LIMIT ?", LIST_MAX).map((r) => approvalView(db, blobs, r)),
+        approvals,
         tasks: db.all<Row>(`SELECT * FROM tasks WHERE status NOT IN ${ENDED_TASK} ORDER BY ts`).map((r) => taskView(blobs, r, db)),
         devices: db.all<Row>("SELECT * FROM devices WHERE removed_at IS NULL ORDER BY created_at").map(deviceView),
         nodes: db.all<Row>("SELECT * FROM nodes ORDER BY device_id").map((r) => nodeView(db, r)),
+        ease: easeView(db.one<Row>("SELECT v FROM kv WHERE k = 'ease'")),
+        reads,
       };
     });
   }

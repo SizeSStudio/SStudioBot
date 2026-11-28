@@ -6,6 +6,7 @@
 import type { Db, Row } from "./db/db.ts";
 import { gateConf, jobsConf, peopleConf } from "./config/load.ts";
 import { enqueue, toOutlet } from "./outbox.ts";
+import { enqueue as pushEnqueue } from "./push/queue.ts";
 import { ingest } from "./inbox.ts";
 import { localStamp, wallTime } from "./time.ts";
 import { redact, redactDeep } from "./tools/redact.ts";
@@ -92,6 +93,11 @@ export function submitApproval(db: Db, s: ApprovalSpec): number {
     ).lastInsertRowid);
     const a = db.one("SELECT * FROM approvals WHERE id = ?", id)!;
     toOutlet(db, "admin", JSON.stringify(cardOf(a)), { kind: "card", lane: s.origin_lane, run_id: s.run_id, idem: `approval:${id}:card`, cardsOnly: true, noClient: true });
+    // the card goes to the admin outlet above; push tells me where I am (DM, phone) by the route table (§触1.1)
+    pushEnqueue(db, {
+      cat: s.kind === "ask" ? "ask" : "approval", ref: `approval:${id}`, lane: s.origin_lane ?? null, domain: approvalDomain(db, a),
+      text: `等你${s.kind === "send" ? "过目" : "拍板"}：${String(a.title ?? "")}`, expires_at: a.expires_at != null ? Number(a.expires_at) : null,
+    }, now);
     // 改稿 (requestRedraft): the new draft from the same place replaces the card that asked for it ※ — same lane,
     // kind and trigger message, so a triage card for another chat never replaces it
     if (s.origin_lane) {

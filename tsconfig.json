@@ -15,6 +15,6 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["protocol/**/*.ts", "scripts/**/*.ts"],
+  "include": ["protocol/**/*.ts", "hub/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "core", "clients"]
 }

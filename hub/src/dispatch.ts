@@ -61,6 +61,8 @@ export interface DispatchDeps {
   db: Db; h: Home; runner: Runner; node?: NodeClient; batchMax?: number; onItem?: (run_id: string, lane: string, e: ItemEvent) => void;
   /** §底3.4 for the others column; missing → every agent-written reply there waits for approval */
   commitCheck?: CommitChecker;
+  /** card clicks (kind `card`) answered by code (channels/card-rows.ts); set → card rows never become run input */
+  onCard?: (r: Row) => Promise<void>;
 }
 
 export class Dispatcher {
@@ -184,12 +186,26 @@ export class Dispatcher {
       invalidateForOwnerMessage(db, { trigger_msg_id: String(r.source_msg_id) });
       db.run("UPDATE inbox SET payload_json = json_remove(payload_json, '$.withdrawn') WHERE id = ?", Number(r.id));
     }
+    if (this.d.onCard) await this.#cards(this.d.onCard);
     const lanes = db.all<{ lane: string }>(
-      "SELECT DISTINCT lane FROM inbox WHERE status = 'received' AND kind != 'command' AND COALESCE(not_before, 0) <= ?", Date.now());
+      `SELECT DISTINCT lane FROM inbox WHERE status = 'received' AND kind != 'command' ${this.#noCards} AND COALESCE(not_before, 0) <= ?`, Date.now());
     for (const { lane } of lanes) {
       const a = this.#active.get(lane);
       if (a) { await this.#steer(lane, a); continue; }
       this.#start(lane);
+    }
+  }
+
+  get #noCards() { return this.d.onCard ? "AND kind != 'card'" : ""; }
+
+  /** each click once: processing while its handler runs, then done (failed if it threw) */
+  async #cards(handle: (r: Row) => Promise<void>) {
+    const { db } = this.d;
+    for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'card' ORDER BY id")) {
+      if (!Number(db.run("UPDATE inbox SET status = 'processing', tries = tries + 1 WHERE id = ? AND status = 'received'", Number(r.id)).changes)) continue;
+      let status = "done";
+      try { await handle(r); } catch (e) { status = "failed"; log("dispatch", "card click failed", { id: r.id, err: String((e as Error)?.message ?? e).slice(0, 200) }); }
+      db.run("UPDATE inbox SET status = ? WHERE id = ?", status, Number(r.id));
     }
   }
 
@@ -233,7 +249,7 @@ export class Dispatcher {
       // rows after a pending /new wait for it
       const cmd = db.one<{ id: number }>("SELECT MIN(id) AS id FROM inbox WHERE lane = ? AND status = 'received' AND kind = 'command'", lane)?.id ?? null;
       let rows = db.all(
-        `SELECT * FROM inbox WHERE lane = ? AND status = 'received' AND kind != 'command' AND COALESCE(not_before, 0) <= ? ${cmd ? "AND id < ?" : ""} ORDER BY id LIMIT ?`,
+        `SELECT * FROM inbox WHERE lane = ? AND status = 'received' AND kind != 'command' ${this.#noCards} AND COALESCE(not_before, 0) <= ? ${cmd ? "AND id < ?" : ""} ORDER BY id LIMIT ?`,
         ...(cmd ? [lane, Date.now(), cmd, max] : [lane, Date.now(), max]));
       if (breaker) {   // the loop is stopped: only what I type gets through until a run succeeds
         for (const r of rows) if (!ownerTyped(r)) db.run("UPDATE inbox SET status = 'failed' WHERE id = ?", Number(r.id));

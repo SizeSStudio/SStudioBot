@@ -1,6 +1,7 @@
-// Upstream trouble for scheduled work (§底4.3), ported unchanged from core/src/retry.ts (10): what kind of failure it
-// is and when to try again. The inbox requeues scheduled rows with it; timers (W1e) use the same table.
+// Upstream trouble for scheduled work (§底4.3), ported from core/src/retry.ts (10): what kind of failure it is and
+// when to try again. The inbox requeues scheduled rows with it; timers use the same table.
 import { TZ } from "./home.ts";
+import { wallTime } from "./time.ts";
 
 export type UpstreamFailure = { kind: "transient" } | { kind: "limit"; resetAt?: number };
 
@@ -25,12 +26,6 @@ export function classifyUpstream(err: string | undefined, now = Date.now()): Ups
 }
 
 const MONTHS = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
-
-function wallTime(y: number, mo: number, d: number, h: number, mi: number, tz: string) {
-  const asUtc = Date.UTC(y, mo - 1, d, h, mi);
-  const shown = Date.parse(new Date(asUtc).toLocaleString("sv-SE", { timeZone: tz }).replace(" ", "T") + "Z");
-  return asUtc - (shown - asUtc);
-}
 
 /** "resets 11pm (Asia/Singapore)" · "resets Nov 19, 2am (Asia/Singapore)" · "resets 11:30pm" */
 export function parseReset(text: string, now = Date.now()): number | undefined {

@@ -16,3 +16,26 @@ export function tempHome(tag = "hub"): Home {
   mkdirSync(h.config, { recursive: true });
   return h;
 }
+
+/**
+ * A home the ported (ambient-db) modules can use: SBOT_HOME points at it, config files as given, db opened and bound.
+ * Config values are fictional; ids look like Feishu's shape only so the routing code sees what it expects.
+ */
+export async function ambientHome(tag: string, config: Record<string, string> = {}, secrets?: string) {
+  const { writeFileSync } = await import("node:fs");
+  const { useConfigDir } = await import("../src/config/load.ts");
+  const { openDb } = await import("../src/db/db.ts");
+  const { setDb } = await import("../src/db/ambient.ts");
+  const { loadSecrets } = await import("../src/secrets.ts");
+  const h = tempHome(tag);
+  process.env.SBOT_HOME = h.root;
+  delete process.env.SBOT_SECRETS;
+  useConfigDir(h.config);
+  for (const [f, t] of Object.entries(config)) writeFileSync(join(h.config, f), t);
+  if (secrets !== undefined) writeFileSync(h.secrets, secrets, { mode: 0o600 });
+  loadSecrets(h.secrets, h.keys);   // as boot does; also clears the previous test's values
+  mkdirSync(join(h.agentHome, "matters"), { recursive: true });
+  const db = openDb(h.db);
+  setDb(db);
+  return { h, db };
+}

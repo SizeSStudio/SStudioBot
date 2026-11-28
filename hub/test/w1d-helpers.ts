@@ -9,7 +9,7 @@ import { ensureConfigRepo } from "../src/config/seed.ts";
 import { loadSecrets } from "../src/secrets.ts";
 import { refreshKnown, redact } from "../src/tools/redact.ts";
 import { setRedactor } from "../src/log.ts";
-import type { OutChannel, OutboxRow, SendResult } from "../src/outbox.ts";
+import type { OutboxRow, RegisteredChannel as OutChannel, SendResult } from "../src/channels/types.ts";
 
 export const OWNER_FEISHU = "ou_fakeowner0001";
 

@@ -27,6 +27,8 @@ export class Channel {
   t!: Transport;
   hello!: HubHello;
   frames: Frame[] = [];
+  /** when each of `frames` arrived (performance.now()) */
+  at: number[] = [];
   /** every raw WS message both ways, as the relay sees them on the device side */
   wire: Buffer[] = [];
   closed: Promise<{ code: number; reason: string }>;
@@ -46,7 +48,7 @@ export class Channel {
     try { bytes = this.t.open(m); } catch { return; }
     if (bytes === null) return;
     const f = parseFrame(new TextDecoder().decode(bytes));
-    if (f) { this.frames.push(f); this.#wake(); }
+    if (f) { this.frames.push(f); this.at.push(performance.now()); this.#wake(); }
   }
 
   sendFrame(f: Frame) { for (const p of this.t.seal(new TextEncoder().encode(encodeFrame(f)))) this.raw(p); }

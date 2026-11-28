@@ -3,8 +3,8 @@
 import http from "node:http";
 
 export type Step =
-  | { text: string }
-  | { tool: { name: string; input: Record<string, unknown>; id?: string }; text?: string }
+  | { text: string; pace?: number }
+  | { tool: { name: string; input: Record<string, unknown>; id?: string }; text?: string; pace?: number }
   | { hang: true }
   | { status: number; body: string }
   | { later: Promise<Step> };
@@ -20,13 +20,16 @@ export interface FakeLlm {
 
 const ev = (type: string, data: Record<string, unknown>) => `event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
 
-export function sse(step: { text: string } | { tool: { name: string; input: Record<string, unknown>; id?: string }; text?: string }, model: string, n: number): string {
+type Answer = { text: string; pace?: number } | { tool: { name: string; input: Record<string, unknown>; id?: string }; text?: string; pace?: number };
+
+/** `pace` (ms): the text one character per event, an event every `pace` ms, like a model typing (streaming tests). */
+export function sse(step: Answer, model: string, n: number): string {
   let out = ev("message_start", { message: { id: `msg_fake_${n}`, type: "message", role: "assistant", model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 11, output_tokens: 1 } } });
   let i = 0;
   const text = "text" in step ? step.text : undefined;
   if (text) {
     out += ev("content_block_start", { index: i, content_block: { type: "text", text: "" } });
-    for (const part of text.match(/.{1,6}/gsu) ?? []) out += ev("content_block_delta", { index: i, delta: { type: "text_delta", text: part } });
+    for (const part of text.match(step.pace ? /./gsu : /.{1,6}/gsu) ?? []) out += ev("content_block_delta", { index: i, delta: { type: "text_delta", text: part } });
     out += ev("content_block_stop", { index: i });
     i++;
   }
@@ -66,6 +69,12 @@ export async function fakeLlm(respond: FakeLlm["respond"] = () => ({ text: "å¥½ç
       if ("status" in step) { res.writeHead(step.status, { "content-type": "application/json" }).end(step.body); return; }
       if (body.stream === false) {
         res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: `msg_fake_${n}`, type: "message", role: "assistant", model: body.model, content: [{ type: "text", text: "text" in step ? step.text : "" }], stop_reason: "end_turn", usage: { input_tokens: 11, output_tokens: 7 } }));
+        return;
+      }
+      if (step.pace) {
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        for (const e of sse(step, String(body.model ?? ""), n).split(/(?<=\n\n)/)) { res.write(e); await new Promise((r) => setTimeout(r, step.pace)); }
+        res.end();
         return;
       }
       res.writeHead(200, { "content-type": "text/event-stream" }).end(sse(step, String(body.model ?? ""), n));

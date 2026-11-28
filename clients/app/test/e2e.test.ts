@@ -33,9 +33,16 @@ let ctlId = 0;
 const ctl = (cmd: string, args: Record<string, unknown> = {}): Promise<Record<string, unknown>> =>
   new Promise((resolve) => { const id = ++ctlId; waiters.set(id, resolve); hub.stdin.write(JSON.stringify({ id, cmd, ...args }) + "\n"); });
 
-// every socket the machine opens is a real one; we only count them
+// every socket the machine opens is a real one; we only count them, and what goes out on them
 const urls: string[] = [];
-const openSocket = (u: string): SocketLike => { urls.push(u); return new WebSocket(u) as unknown as SocketLike; };
+let sent = 0;
+const openSocket = (u: string): SocketLike => {
+  urls.push(u);
+  const ws = new WebSocket(u);
+  const send = ws.send.bind(ws);
+  ws.send = (d) => { sent++; send(d); };
+  return ws as unknown as SocketLike;
+};
 
 // a software Ed25519 key standing in for the Keystore / safeStorage ones; same bytes signed
 const makeSigner = (): Signer => {
@@ -105,6 +112,36 @@ test("live: a new input arrives as an ev; the reply streams as deltas and is rep
   await until("run done", () => store.get("run", String(run))?.data.status === "done");
 });
 
+test("a tool starts and ends live: the item ev comes as running, then done", async () => {
+  const { run } = await ctl("run", { lane: LANE });
+  const { item } = await ctl("tool_start", { run, lane: LANE, name: "bash" });
+  const seen: string[] = [];
+  const off = store.subscribe(() => { const s = store.get("item", String(item))?.data.status; if (s && seen.at(-1) !== s) seen.push(s); });
+  await until("running", () => store.get("item", String(item))?.data.status === "running");
+  await ctl("tool_end", { item });
+  await until("done", () => store.get("item", String(item))?.data.status === "done");
+  off();
+  assert.deepEqual(seen, ["running", "done"]);
+  await ctl("end_run", { run });
+});
+
+test("switching threads reads the store: both timelines are there, and nothing goes out on the socket", async () => {
+  const OTHER = "console:t:th_e2e00002";
+  await ctl("say", { lane: OTHER, text: "另一个线程里的一句" });
+  await until("the second thread", () => !!store.threadByLane(OTHER) && store.timeline(OTHER).length === 1);
+  await new Promise((r) => setTimeout(r, 100));
+  const before = sent;
+  // what thread/[id].tsx and Timeline read when I switch (useEntity / useTimeline): store only
+  for (let i = 0; i < 5; i++) for (const lane of [LANE, OTHER]) {
+    const th = store.threadByLane(lane)!;
+    assert.ok(store.get("thread", th.data.id));
+    assert.ok(store.timeline(lane).length > 0);
+    store.liveOn(lane);
+  }
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(sent, before, "no frame sent");
+});
+
 test("the network drops: reconnect authenticates (no pairing again) and fills in by seq — nothing missing, nothing twice", async () => {
   const before = store.seq;
   const sessions = urls.length;
@@ -122,6 +159,27 @@ test("the network drops: reconnect authenticates (no pairing again) and fills in
   assert.deepEqual(t.slice(-2), ["断线时说的一句", "又一句"]);
   assert.ok(store.seq > before);
   assert.equal((await ctl("state")).invites_used, 1, "the code was not used twice");
+});
+
+test("five drops in a row, lines coming in while down and while up: nothing missing, nothing twice", async () => {
+  delays.length = 0;
+  for (let i = 1; i <= 5; i++) {
+    const sessions = urls.length;
+    await ctl("say", { lane: LANE, text: `第${i}轮连着时` });
+    await until(`round ${i} live line`, () => texts().includes(`第${i}轮连着时`));
+    await ctl("drop");
+    await until(`round ${i} dropped`, () => conn.state.s !== "live");
+    await ctl("say", { lane: LANE, text: `第${i}轮断着时甲` });
+    await ctl("say", { lane: LANE, text: `第${i}轮断着时乙` });
+    await until(`round ${i} live again`, () => conn.state.s === "live" && urls.length > sessions, 15_000);
+    await until(`round ${i} filled in`, () => texts().includes(`第${i}轮断着时乙`));
+  }
+  const t = texts();
+  assert.equal(new Set(t).size, t.length, `no duplicates: ${t.join(" / ")}`);
+  const mine = t.filter((x) => /^第\d轮/.test(x ?? ""));
+  assert.deepEqual(mine, [1, 2, 3, 4, 5].flatMap((i) => [`第${i}轮连着时`, `第${i}轮断着时甲`, `第${i}轮断着时乙`]), "all of them, in order");
+  // the hub re-registers on its own 1 s timer (not shrunk), so a round waits 1, 2, 5 … meanwhile; each starts at 1 s again
+  assert.equal(delays.filter((d) => d === 1000).length, 5, `the backoff starts over after each time it was live: ${delays.join(",")}`);
 });
 
 test("hub offline: 4404 → waiting_hub, backing off 1, 2, 5 …; it comes back on its own", async () => {

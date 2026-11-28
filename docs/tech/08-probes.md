@@ -193,8 +193,8 @@
 结果（2026-11-28；**没有测试应用，只做了依赖审计、读源码和测试架子，真测都在最后一条「等测试应用」**；代码在分支 `probe/p9` 的 `probes/p9/`，README 有跑法）：
 
 - **暂定官方 SDK（`@larksuiteoapi/node-sdk` 1.77.0，精确锁）※ 待测试应用实测确认**。纸面上点击和 CardKit 两项它过，依赖里没有原生模块，不起子进程；lark-cli 的 CardKit 一项按旧耗时推算不过，确认又发在落库之前，不合 03 的「写 `inbox`、提交、确认」。按纸面结果套 08 的规则（只有一边过就选它）。用法有几条必须照做，见下。
-- ※ **断网时的点击（我定的，等你过目）**：卡片回调飞书不重投，两个后端都补不回来，这是飞书的性质，分不出两个后端的高下，所以门槛里的「期间的事件」不含点击，回调单列。断线期间的点击算丢：卡片还在，恢复后再点；审批本身在主的 `approvals` 里，客户端也能批，不只靠飞书卡片（飞书是渠道之一，§触6.6）。重连后主把还挂着的审批卡重新刷一遍状态，点过没生效的能看出来（W1e）。
-- **范围**：这个选择只管 bot 身份的收事件、卡片回调、发消息、CardKit。user 身份轮询群（§读2.2）、查已读、飞书邮箱，旧代码靠 lark-cli 的 user 登录（`--as user`），P9 没测。※ 这部分先照旧用主机器上装的 lark-cli（已装程序，不进 lockfile）；SDK 能带 user token 调接口（`withUserAccessToken`），但授权和续期要自己做，换不换在 W1e 开工前定。
+- ※ **断网时的点击（我定的，等你过目）**：卡片回调飞书不重投，两个后端都补不回来，这是飞书的性质，分不出两个后端的高下，所以门槛里的「期间的事件」不含点击，回调单列。断线期间的点击算丢：卡片还在，恢复后再点；审批本身在主的 `approvals` 里，客户端也能批，不只靠飞书卡片（飞书是渠道之一，§触6.6）。重连后主把还挂着的审批卡重新刷一遍状态，点过没生效的能看出来：W1e 的插件在重连时补漏消息、给了改卡的 `updateCard`，刷审批卡要读 `approvals`，归 W1d 接（03 approvals）。
+- **范围**：这个选择只管 bot 身份的收事件、卡片回调、发消息、CardKit。user 身份轮询群（§读2.2）、查已读、飞书邮箱，旧代码靠 lark-cli 的 user 登录（`--as user`），P9 没测。※ 这部分先照旧用主机器上装的 lark-cli（已装程序，不进 lockfile）；SDK 能带 user token 调接口（`withUserAccessToken`），但授权和续期要自己做。W1e 定了：先不换，user 身份的几样留在 `hub/src/channels/feishu/user.ts` 一个文件里（`Lark` 类型），以后换只动它。
 
 依赖（`npm install --ignore-scripts`，临时目录；SDK 在 Node 24.22.3 和 25.8.1 下都能被 `.ts` 具名导入）：
 
@@ -221,7 +221,7 @@
 - **重连**：SDK 向 `/callback/ws/endpoint` 取连接地址和 `ClientConfig`；连接关了就自动重连：第一次等 `0..ReconnectNonce` 秒的随机数，之后每 `ReconnectInterval` 秒一次，次数默认不限；SDK 默认值 nonce 30 s、interval 120 s、ping 120 s，服务端下发的覆盖它。所以断 30 秒后最坏可能要 `nonce + interval`（默认约 150 s）才连回，要看服务端实际下发的值。**半开的链路默认发现不了**：要设 `wsConfig.pingTimeout`（默认关）和 `handshakeTimeoutMs`，否则 TCP 悄悄死了不会触发重连；架子里测过 stall 能被看门狗发现。`onError`（取不到地址、重连次数用尽）要接，不然永久断了没人知道。
 - **去重和补漏**：`WSClient` 自己不去重。事件处理失败时飞书按 15 秒、5 分钟、1 小时、6 小时重投（最多 4 次），**回调不重投**；断线期间推的事件是否同样重投，待实测。按 04 的表：消息按 `message_id` 进 `inbox` 的 UNIQUE（lark-cli 的字段说明也建议用它），卡片回调按 `event_id`。重连后用会话历史补漏——旧 `catchUp()` 只补我和 bot 的私聊，新插件要定补哪些会话。
 - **长连接限制**（官方文档）：只支持自建应用；每个应用最多 50 条，事件随机发给其中一条（所以新旧两边不能同时吃一个应用，09）。
-- **日志泄露密钥**：`TokenManager` 取令牌失败时 `logger.error(e)` 打整个 `AxiosError`，其中 `config.data` 是含 `app_secret` 的请求体；`Client.request` 失败也打原始错误（含 Bearer 令牌的请求头）。这违反「密钥只写不读、不进日志」，必须传自己的 `logger`（只留名字、消息、HTTP 状态、API 码并过打码）。架子里有一条对照：同样的失败，SDK 默认日志里能找到 secret，我们的找不到。升级 SDK 要重跑这两条。
+- **日志泄露密钥**：`TokenManager` 取令牌失败时 `logger.error(e)` 打整个 `AxiosError`，其中 `config.data` 是含 `app_secret` 的请求体；`Client.request` 失败也打原始错误（含 Bearer 令牌的请求头）。这违反「密钥只写不读、不进日志」，必须传自己的 `logger`（只留名字、消息、HTTP 状态、API 码并过打码）。架子里有一条对照：同样的失败，SDK 默认日志里能找到 secret，我们的找不到。升级 SDK 要重跑这两条。W1e 在主里也钉了一条（`hub/test/feishu-sdk.test.ts`，本地假服务器）：1.77.0 自己的日志里有 secret，`SdkBackend` 的日志和错误里没有；哪天升级后不再泄露，那条会故意失败，提醒改这里。
 - **CardKit 限频（官方文档）**：流式卡片内容更新接口 1000 次/分、50 次/秒（页面没写按应用还是按卡片），单张卡实体另限 10 次/秒（流式模式下不计）；每秒 2 次是 120 次/分，单张卡有余量，若 1000 次/分按应用计，同时流式的卡超过 8 张就超；流式模式每 10 分钟自动关；流式开着时点击不能更新卡片，要先关流式。消息更新（PATCH）5 次/秒/条，卡片 14 天内可改，需要 `update_multi`；限频错误是 HTTP 429 或 99991400。
 - **lark-cli 事件模式**：一个 EventKey 一个 `event consume` 进程，背后一个脱机的 bus 守护进程（最后一个消费者走后 30 秒退出）；Go SDK 收到事件后立刻确认，再经 bus 分给消费者，bus 内存去重（5 分钟、1 万条）、每个消费者 100 条缓冲、满了丢最旧的；没有消费者的事件确认后就没了。没有 CardKit 子命令，只能用 `api`。本机没有 bus 而应用已有别的长连接时（`online_instance_cnt > 0`）拒绝启动。
 - 来源（open.feishu.cn/document/ 下）：`server-docs/event-subscription-guide/overview`、`event-subscription-guide/callback-subscription/callback-overview`、`feishu-cards/card-callback-communication`、`cardkit-v1/streaming-updates-openapi-overview`、`cardkit-v1/card-element/content`、`server-docs/im-v1/message-card/patch`、`server-docs/event-subscription-guide/event-subscription-configure-/request-url-configuration-case`（长连接）、`server-docs/api-call-guide/frequency-control`。
@@ -235,7 +235,8 @@
 3. `stream` 两个后端各一遍：2 次/秒 2 分钟有没有 429、lark-cli 实际每秒几次。
 4. 卡片回调是不是以 `event` 帧到达 SDK 的、载荷字段和上面一致；服务端实际下发的 `PingInterval`、`ReconnectInterval`、`ReconnectNonce`。
 5. CardKit 的 1000 次/分到底按应用还是按卡片计。
-6. user 身份读群和邮箱能不能不靠 lark-cli（不在 P9 的门槛里，W1e 开工前定）。
+6. user 身份读群和邮箱能不能不靠 lark-cli（不在 P9 的门槛里；W1e 暂时照旧用 lark-cli）。
+7. W1e 的飞书插件（`hub/src/channels/feishu/`）在测试应用上走一遍：`shadow` → `live`，私聊一轮、`/tasks`、工作台话题、卡片点两次（只进一行）、别人点被拒、断网后 `catchUp` 补回的消息。
 
 ## P10 换模型时有未完的工具调用（IC-11）
 

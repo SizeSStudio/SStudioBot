@@ -13,13 +13,14 @@
 
 - 飞书后端暂定官方 SDK `@larksuiteoapi/node-sdk` 1.77.0（P9 ※，纸面；lark-cli 的 CardKit 按每次约 3 s 推算过不了）。有测试应用后照 08 P9 的清单真测，不过再换。
 - 断网期间的卡片点击算丢（P9 ※，08）：飞书不重投回调，两个后端都一样；卡片还在，恢复后再点，审批也能在客户端批。
-- user 身份读群、查已读、飞书邮箱先照旧用主机器上的 lark-cli（P9 ※，03），W1e 开工前再看能不能换 SDK。
+- user 身份读群、查已读、飞书邮箱、批准后以我名义发，照旧用主机器上的 lark-cli（P9 ※，03）：W1e 看过，SDK 的 user 令牌要自己做授权和续期，先不换，都关在 `feishu/user.ts` 一个文件里。
 - SDK 默认日志会带出 `app_secret` 和令牌（P9 读源码发现）：飞书插件必须传自己的打码 logger，升级 SDK 要重跑那两条测试。
 - 主和节点的 Noise 加密用 `node:crypto`（OpenSSL）而不是 noble（P1 定的 ※，02）：同一接口，快 5 倍，两个后端字节一致、互通。想全用 noble 说一声，改一行 `useCrypto`。
 - 旧库只有约 11 天的消息；按实测，W6 全量重读的模型花费约 18 美元（30 美元的默认上限以内，04 §13）。正式 `import plan` 超 30 美元时我会停下来问。
 
 - W1c 的 ※（#43、03、changelog）：放宽项新加了换管理群或工作台群、飞书 `shadow` → `live`、出口组加出口、换备份公钥、加备份推送节点、owner ID 新填或换掉；备份由 03:30 的 `backup` 任务跑，没公钥只通知不拦启动；`sbot restore` 本地跑，`--force` 是挪开不删；`daily_budget_usd` 和 `budgets.daily_cost` 都写时取小的；§寸8 补了 `breaker: 3`、`stuck_minutes: 20`、`tidy_wait_minutes: 30` 三个默认值。
 - 恢复时 home 外已有的 `secrets.env`（线上布局）也算「不是空的」，要 `--force`，旧的复制进 `.pre-restore-…/`（审 #43 时我改的）。
+- W1e 的 ※（03）：Linux 主上 command 源先不接运行器（`worker-exec` 还没有插件模式），明确报错、不以主的身份跑；分拣没有模型就不启动，消息留 `pending`；分拣提醒和 Sentinel 告警在 push 接上前走管理通知出口；搬来的账本类模块用 `db/ambient.ts`；异地备份的 Sentinel 检查等备份同步到节点再加；`memory/tuning.ts`、`config/secrets.ts` W1d 别再抄一份。
 - 安卓客户端代码块折叠阈值 400 → 200 行，仍先显示前 80 行（P11 ※，08）：400 行整块一个 `<Text>` 时安卓 UI 线程卡 20 多秒。
 - 节点上 Claude Code 的工作区信任默认不预记，只用用户级规则；按仓库开、默认关、走 `widening()`（P5–P8 ※，05）。预记会让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，等于跑仓库里的代码。
 - ACP 新 session 默认 `auto`、不发权限请求，节点建 session 后切到 `default`（P5–P8，05）。
@@ -58,5 +59,5 @@
 | W1b Noise | 从 `probe/p1` 搬 `protocol/noise/`，过 cacophony 向量 | 我（照搬 + 逐行审） | 已合 #39 |
 | W1c 主的基座 | config（zod、`widening()`、表单描述、唯一写路径、`config_changes`、seed 同步）、db（04 全部表、`change_log` 触发器、清理）、cli 骨架、backup + restore、`hub/test/test-home.sh` | 子线程（Opus），我审 | 已合 #43（审后我改了 restore 对 home 外 `secrets.env` 的处理、`self.yaml` 不进 `config_changes`；部署机冒烟 22/22） |
 | W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | PR 审中（分支 `w1d-hub-run`） |
-| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 进行中，分支 `w1e-hub-channels`（和 W1d 并行，接口按 03 channels 节） |
+| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 交 PR 待审，分支 `w1e-hub-channels`（和 W1d 并行，接口按 03 channels 节） |
 | W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 我 | |

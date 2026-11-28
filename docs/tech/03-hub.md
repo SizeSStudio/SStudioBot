@@ -40,6 +40,8 @@
 
 模块之间直接 import 函数，不搞事件总线；跨模块的状态变化只经数据库加 `emit`。
 
+从旧核心搬来的账本类模块（ledgers、memory 读、timers、sources、triage）用 `db/ambient.ts` 的 `one/all/run/tx/kvGet/kvSet` ※：`boot` 里 `setDb(db)` 一次，关停时清掉；省得每个函数加一个 `db` 参数、和旧代码逐行对不上。新写的、要单独测的模块照 W1c 传 `Db`；测试用 `helpers.ts` 的 `ambientHome()`。
+
 ## inbox 和 run（§底1.2）
 
 - 渠道和 API 的 handler 只做「写 `inbox`、提交、确认」。飞书长连接的回调 3 秒内必须回，所以写库之外什么都不做。
@@ -121,14 +123,25 @@ interface ChannelPlugin {
   start(h: ChannelHost): Promise<void>;          // 收：每条消息、卡片回调、撤回 → h.ingest(...)（只写 inbox）
   send(o: OutboxRow): Promise<SendResult>;       // 发：bot 身份；以我名义的只在 approval 批准后
   render(card: Card): unknown;                   // 渠道卡片
-  stream?(lane: string): StreamHandle;           // 流式卡片
+  stream?(ctx: { runId; lane; turn: TurnContext }): StreamHandle;   // 流式卡片，插件自己先写 outbox 行（算副作用）
   stop(): Promise<void>;
 }
+interface ChannelHost {                         // W1e 的最小实现 channels/inbox-port.ts，W1d 的 inbox 接手
+  ingest(i: IngestItem): { fresh; inboxId? };   // 同步、一个事务：messages 行（有就写）+ inbox 行；UNIQUE(source, source_msg_id) 去重
+  record(m: MessageRow): boolean;               // 只进分拣的（群、别人的私聊）：只写 messages，triage_status=pending
+  kick(): void;                                 // 提交后叫醒派发
+}
+type SendResult = { msg_id: string | null; shadow?: true };   // shadow = 没发，只记了日志
 ```
+
+- 接口在 `hub/src/channels/types.ts`；注册表 `channels/registry.ts`（`registerChannel`、`channel(id)`、`startChannels(host)`），W1d 的 outbox 按名字找插件调 `send()`。
+- lane：我的私聊 `feishu:dm`（`/` 开头的是 `command`）；工作台 `feishu:wb:<root>`；管理群里我发的 `feishu:console`，只当命令；卡片点击 `card`（`source=feishu:card`，按 `event_id` 去重，payload 只有 `value`，不存回调 token）。别人的消息只 `record`，不进 inbox。
+- `channels.yaml` `feishu.mode: shadow`：不连长连接、不收卡片回调，`send()` 只记日志返回 `{msg_id:null, shadow:true}`，`stream()` 直接是 failed；user 身份的轮询照跑（测试 home 用，09）。没有 `FEISHU_APP_ID/SECRET` 时 bot 身份不起（`state()=no-bot`），默认关。
+- 密钥读取 `config/secrets.ts`：`secret(name)` 只给插件拿去连接，`secretValues()` 只给打码用；不进 env、日志、事件。
 
 - 插件跑在主上（飞书：用主自己的登录），或跑在节点上（以后微信在 Windows 节点）：节点上的插件经 `/node/v1/channel/*`（02）和主往返：收到的走 `ingest` 上来，主要发的走 `send` 下去；主侧是一个代理插件 ※。主只看 `caps`。
 - 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；消息按 `message_id`、卡片回调按 `event_id` 去重（04）；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /tasks /approvals /todo /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。
-- 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。user 身份轮询、查已读和邮箱 ※ 先照旧走主机器上装的 lark-cli，W1e 开工前定。
+- 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。W1e 用 SDK 1.77.0 实现了 `feishu/sdk.ts`；它自己的日志会把带 `app_secret` 的原始请求交出去（`hub/test/feishu-sdk.test.ts` 钉住了），所以一律传 `safeSdkLogger`（打码 + 只留状态码）。user 身份轮询、查已读、飞书邮箱和以我名义发（批准后）※ 仍走主机器上装的 lark-cli（`feishu/user.ts` 的 `Lark` 类型，测试里换假的）：SDK 的 user 令牌要自己做 OAuth 和刷新，W1 不值得；以后换只动这一个文件。以我名义只发纯文本，没有 `approval_id` 直接拒。
 
 ## sources（SourcePlugin）
 
@@ -137,6 +150,9 @@ interface ChannelPlugin {
 - 契约：stdin 一行 JSON `{ v: 1, since, cursor, env }`；stdout 每行一条 `{ kind: "item", id, ts, where, author?, text, link?, raw_b64? }` 或最后一行 `{ kind: "done", cursor }`；stderr 进日志；退出码非 0 = 这次失败，游标不前进。不设时长和输出上限。
 - **排除名单**（Y5）：`sources.yaml` 加 `exclude: { chats: [], persons: [], mails: [] }`；在 `sources` 和飞书插件 `ingest` 处代码卡住，进不了 `messages`。改它是收窄，不走 `widening()`；删条目是放宽，走。
 - 进来的东西和群消息走同一条路：`messages` → 分拣 → 事件 → 挂到事。
+- 接口（`hub/src/sources/types.ts`）：`SourcePlugin { kind, zh, poll(s, state, since, cursor) → { items, cursor? } }`；`state` 是 `<root>/sources/<id>/` 目录加按源的 kv。kv `source.<id>.since` 记上次成功的开始时间（下次往前重叠 5 分钟），`source.<id>.cursor` 记插件给的游标；失败两个都不动。item 可带 `to_me`、`from_me`、`parties`（邮件的收发人，给排除名单用）、`raw_b64`（进 CAS，`raw_ref` 记在 `raw_json`）。只收 http(s) 链接。
+- command 插件运行器 ※：Mac、Windows 当主时 `localPluginRunner`（同一用户、最小 env、`HOME=` 插件状态目录）。Linux 上 `worker-exec` 还没有插件模式（`deploy/`，另开 PR），这期间不接运行器，command 源明确报「这台主上还没接插件运行器」，不退回以主的身份跑。插件要 `FEISHU_APP_*` 或模型的 `key_ref` 一律拒（主自己的密钥）。
+- 分拣（`hub/src/triage/`）：W1d 管的都经 `TriageDeps { complete?, runDraft?, submitSend?, notice?, readIds?, kick? }` 注入。没有 `complete` 就不启动（只靠规则会把消息一次判死），消息留 `pending`；缺 `runDraft` 或 `submitSend` 时 draft 降成 notify（「起草没接上」）。草稿只经 `submitSend`（`as_identity: "user"` 的 send 审批）出去。notice 在 push 接上前走 `notify.admin`。
 
 ## memory
 
@@ -144,7 +160,8 @@ interface ChannelPlugin {
 - journal 每行 `- [HH:MM][run=<id>][src=<标签>] …`，来源由工具层填。
 - `memory_search` / `wiki_search`：每处截断都在第一行报完整度（「共 N 页命中，显示 X 页，每页前 4 行；还有 M 页」），给 `offset` 翻页；`memory_read` 截断时报「读到 12000 / 共 N 字」（R7）。
 - `forget`、`memory_patch` 逐条改、比对出处数、dream 的删改比例和净增上限，照 §读1.3、§附2.16。
-- 原始资料：`raw/sha256/<前两位>/<sha>` 本地内容寻址，只增不改。
+- 原始资料：`raw/sha256/<前两位>/<sha>` 本地内容寻址，只增不改。`memory/pages.ts` 的 `putRaw`/`readRaw`（`raw:<sha256>`，`raw_sources` 第一个写的人算出处）。
+- W1e 搬了读的一半：`memory/wiki.ts`（`searchWiki`）、`memory/pages.ts`（`readPage`、`safePath`、`journalLine`）、`memory/tuning.ts`（经我批准的提示词调整，W1d 拼提示词也要用，别再抄一份）。写队列和 dream 不在 W1e。
 - seed 同步照 §底1.5；seed 在 `hub/seed/`。改 seed 里的 `jobs.yaml` 到不了已有实例：新增默认 job 走启动时追加（照旧 `addDefaultLensJobs()`），kv 记只做一次，管理通知一句（Y11）。
 
 ## timers 和 Sentinel（§底4）
@@ -158,7 +175,9 @@ interface ChannelPlugin {
   - 不设时长和输出上限。
   - check 命令和 `bash` 过同一个命令守卫 ※（命令是我写在 `jobs.yaml` 里的，但它在 bash 那儿跑）；被拒算「脚本坏了」。W1d 给出 `runCheck()`，到点调用是 timers（W1e）的事。
 - 上游错误重试照 §底4.3，照搬旧 `retry.ts` 的分类和退避表。
-- Sentinel 每 5 分钟，纯代码，告警经 `push`（`alert_security` / `alert_ops`）。
+- Sentinel 每 5 分钟，纯代码，告警经 `push`（`alert_security` / `alert_ops`）。W1e 里 `Sentinel({ alert })` 注入出口，push 接上前默认 `notify.admin`；每类一次一条，同一项在 `again` 窗口内不重复，恢复了清掉，再坏再报；状态在 kv `sentinel.state/findings/last`。查：审批挂 2 小时、非任务 run 跑 20 分钟、任务 20 分钟没动静、24 小时内 outbox 失败或不确定、代理错误率、预算到八成、飞书 user 授权（security）、夜间备份超 30 小时、job 上次失败。异地备份那项等备份同步到节点再加 ※。
+- 搁着（§寸5）：`ledgers/matters.ts` 的 `OPEN`（含 paused）、`NAGGING`（不含）、`RESURFACED`（paused 且 `last_activity_at > paused_at`）三个 SQL 片段；`pauseMatter`/`resumeMatter` 连同子事一起改，撤销能还原 `paused_at`、`last_activity_at`。
+- `check` 的执行者是注入的 `CheckRunner`（W1d 接本机节点）；没接上算脚本坏了（退出码 −1），照常跑 run 并告警，不换别的办法跑。
 
 ## push（§触1.1 路由表）
 

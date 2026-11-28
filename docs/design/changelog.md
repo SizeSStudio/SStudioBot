@@ -2,6 +2,9 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### W0 探针 P5–P8（2026-11-28）
+四个适配器实测，结果在 `tech/08-probes.md`。设计里只改一处措辞：§办3.2 的适配器表，ACP 续接的 `unstable_resumeSession` 现名 `session/resume`；pi 没有 `--mcp-config`，我们的 MCP 靠节点带的扩展挂。其余细节（Claude 的工作区信任 ※ 默认不预记、按仓库开、ACP 新 session 要切到 `default` 才有权限请求等）在 `tech/05-node.md`。
+
 ### W1c 主的基座（2026-11-28）
 施工里对出来的几处，设计跟着改；※ 的都是推出来的，等我过目。
 - §寸8 的 `measure` 补上正文里已有的三个默认值：`breaker: 3`（Y8）、`stuck_minutes: 20`（§办 卡住）、`tidy_wait_minutes: 30`（§读3.2 整理卡）。

@@ -57,6 +57,11 @@ import { RelayLink } from "./link/relay-link.ts";
 import { authorize } from "./link/roles.ts";
 import { secret } from "./secrets.ts";
 import { consoleConf } from "./config/load.ts";
+import type { NodePeer, Session } from "./link/session.ts";
+import { NodeRegistry } from "./tasks/nodes.ts";
+import { TaskEngine } from "./tasks/engine.ts";
+import { nodeRoutes } from "./tasks/node-api.ts";
+import { nodeTools } from "./tasks/tools.ts";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -72,7 +77,7 @@ export const VERSION = (JSON.parse(readFileSync(join(APP, "hub", "package.json")
 export interface Hub {
   h: Home; db: Db; admin: Server; startedAt: number;
   proxy: import("node:http").Server; outbox: Outbox; node: NodeLink; dispatcher: Dispatcher; runner: Runner; api: Api;
-  hubKey: HubKey; link: LinkService;
+  hubKey: HubKey; link: LinkService; nodes: NodeRegistry; tasks: TaskEngine;
   close(): Promise<void>;
 }
 
@@ -178,6 +183,10 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => proxy.close() });
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
+    // nodes and tasks (W4a): the registry answers hello; the engine runs task lanes and talks to sessions on nodes
+    const nodes = new NodeRegistry({ db, hubSha: () => revision().sha, tools: nodeTools });
+    let pumpItem: ((run: string, lane: string, e: import("./runner/types.ts").ItemEvent) => void) | undefined;
+    const tasks = new TaskEngine({ db, h, nodes, onItem: (run, lane, e) => pumpItem?.(run, lane, e) });
     // the one role check (link/roles.ts) at the dispatcher's entry, for every transport
     // triage is started with the channels below; a redraft for one of its cards goes to it (approvals.requestRedraft)
     const side: { triage?: Triage } = {};
@@ -186,9 +195,14 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const api = createApi({
       db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt, hubKey, link }), authorize,
       runs: { activeRun: (l) => late.d?.activeRun(l), stopLane: (l) => late.d?.stopLane(l) ?? false },
-      devices: link, redraftTriage,
+      devices: link, redraftTriage, tasks,
+      node: nodeRoutes({ blobs: h.blobs, nodes, engine: tasks }),
     });
     ensureMainThread(db);
+    pumpItem = (run, lane, e) => api.pump.onItem(run, lane, e);
+    // the local node's requests: the same dispatcher, as device `local`, role `node`
+    node.handle = (req, peer) => api.dispatch(req, { device_id: "local", role: "node", peer });
+    node.onGone = () => nodes.gone("local");
     const dispatcher = late.d = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
       onItem: (run, lane, e) => api.pump.onItem(run, lane, e),
       onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined),
@@ -212,13 +226,16 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const sweeper = setInterval(() => { try { sweepApprovals(db); } catch (e) { log("main", "approval sweep failed", { err: String((e as Error).message).slice(0, 200) }); } }, 60_000);
     sweeper.unref();
     dispatcher.start();
+    tasks.startLoop();
+    opened.push({ close: () => tasks.stopLoop() });
     api.start();
     opened.push({ close: () => api.stop() });
 
     const hub: Hub = {
-      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api, hubKey, link,
+      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api, hubKey, link, nodes, tasks,
       async close() {
         await link.relay?.close();
+        tasks.stopLoop();
         clearInterval(sweeper);
         api.stop();
         await dispatcher.stop();
@@ -258,8 +275,13 @@ function startRelayLink(hub: Hub) {
   const relay = new RelayLink({
     db: hub.db, hubKey: hub.hubKey, url: r.url, token,
     // a channel's `req` frames: straight to the api dispatcher (it authorizes); the session is the stream's conn
-    handle: (req, caller, conn) => hub.api.dispatch(req, { ...caller, conn }),
-    closed: (conn) => hub.api.closeConn(conn),
+    // a node's channel also carries the hub's requests down (Session.request): it is that node's peer
+    handle: (req, caller, conn) => hub.api.dispatch(req, { ...caller, conn, ...(caller.role === "node" ? { peer: conn as unknown as NodePeer } : {}) }),
+    closed: (conn) => {
+      hub.api.closeConn(conn);
+      const who = (conn as unknown as Session).who;
+      if (who?.role === "node") hub.nodes.gone(who.device_id, conn as unknown as NodePeer);
+    },
     onPaired: hub.link.onPaired, onNewIp: hub.link.onNewIp,
   });
   hub.link.relay = relay;

@@ -260,6 +260,20 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 - 额度用完：节点报恢复时间 → `quota_until` → `timers` 到点发续跑。
 - worktree、CI、空闲释放：都是 `timers kind=task` 的单次指令；worktree 只在我点「清理」时删。
 - 节点升级：`nodes` 记节点报的 `sha`；hello 时回 `target_sha`（= 主当前 sha）。节点排空（超时默认 30 分钟 ※，超时按重启处理，等待点上的卡作废）后自己切换（05）。版本低于 `PROTOCOL.min` 的节点只收升级指令，不派活。
+- 施工（W4a，`hub/src/tasks/`；※ 的等我过目）：
+  - 分工：`nodes.ts` 管登记（hello、在场、`NodePeer` 往下发请求）；`engine.ts` 管任务 lane（`task:<id>`，主的 dispatcher 不碰这些 lane）；`node-api.ts` 是 `/node/v1` 节点往上的路由；`tools.ts` 是 sbot MCP；任务的写在 `api/task-writes.ts`。
+  - 身份：节点只能动 `tasks.node` 等于它自己设备 id 的任务（事件、权限请求、工具调用都查，不是就 403）；主往下发的路由（sessions、turns、permissions/:id、git/checks、worktrees/cleanup）节点向主请求一律 404。本机节点走 `hub.sock`，设备 id `local`，同一个 `api.dispatch`、同一个角色检查。
+  - 任务的写（派活、插话、停、取消、换机器、清理 worktree）是 W3a 写层的写路由（`api/task-writes.ts`），客户端经中继和 `hub-admin.sock` 走同一条，都要 `client_op_id`，同 id 换内容 409。派活只写库，在 `withOp` 的事务里；其余要等节点，走 `withOpAsync`（`ops.ts`）※：答案回来后才存进 `client_ops`，同进程里同 id 的并发重试接上同一个调用；本身也可重跑（插话按收件箱键 `device:<id>` + `client_op_id` 去重，停、取消、换机器、清理先看状态）。进程在调完节点、存答案之前崩了，重试会再调一次（换机器会再开一次）。
+  - 卡：任务的卡作废时也关掉它的 `push_queue` 行（`closePush`）；客户端 `decide` 问我卡时带的 `answers`（题 → 答）打码后经 `choose()` 交给节点，被拒照旧 fail closed。
+  - 没填节点 = `local`，它不在线就等它，不会自己挑别的机器；派到 `local` 以外的节点写一条通知（`push_queue`，不等我点）。W3b 的推送没做之前，额度、CI 连红、派活的通知只写进 `push_queue` ※，由 W3b 发。
+  - hello：先同步对账（hello 里的 `sessions` 没有的、`released` 的 → `interrupted`，卡作废，「需要你处理」），再在回完 hello 之后发出等着的东西（重开、排队的任务、答案）。对账必须同步：放到回包之后，回包和对账之间新开的 session 会被当成丢了。
+  - 节点下线：`running`/`waiting` → `waiting_node`，卡留着（进程可能还在）；回来时按 hello 的 `sessions` 还原或进 `interrupted`。我在 `interrupted` 的任务里说话 = 带 `resume_ref` 重开（`attempt + 1`），同时附交接文本 ※，节点续接不上（`fresh`）时直接用，不用再来回一趟。
+  - 事件：按 `task:attempt:seq` 幂等（kv），旧 `attempt` 整批丢，比当前新的 409；认不出的 `k` 跳过不报错。文本经 `StreamRedactor` 推 delta；工具结果、消息、diff（上传的 blob 也重新打码另存）都先打码再进 `run_items`、blob。用量写 `usage`，`source = node`。
+  - 权限请求：按 `request_id` 幂等；卡 `glance`/`ask`，`requester = node:<设备>`，命令、路径原样（打码，不截断）。答案：卡被拒 → 一定发拒绝类选项（我点的是拒绝类就发它，否则第一个 `kind`（没有 `kind` 看 id）以 `reject`/`deny` 开头的；一个都没有就发 `reject`，不在选项里，节点按拒绝处理 ※）；批了发我点的那个（点的是拒绝类也照发），没点才取第一个放行类 ※。等的时候我发消息：先把卡拒掉、把拒绝发给节点，再插话。
+  - 卡住：`needs_you` 现算，`interrupted`，或 `running` 且超过 `measure.stuck_minutes` 没输出、不在额度等待里。
+  - 时间（常量，可改 ※）：开 session 等 120 秒；额度没给恢复时间时 30 分钟后试；空闲释放 60 分钟；CI 首查 2 分钟、`pending` 3 分钟、结果出来后 10 分钟再看；节点不在时 30 秒后重试。CI 连红第 3 次（`CI_RED_NOTIFY`）照样叫醒，同时写一条通知，不拦；绿了清零；同一个 `head_sha` 只叫一次；失败日志取最后 20 KB，打码。PR 合了，这个任务的 worktree 列成「可清理」。
+  - sbot MCP：任务里的调用 = `system` 那一列（`reply`、`memory_read`、`send` 等；`send` 照旧变审批卡）+ `submit_report`、`ask`；没有 bash 和文件工具。不带 `task_id` 的调用要 `console.yaml mcp_open: true`（默认关，开是放宽）；按 `tool_call_id` 幂等。`ask` 走 MCP 时没有节点在等的请求，我的回答作为下一条消息进 session。
+  - 上传：`POST /node/v1/blobs` 单个上限 64 MiB ※；分片按设备分临时文件，最后一片对 sha 才改名。传到一半断掉的临时文件现在不清 ※（等 GC）。
 
 ## improve（§进2、§附2.18）
 

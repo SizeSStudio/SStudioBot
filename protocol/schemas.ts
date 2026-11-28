@@ -79,7 +79,16 @@ export const ROUTES: readonly string[] = [
   "DELETE /api/v1/inputs/:id", "POST /api/v1/runs/:id/stop",
   "POST /api/v1/approvals/:id/decide", "PUT /api/v1/approvals/:id/draft",
   "POST /api/v1/approvals/:id/redraft", "POST /api/v1/approvals/:id/snooze",
-  "POST /node/v1/hello",
+  // W4a: task and node reads; task writes (W3a write layer, client_ops)
+  "GET /api/v1/tasks", "GET /api/v1/tasks/:id", "GET /api/v1/nodes",
+  "POST /api/v1/tasks", "POST /api/v1/tasks/:id/steer", "POST /api/v1/tasks/:id/stop",
+  "POST /api/v1/tasks/:id/cancel", "POST /api/v1/tasks/:id/move", "POST /api/v1/nodes/:id/worktrees/cleanup",
+  // /node/v1: node → hub (served by the hub), then hub → node (served by the node, W4b)
+  "POST /node/v1/hello", "POST /node/v1/status",
+  "POST /node/v1/tasks/:id/events", "POST /node/v1/permissions", "POST /node/v1/tool-calls", "POST /node/v1/blobs",
+  "POST /node/v1/sessions", "POST /node/v1/sessions/:ref/turns", "POST /node/v1/sessions/:ref/steer",
+  "POST /node/v1/sessions/:ref/interrupt", "DELETE /node/v1/sessions/:ref",
+  "POST /node/v1/permissions/:request_id", "POST /node/v1/git/checks", "POST /node/v1/worktrees/cleanup",
   "POST /node/v1/exec", "POST /node/v1/fs/read", "POST /node/v1/fs/write",
 ];
 

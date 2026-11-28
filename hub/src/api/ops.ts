@@ -62,3 +62,38 @@ export function withOp(db: Db, caller: Caller, req: Req, op: string, fn: () => D
   after?.();   // committed: side effects outside the db (triage drafting again) happen once, here
   return out;
 }
+
+/** ops being run right now (device\0op id): a retry that comes while the first is still waiting on a node joins it */
+const inFlight = new Map<string, { hash: string; p: Promise<Out> }>();
+
+/**
+ * withOp for a write that has to wait on something outside the db (a task write talks to its node, W4a). Same
+ * contract as withOp: a stored answer is replayed, the same id with another request is 409, a 5xx isn't kept. The
+ * business write can't share the client_ops transaction here, so `fn` must itself be safe to run again after a crash
+ * between its write and the store (the task routes are: start dedupes on the op id, the rest check state first).
+ */
+export async function withOpAsync(db: Db, caller: Caller, req: Req, op: string, fn: () => Promise<Out>): Promise<Out> {
+  const id = opIdOf(req);
+  if (typeof id !== "string") return id;
+  const hash = reqHash(req), key = `${caller.device_id}\0${id}`;
+  const hit = db.one<{ result_json: string; seq: number | null }>("SELECT result_json, seq FROM client_ops WHERE device_id = ? AND client_op_id = ?", caller.device_id, id);
+  if (hit) {
+    const r = JSON.parse(hit.result_json) as { status: number; body?: unknown; req?: string };
+    if (r.req !== undefined && r.req !== hash) return { status: 409, body: { error: "这个 client_op_id 已经用在另一个请求上了" } };
+    return { status: r.status, ...(r.body !== undefined ? { body: r.body } : {}), ...(hit.seq != null ? { seq: hit.seq } : {}) };
+  }
+  const running = inFlight.get(key);
+  if (running) return running.hash === hash ? running.p : { status: 409, body: { error: "这个 client_op_id 已经用在另一个请求上了" } };
+  const p = (async (): Promise<Out> => {
+    const before = headSeq(db);
+    const res = await fn();
+    if (res.status >= 500) return res;
+    const now = headSeq(db);
+    const seq = now > before ? now : null;
+    db.tx(() => db.run("INSERT OR IGNORE INTO client_ops(device_id, client_op_id, op, result_json, seq, ts) VALUES (?,?,?,?,?,?)",
+      caller.device_id, id, op, JSON.stringify({ status: res.status, ...(res.body !== undefined ? { body: res.body } : {}), req: hash }), seq, Date.now()));
+    return { ...res, ...(seq != null ? { seq } : {}) };
+  })();
+  inFlight.set(key, { hash, p });
+  try { return await p; } finally { inFlight.delete(key); }
+}

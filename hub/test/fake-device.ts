@@ -34,6 +34,8 @@ export class Channel {
   closed: Promise<{ code: number; reason: string }>;
   closedAt = 0;
   #waiters: (() => void)[] = [];
+  /** set on a node's channel: answers requests the hub sends down */
+  onReq?: (f: Extract<Frame, { t: "req" }>) => { status: number; body?: unknown } | Promise<{ status: number; body?: unknown }>;
   #nextId = 1;
 
   constructor(ws: WebSocket) {
@@ -49,6 +51,12 @@ export class Channel {
     if (bytes === null) return;
     const f = parseFrame(new TextDecoder().decode(bytes));
     if (f) { this.frames.push(f); this.at.push(performance.now()); this.#wake(); }
+    // a node answers the hub's requests (Session.request): what node/ will do
+    if (f?.t === "req" && this.onReq) {
+      const id = f.id;
+      void Promise.resolve(this.onReq(f)).then((r) => this.sendFrame({ t: "res", id, status: r.status, ...(r.body === undefined ? {} : { body: r.body }) } as Frame),
+        () => this.sendFrame({ t: "res", id, status: 500, body: { error: "fake node failed" } } as Frame));
+    }
   }
 
   sendFrame(f: Frame) { for (const p of this.t.seal(new TextEncoder().encode(encodeFrame(f)))) this.raw(p); }

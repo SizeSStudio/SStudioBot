@@ -102,6 +102,8 @@ export const DecideReq = z.object({
   draft_version: version,
   option_id: z.string().min(1).max(100).optional(),
   text: z.string().min(1).max(4000).optional(),
+  /** ask (AskUserQuestion): question → answer */
+  answers: z.record(z.string(), z.string()).optional(),
   note: z.string().max(1000).optional(),
 });
 export type DecideReq = z.infer<typeof DecideReq>;

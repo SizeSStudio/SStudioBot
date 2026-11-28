@@ -127,7 +127,7 @@ export function writeRoutes(d: WriteDeps): { method: Req["method"]; path: string
         }
         // D9: Feishu threads are mirrors, read-only for now; a task thread's input goes to its session (W4)
         if (t.kind === "feishu") return conflict(409, { thread: threadView(db, t) }, "飞书的 thread 在客户端只读，到飞书里回");
-        if (t.kind === "task") return conflict(409, { thread: threadView(db, t) }, "任务 thread 的对话要等任务接上节点（W4）");
+        if (t.kind === "task") return conflict(409, { thread: threadView(db, t) }, "任务 thread 里说话走 POST /api/v1/tasks/:id/steer（W4a）");
         const lane = String(t.lane), now = Date.now();
         if (t.status === "archived") db.run("UPDATE threads SET status = 'open' WHERE id = ?", String(t.id));   // I wrote in it: back in the list
         const r = ingest(db, {

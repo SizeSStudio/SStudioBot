@@ -2,6 +2,9 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### W4a 主这边的任务和节点（2026-11-28）
+§办3 正文不用改；施工定下的细节在 `tech/03-hub.md`「tasks 和 nodes」的「施工」一段，※ 的等我过目：任务的写进 W3a 的写层（`client_ops` 去重，经中继也能调）；W3b 之前通知只写进 `push_queue`；被拒的卡发给节点的一定是拒绝类选项；续接时同时附交接文本；开 session、额度重试、空闲释放、CI 查看间隔这几个时间先写成常量；上传单个上限 64 MiB，断掉的临时文件暂不清。`decide` 多一个可选的 `answers`（AskUserQuestion 多题，只做加法，`tech/02-protocol.md`）。
+
 ### W3a 写操作（2026-11-28）
 §触6.4 补一句：同一个 `client_op_id` 换了内容不算重试，回 409（`08-client.md`）。其余设计正文不用改；施工定下的细节在 `tech/02-protocol.md`「写操作和 client_ops」、`tech/03-hub.md` approvals、channels、api，※ 的等我过目：一般 thread 不说就是 `work`；配对码的重试回 409 不重放；改稿的新卡替掉同 lane、同触发消息的旧卡；W3 之前发出的飞书卡没有 `draft_version` 照旧收；工作台和管理群里我亲手发的那一轮读 `self/` 按 system 列的规矩（§读5.1 的「只提一两句」落到工具上）。设备的写 W3a 起经中继也能调（W2a 的 ※「W3 之前只在 `hub-admin.sock`」到期）。
 

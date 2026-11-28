@@ -3,11 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "The node program (docs/tech/05). Imports only protocol/. W1d: the local node's exec, fs and check over hub.sock.",
+  "description": "The node program (docs/tech/05). Imports only protocol/. Agents (Claude Code, Codex, pi, ACP), sessions, the sbot MCP, worktrees, CI, self-upgrade; the local node also serves exec, fs and check.",
   "bin": {
-    "sbot-node": "src/main.ts"
+    "sbot-node": "src/cli.ts"
   },
   "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.332",
+    "yaml": "2.9.0",
     "zod": "4.6.7"
   }
 }

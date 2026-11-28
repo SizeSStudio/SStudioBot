@@ -88,7 +88,7 @@
 | T40 | `change_log` 覆盖哪些表、`client_ops` 清理 30 天、blob 存法和 GC | 02、04 |
 | T41 | 中继端点、信封、注册白名单、防洪泛、不缓冲 | 06 |
 | T42 | 唤起 App 的 scheme `sstudiobot://`，App 里有「粘贴配对码」 | 06 |
-| T43 | 节点调主的工具经 MCP `sbot`（Claude in-process，其余 stdio 小程序） | 02、05 |
+| T43 | 节点调主的工具经 MCP `sbot`（四家都是 stdio 小程序 `sbot-node mcp`，W4b ※） | 02、05 |
 | T44 | `check` 契约：退出 0 无输出 = 跳过，0 有输出 = 跑，其他 = 照跑 + 告警 | 03 |
 | T45 | `proposals.status` 默认 `'proposed'`；提案按 `target` 去重 | 03、04 |
 | T46 | 代理令牌跟着 run 走，不再 30 分钟过期；坏令牌 401、越档 403；预算只告警 | 03 |

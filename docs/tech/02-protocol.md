@@ -152,8 +152,7 @@ W3 定的（`protocol/api/write.ts`、`push.ts`）：
 ## 远端节点怎么调主的 MCP 工具（Y2）
 
 - 节点程序给每个 session 挂一个 MCP server，名字 `sbot`：
-  - Claude：SDK 的 in-process MCP（节点程序本身就跑着 SDK）。
-  - Codex、pi、ACP：stdio 小程序 `sbot-node mcp --session <ref>`，它经本机 socket 连节点守护进程。挂法 P5–P8 核实过：Codex 在 `thread/start` 的 `config` 里给 `mcp_servers.sbot.*`；pi 没有 `--mcp-config`，靠节点带的扩展 `registerMcpServer`；ACP 在 `session/new` 的 `mcpServers`（05、08）。
+  - 四家都是 stdio 小程序 `sbot-node mcp` ※（W4b；原来 Claude 写的是 SDK 的 in-process MCP，一个实现少一套），它经守护进程的 ctl socket 连节点守护进程，是哪个 session 靠环境变量里的句柄（05）。Claude 在 `mcpServers.sbot` 里给 stdio 项。挂法 P5–P8 核实过：Codex 在 `thread/start` 的 `config` 里给 `mcp_servers.sbot.*`；pi 没有 `--mcp-config`，靠节点带的扩展 `registerMcpServer`；ACP 在 `session/new` 的 `mcpServers`（05、08）。
 - 每次工具调用 → 节点守护进程 → `POST /node/v1/tool-calls` → 主的工具层（同一套闸门）→ 结果原路回。幂等键 `task_id:attempt:tool_call_id`。
 - 节点任务能用的工具 = 三列表第二列（任务触发的 run，§底3.1）加 `submit_report`、`ask`。`send` 照旧走审批卡。
 - 反向开放（我自己在 Mac 上开的 agent 也挂这个 MCP）：同一个 stdio 小程序，以那台节点的身份调，工具同上；`console.yaml` 的 `mcp_open` 默认关，打开走 `widening()`（§办3.2）。

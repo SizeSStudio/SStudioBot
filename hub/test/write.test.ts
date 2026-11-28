@@ -72,6 +72,8 @@ test("write path: self.yaml's content stays out of the admin notice", async () =
   await saveConfigText(db, "self.yaml", "month: solar_term\n", cur.hash, { source: "console" });
   const n = notes.find((x) => x.includes("self.yaml"))!;
   assert.ok(n && !n.includes("solar_term"));
+  const row = db.one<{ diff: string }>("SELECT diff FROM config_changes WHERE file = 'self.yaml' ORDER BY id DESC");
+  assert.ok(row && !row.diff.includes("solar_term"), "config_changes syncs to devices, so no self.yaml content in it");
   db.close(); useConfigDir(undefined);
 });
 

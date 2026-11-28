@@ -110,6 +110,23 @@ test("restore refuses a wrong key, a tampered file and a non-empty home", async 
   await assert.rejects(restore(r.file!, idFile, h), /不是空的/);
 });
 
+test("restore: an existing secrets.env outside the home needs --force and is kept aside", async () => {
+  const { h, recipient, idFile } = await populated();
+  const db = openDb(h.db);
+  const r = await runBackup(db, h, { recipient, to_nodes: [] });
+  db.close();
+  const t = tempHome("bk-out");
+  const outside = join(t.root, "..", `${t.root.split("/").pop()}-secrets.env`);
+  writeFileSync(outside, "LIVE=1\n", { mode: 0o600 });
+  const fresh: Home = { ...t, root: join(t.root, "fresh"), db: join(t.root, "fresh", "db", "sbot.db"), secrets: outside };
+  await assert.rejects(restore(r.file!, idFile, fresh), /不是空的/);
+  assert.equal(readFileSync(outside, "utf8"), "LIVE=1\n", "refused restore leaves it alone");
+  const res = await restore(r.file!, idFile, fresh, { force: true });
+  assert.equal(readFileSync(outside, "utf8"), "FAKE=1\n");
+  assert.equal(readFileSync(join(res.movedAside!, "secrets.env"), "utf8"), "LIVE=1\n");
+  assert.equal(statSync(join(res.movedAside!, "secrets.env")).mode & 0o777, 0o600);
+});
+
 test("no recipient: no backup, one notice", async () => {
   const h = tempHome("bk");
   const db = openDb(h.db);

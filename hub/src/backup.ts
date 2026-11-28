@@ -9,8 +9,8 @@
 // file names, sizes and counts only. The manifest (sha256 per part) is inside the encrypted tar, not next to it.
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { Decrypter, Encrypter } from "age-encryption";
 import type { Db } from "./db/db.ts";
 import type { Home } from "./home.ts";
@@ -196,8 +196,12 @@ export interface RestoreResult { day: string; parts: number; movedAside?: string
  */
 export async function restore(file: string, identityFile: string, h: Home, o: { force?: boolean; now?: number } = {}): Promise<RestoreResult> {
   const now = o.now ?? Date.now();
-  const busy = existsSync(h.root) && readdirSync(h.root).filter((f) => !f.startsWith(".pre-restore-")).length > 0;
-  if (busy && !o.force) throw new BackupError(`${h.root} 不是空的。确定要覆盖就加 --force（原来的东西会挪到 .pre-restore-…/，不删）`);
+  // the live layout keeps secrets.env outside the home (SBOT_SECRETS); an existing one there counts as "not empty" too,
+  // or a restore into a fresh home would silently replace the live secrets
+  const secretsOutside = isAbsolute(relative(h.root, h.secrets)) || relative(h.root, h.secrets).startsWith("..");
+  const busy = (existsSync(h.root) && readdirSync(h.root).filter((f) => !f.startsWith(".pre-restore-")).length > 0)
+    || (secretsOutside && existsSync(h.secrets));
+  if (busy && !o.force) throw new BackupError(`${secretsOutside && existsSync(h.secrets) ? h.secrets + " 已存在或 " : ""}${h.root} 不是空的。确定要覆盖就加 --force（原来的东西会挪到 .pre-restore-…/，不删）`);
   const { manifest, entries } = await openBackup(file, readIdentities(identityFile));
   mkdirSync(h.root, { recursive: true, mode: 0o700 });
   const work = join(h.root, `.restore-${now}`);
@@ -218,13 +222,17 @@ export async function restore(file: string, identityFile: string, h: Home, o: { 
     let movedAside: string | undefined;
     if (busy) {
       movedAside = join(h.root, `.pre-restore-${now}`);
+      mkdirSync(movedAside, { recursive: true, mode: 0o700 });
       for (const n of RESTORED) {
-        const p = join(h.root, n === "secrets.env" ? relative(h.root, h.secrets) : n);
-        if (existsSync(p) && !relative(h.root, p).startsWith("..")) {
-          mkdirSync(dirname(join(movedAside, n)), { recursive: true });
-          renameSync(p, join(movedAside, n));
+        if (n === "secrets.env" && secretsOutside) {
+          // copy, not rename: it may sit on another filesystem, and it is overwritten below anyway
+          if (existsSync(h.secrets)) copyFileSync(h.secrets, join(movedAside, n));
+          continue;
         }
+        const p = join(h.root, n === "secrets.env" ? relative(h.root, h.secrets) : n);
+        if (existsSync(p)) renameSync(p, join(movedAside, n));
       }
+      if (existsSync(join(movedAside, "secrets.env"))) chmodSync(join(movedAside, "secrets.env"), 0o600);
     }
     mkdirSync(dirname(h.db), { recursive: true });
     for (const s of ["", "-wal", "-shm"]) rmSync(h.db + s, { force: true });

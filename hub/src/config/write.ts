@@ -89,8 +89,11 @@ export async function saveConfigText(db: Db, file: string, text: string, hash: s
         .split("\n").filter((l) => /^[+-]/.test(l) && !/^(\+\+\+|---)/.test(l)).join("\n");
     } catch { /* first commit edge cases: leave the diff empty */ }
   }
-  db.run("INSERT INTO config_changes(ts, file, diff, source, actor) VALUES (?, ?, ?, ?, ?)", Date.now(), file, diff.slice(0, 4000), o.source, o.actor ?? null);
   const n = diff ? diff.split("\n").length : 0;
+  // self.yaml holds birth data, which lives only in self.yaml (底线); config_changes syncs to every device via change_log,
+  // so its row only says that it changed (04 config_changes.diff)
+  const stored = file === "self.yaml" ? `(${n} 行，私人内容不记)` : diff.slice(0, 4000);
+  db.run("INSERT INTO config_changes(ts, file, diff, source, actor) VALUES (?, ?, ?, ?, ?)", Date.now(), file, stored, o.source, o.actor ?? null);
   log("config", "saved", { file, lines: n, source: o.source });
   const who = WHO[o.source] ?? o.source;
   // §读5.1: the admin outlet includes a group, so self.yaml's content stays out of it; it only hears that the file changed

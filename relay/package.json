@@ -1,0 +1,14 @@
+{
+  "name": "@sbot/relay",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "The relay (docs/tech/06): forwards Noise ciphertext between the hub and devices, sees only metadata. Imports only protocol/envelope.ts.",
+  "bin": {
+    "sbot-relay": "src/main.ts"
+  },
+  "dependencies": {
+    "ws": "8.23.1",
+    "yaml": "2.9.0"
+  }
+}

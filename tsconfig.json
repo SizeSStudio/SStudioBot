@@ -15,6 +15,6 @@
     "skipLibCheck": true,
     "noUncheckedIndexedAccess": true
   },
-  "include": ["protocol/**/*.ts", "hub/**/*.ts", "node/**/*.ts", "scripts/**/*.ts"],
+  "include": ["protocol/**/*.ts", "hub/**/*.ts", "node/**/*.ts", "relay/**/*.ts", "scripts/**/*.ts"],
   "exclude": ["node_modules", "core", "clients"]
 }

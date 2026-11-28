@@ -154,7 +154,8 @@ test("blobs come in chunks of at most 512 KiB", async () => {
   }
   assert.equal(calls, 3);
   assert.deepEqual(Buffer.concat(parts), data);
-  assert.equal((await api.dispatch(req("GET", "/api/v1/blobs/../../etc"), CLIENT)).status, 404);
+  // W2a's authorize refuses non-canonical paths at the entry, before any route (link/roles.ts)
+  assert.equal((await api.dispatch(req("GET", "/api/v1/blobs/../../etc"), CLIENT)).status, 403);
   assert.equal((await api.dispatch(req("GET", `/api/v1/blobs/${"z".repeat(64)}`), CLIENT)).status, 400);
   assert.equal((await api.dispatch(req("GET", `/api/v1/blobs/${"0".repeat(64)}`), CLIENT)).status, 404);
   assert.equal((await api.dispatch(req("GET", `/api/v1/blobs/${sha}`, { query: { offset: String(data.length + 1) } }), CLIENT)).status, 400);

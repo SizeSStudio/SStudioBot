@@ -73,6 +73,11 @@ export interface DispatchDeps {
   onCard?: (r: Row) => Promise<void>;
   /** a streaming reply for a run I typed (the channel plugin's stream()); undefined = the channel can't */
   stream?: (c: { runId: string; lane: string; turn: TurnContext }) => StreamHandle | undefined;
+  /**
+   * Channel commands answered by code, never the model (§触6.6): W2a's /pair and /devices. Gets the command row's
+   * name, argument and lane; returns the reply text, or undefined when it isn't one of its commands.
+   */
+  command?: (name: string, arg: string, lane: string) => string | undefined;
 }
 
 export class Dispatcher {
@@ -237,6 +242,13 @@ export class Dispatcher {
         db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
       });
       say("好，新开一段。");
+      return;
+    }
+    const p = payloadOf(r);
+    const answer = typeof p.cmd === "string" ? this.d.command?.(p.cmd, String(p.arg ?? ""), lane) : undefined;
+    if (answer !== undefined) {
+      db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
+      say(answer);
       return;
     }
     // not one of ours: the channel's own deterministic commands never get here; treat it as text

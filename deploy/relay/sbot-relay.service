@@ -1,0 +1,54 @@
+# sbot-relay (docs/tech/06 「中继」): forwards Noise ciphertext between the hub and devices. Binds 127.0.0.1 only;
+# nginx terminates TLS and proxies the WS upgrade (nginx-relay.conf.example). Install: deploy/relay/install.sh.
+# It holds no secret: relay.yaml has hub public keys and sha256 of the registration tokens.
+[Unit]
+Description=SStudioBot relay (ciphertext only, metadata logs)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sbot-relay
+Group=sbot-relay
+WorkingDirectory=/opt/sbot-relay/current
+Environment=RELAY_CONFIG=/etc/sbot-relay/relay.yaml
+Environment=NODE_ENV=production
+ExecStart=/opt/node/bin/node relay/src/main.ts
+# relay.yaml edited (a hub key added or removed, a token changed): systemctl reload sbot-relay
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=2
+TimeoutStopSec=5
+MemoryMax=256M
+TasksMax=64
+LimitNOFILE=8192
+# metadata logs, 14 days (install.sh puts deploy/relay/journald-namespace.conf in place for this namespace: MaxRetentionSec)
+LogNamespace=sbot-relay
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+# node's JIT needs writable+executable memory, so no MemoryDenyWriteExecute
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

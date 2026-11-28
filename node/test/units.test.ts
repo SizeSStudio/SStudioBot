@@ -164,6 +164,7 @@ test("isReject: the bare `reject`, a reject kind, an unknown id and an empty ans
   assert.equal(isReject({ option_id: "reject_once" }, ONCE), true);
   assert.equal(isReject({ option_id: "who-knows" }, ONCE), true);
   assert.equal(isReject({}, ONCE), true);
+  assert.equal(isReject({ text: "别这样，换个办法" }, ONCE), true);   // words without a choice: no, never a yes
   assert.equal(isReject({ option_id: "allow_once" }, ONCE), false);
   assert.equal(isReject({ option_id: "x" }, [{ id: "x", label: "否", kind: "deny" }]), true);
 });

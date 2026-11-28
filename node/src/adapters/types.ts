@@ -40,7 +40,9 @@ export interface AgentAdapter {
 
 /** A rejected answer: the agent's own reject option, or the bare `reject` the hub sends when the agent offered none. */
 export function isReject(a: Answer, options: PermissionOption[]): boolean {
-  if (!a.option_id) return !a.text && !a.answers;   // nothing chosen at all: fail closed
+  // no option chosen is a no, even with text: my words alone (「别这样，换个办法」) are a reason, never a yes; asks
+  // (answers) don't come through here
+  if (!a.option_id) return true;
   if (a.option_id === "reject") return true;
   const o = options.find((x) => x.id === a.option_id);
   if (!o) return true;                                // an id the agent never offered: fail closed

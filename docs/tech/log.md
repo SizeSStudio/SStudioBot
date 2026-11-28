@@ -4,10 +4,10 @@
 
 ## 断点
 
-- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合（P10 #37、P1 #38、P9 #40 纸面、P3/P4e/P11 #42、P5–P8 本 PR）。W1a #35、W1b #39、W1c #43、W1d #45、W1e #46、W1 验收 #47 已合，W1 完成。W2 开工：W2a（中继、主的 link、配对、认证、角色、设备，分支 `w2a-link`）、W2b（`protocol/api` schema 先出一个小 PR `w2b-schemas`，再 pump、bootstrap、stream、只读 `/api/v1`，分支 `w2b-read-api`）两个子线程并行。
+- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合。W1 完成（#35、#39、#43、#45、#46、#47）。W2 的代码都合了：W2b #49、#50，W2a #51，W2c #52；W2 验收（`w2-accept`，中继只在服务器回环上）、W3 主的一侧（`w3-schemas` → `w3a-writes` → `w3b-push`）、W4（`w4-schemas` → `w4a-hub` → `w4b-node`）三个子线程并行。
 - 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度），11-28 在各自线程里续上，worktree 里的半成品都在。
-- 下一步：W2b 的 schema PR 合了就开 W2c（`clients/`：连接状态机、store、渲染、主对话和 thread 只读、设备页、Electron 壳、安卓密钥模块和配对）。W2a 交来逐行审（配对、认证、角色、中继），W2b 交来审授权入口；W2a 合了 W2b 把授权换成真的。中继只在服务器本机测，不装、不动 nginx、`relay.enabled` 不开：W2 验收要经中继真连时停下等我。要真发的几项等飞书测试应用；P2、P4 安卓真机项等手机。
-- 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*' 'w2*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
+- 下一步：W3、W4 的 schema PR 合了就开客户端一侧（W3 写操作、乐观层、在场、FCM 令牌；W4 任务 thread、步骤、diff、节点页）。审：W3 的审批、闸门、鉴权逐行；W4 的节点权限、沙箱、`deploy/node/` 逐行。W2 验收里经中继公网入口、手机、飞书测试应用的几项停下等我（等你准备）；`deploy/relay/`、`deploy/node/` 写好不装。
+- 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*' 'w2*' 'w3*' 'w4*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
 
 ## 等你过目
 
@@ -40,6 +40,16 @@
   - 重启提示只数 `text` 行：流式卡片发出过的，提示里是「有过对外的动作」，不报条数。
   - `check` 在本机节点的默认工作目录跑，先过命令守卫；节点没连上就算 check 坏了（照常跑并告警一次）。
   - 每晚 `backup` 任务接上了 `runBackup`（之前 `do: backup` 没有处理函数）。
+
+- W2b 的 ※（#50）：lane 只分 `personal`、`work`；正在流的文字推给每个连着的客户端；W3 之前 `/api/v1` 的写一律 404；不建 lane 索引。
+- W2a 的 ※（#51 描述有全表）：
+  - 中继只听 `127.0.0.1:7840`，`X-Real-IP` 只在对端是回环时认；域名 DNS 只解析，不过 CDN；自保默认值在 `relay.yaml` 里可改；v1 主密钥不轮换。
+  - 认证限 10 秒；见过的公钥（删了的也算）不能再配；`authorize` 只认规范路径（`..`、空段、`%`、`\` 一律 403）。
+  - 没见过的 IP 段按「通知」发，不按安全告警；W3 之前设备通知都走 `notify.admin`，设备的写只在 `hub-admin.sock`。
+  - `relay.url` 要以 `/v1/hub` 结尾，`ws://` 只许回环；`relay.enabled` 启动时读。
+  - 飞书 `/pair` 回的配对链接留在发件表里：10 分钟或用一次就作废，06 已写明这条路经过飞书的服务器（审 #51 时我认的）。
+  - 审 #51 时记下没改的两处小毛病：中继拒绝日志里的路径没截长度；SIGHUP 重读不改心跳间隔。
+- W2c 的 ※（#52 描述有全表）：设备上中继只认 `wss://`（`ws://` 只许回环）；每次配对一把新钥匙，「解除配对」连私钥一起删；桌面配对码只在主进程内存；`webRequest` 再拦一层，只放行连配对中继的 WebSocket；安卓 quick-crypto 自检不过就留 noble；`style-src` 带 `'unsafe-inline'`（RN web 要）；产物超基线 20% 只警告；clients job 暂不设必过。
 
 ## 等你准备
 
@@ -76,3 +86,13 @@
 | W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | 已合 #45 |
 | W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 已合 #46（rebase 到 W1d 上合在一起：一个渠道注册表、W1d 的 `SendResult`/`OutboxRow`、启动接在 outbox 前、分拣经代理） |
 | W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 子线程（Opus） | 已合 #47。补了 `runDraft`、私聊流式卡片、check 接节点、`backup` 任务接线；部署机冒烟 `smoke-w1` 33/33、`smoke-w1d` 17/17、`smoke-w1e` 11/11。逐项：私聊流式卡片 测试过（假后端），真卡待测试应用；群 @我 → 草稿 → 审批 → 发 测试和冒烟过（`shadow`），真发待测试应用；我自己回了卡作废 过；中途 kill 过；self/ 守卫 过；来源标签 过；代理 401/403/只告警 过；check 三种结果 过；Y11 对齐 过（测试）；seed 不碰线上配置 过（测试）；备份 + 恢复 过 |
+
+### W2 连接、设备、只读客户端
+
+| 块 | 内容 | 谁写 | 状态 |
+|---|---|---|---|
+| W2b 只读 API | `protocol/api` schema；`change_log` pump、bootstrap、stream、视图函数、只读 `/api/v1` | 子线程（Opus），我审授权入口 | 已合 #49、#50（我 rebase 到 #49 上；冒烟 `smoke-w2b` 18/18） |
+| W2a 中继和配对 | `relay/`、主密钥、经中继的 Noise 会话、配对、设备、角色、`deploy/relay/` | 子线程（Opus），我逐行审 | 已合 #51（服务器冒烟 20/20：20 台同时配对 138 ms，往返 p95 43 ms，删设备到断开 6 ms）。`deploy/relay/` 没装；unit 的系统调用过滤在服务器上用 `systemd-run --user` 试过，node 能起、反向对照被拦 |
+| W2c 客户端只读 | 连接状态机、store、渲染、页面、Electron 壳、安卓密钥模块、CI clients job | 子线程（Opus），我逐行审（设备密钥、配对、不可信渲染） | 已合 #52（clients 68/68，桌面 selftest 在 GitHub 的 Linux 上也过了）。合并前查过：服务器上的 `sbot-deploy` 和 `main` 一致，按树判断 |
+| W2 验收 | 09 W2 验收清单，中继在服务器回环上 | 子线程（Opus） | 进行中（`w2-accept`）；经公网中继、手机、飞书测试应用的项等你准备 |
+

@@ -7,6 +7,9 @@
 //     interrupted and I'm told, in that lane, how many messages already went out (nothing is sent twice);
 //     a row that was being processed in two crashes in a row is failed
 //   - breaker (Y8): the same error fingerprint N times in a row on a lane stops the loop and files a glance card
+//   - a run I typed streams into its channel's card (plugin stream()) when the channel can; others' never do: their
+//     text has to pass the commitment check first
+//   - triage's draft runs (runDraft) come through here too, outside the inbox: read-only tools, out only as text
 import { createHash, randomBytes } from "node:crypto";
 import type { Db, Row } from "./db/db.ts";
 import type { Home } from "./home.ts";
@@ -21,6 +24,10 @@ import type { CommitChecker } from "./commit-check.ts";
 import { itemStart } from "./items.ts";
 import { promptFiles, systemPrompt } from "./runner/prompt.ts";
 import { submitApproval, invalidateForOwnerMessage } from "./approvals.ts";
+import { putBlob } from "./blobs.ts";
+import { redact } from "./tools/redact.ts";
+import type { StreamHandle } from "./channels/types.ts";
+import type { DraftJob } from "./triage/triage.ts";
 import type { ItemEvent, Role, RunResult, Runner } from "./runner/types.ts";
 import { TZ } from "./home.ts";
 import * as notify from "./notify.ts";
@@ -63,11 +70,14 @@ export interface DispatchDeps {
   commitCheck?: CommitChecker;
   /** card clicks (kind `card`) answered by code (channels/card-rows.ts); set → card rows never become run input */
   onCard?: (r: Row) => Promise<void>;
+  /** a streaming reply for a run I typed (the channel plugin's stream()); undefined = the channel can't */
+  stream?: (c: { runId: string; lane: string; turn: TurnContext }) => StreamHandle | undefined;
 }
 
 export class Dispatcher {
   readonly d: DispatchDeps;
   #active = new Map<string, Active>();
+  #drafts = new Set<Promise<unknown>>();
   #timer: ReturnType<typeof setInterval> | undefined;
   #ticking = false;
   #again = false;
@@ -138,7 +148,7 @@ export class Dispatcher {
     this.#closed = true;
     if (this.#timer) clearInterval(this.#timer);
     setKick(() => {});
-    const all = [...this.#active.values()].map((a) => a.done);
+    const all = [...[...this.#active.values()].map((a) => a.done), ...this.#drafts];
     await Promise.race([Promise.all(all), new Promise((r) => setTimeout(r, ms).unref?.())]);
   }
 
@@ -156,10 +166,10 @@ export class Dispatcher {
   async idle(timeoutMs = 20_000) {
     const end = Date.now() + timeoutMs;
     for (;;) {
-      await Promise.all([...this.#active.values()].map((a) => a.done));
+      await Promise.all([...[...this.#active.values()].map((a) => a.done), ...this.#drafts]);
       await new Promise((r) => setTimeout(r, 20));
       const waiting = this.d.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM inbox WHERE status = 'received' AND COALESCE(not_before, 0) <= ?", Date.now())!.n;
-      if (!this.#active.size && !this.#ticking && !waiting) return;
+      if (!this.#active.size && !this.#drafts.size && !this.#ticking && !waiting) return;
       if (Date.now() > end) throw new Error("dispatcher not idle");
       if (waiting && !this.#ticking) this.kick();
     }
@@ -282,6 +292,11 @@ export class Dispatcher {
     const ctx: ToolCtx = { db, h, run_id: p.run_id, lane, src: p.src, col, turn, node: this.d.node, replies: 0, commitCheck: this.d.commitCheck };
     const token = issueToken(db, { run_id: p.run_id, tier: p.tier, requester: p.role });
     log("dispatch", "run start", { run: p.run_id, lane, src: p.src, n: p.rows.length });
+    // only a run I typed streams: what goes back to someone else passes the commitment check first, and a job's card
+    // would rule out a clean rerun (§底4.3) ※
+    const card = col === "typed" ? this.d.stream?.({ runId: p.run_id, lane, turn }) : undefined;
+    let shownDone = "", shownCur = "";
+    const show = () => card?.update([shownDone, shownCur].filter(Boolean).join("\n\n"));
     let res: RunResult;
     try {
       res = await runner.run({
@@ -290,6 +305,9 @@ export class Dispatcher {
         input: turnText(p.rows), tools: toolsFor(col), ctx, token, signal: a.ac.signal,
         onItem: (e) => {
           if (e.k === "message") itemStart(db, h.blobs, { lane, run_id: p.run_id, kind: "assistant", body: { text: e.text }, status: "done" });
+          // deltas are redacted by the runner; a finished message replaces its deltas
+          if (card && e.k === "delta") { shownCur += e.text; show(); }
+          if (card && e.k === "message") { shownDone = [shownDone, redact(e.text)].filter(Boolean).join("\n\n"); shownCur = ""; show(); }
           this.d.onItem?.(p.run_id, lane, e);
         },
       });
@@ -299,16 +317,32 @@ export class Dispatcher {
       revokeRun(db, p.run_id);
     }
     if (a.stopped && res.stop !== "done") res.stop = "aborted";
+    const carded = card ? await this.#closeCard(card, res, ctx) : false;
     // in someone else's conversation the final answer passes the commitment check first (§底3.4); it is async, so it
     // happens here, before #finish's transaction, and #finish then sees a reply and sends nothing more
     if (col === "others" && res.stop === "done" && ctx.replies === 0 && res.output.trim()) {
       try { await replyGated(ctx, res.output.trim()); } catch (e) { log("dispatch", "gated reply failed", { run: p.run_id, err: String((e as Error)?.message ?? e).slice(0, 200) }); }
       ctx.replies++;
     }
-    this.#finish(lane, p, res, ctx, t0);
+    this.#finish(lane, p, res, ctx, t0, carded);
   }
 
-  #finish(lane: string, p: { rows: Row[]; run_id: string; role: Role; tier: Tier }, res: RunResult, ctx: ToolCtx, t0: number) {
+  /**
+   * The run's card gets the whole text and its ending; true = the card carried the reply (nothing more to send but
+   * what didn't fit). A card that never got out (shadow, no bot, a failed create) → false: the plain reply goes.
+   */
+  async #closeCard(card: StreamHandle, res: RunResult, ctx: ToolCtx): Promise<boolean> {
+    const shown = redact(res.fullText || res.output);
+    const note = res.stop === "aborted" ? "（已停下）" : res.stop === "error" ? `（这一轮出错了：${redact(String(res.error ?? "")).slice(0, 200)}）`
+      : !shown.trim() && ctx.replies > 0 ? "（已分条发出）" : undefined;
+    try { await card.finish(shown, note); } catch (e) { log("dispatch", "card finish failed", { run: ctx.run_id, err: String((e as Error)?.message ?? e).slice(0, 200) }); }
+    if (!card.started || card.failed) { await card.dispose(); return false; }
+    const rest = card.overflow?.(shown) ?? "";
+    if (rest) queueReply(ctx, rest);
+    return true;
+  }
+
+  #finish(lane: string, p: { rows: Row[]; run_id: string; role: Role; tier: Tier }, res: RunResult, ctx: ToolCtx, t0: number, carded = false) {
     const { db } = this.d;
     const failure: UpstreamFailure | undefined = res.stop === "error" ? classifyUpstream(res.error) : undefined;
     // §底4.3: a scheduled row whose run failed upstream, said nothing and changed nothing waits and tries again
@@ -327,7 +361,9 @@ export class Dispatcher {
         lane, res.session_ref || null, ctx.turn.surface, p.tier, Date.now(), Date.now());
       db.run("UPDATE runs SET session_ref = ? WHERE id = ?", res.session_ref || null, p.run_id);
 
-      if (res.stop === "done") {
+      if (carded) {
+        // the card already said it, ending included
+      } else if (res.stop === "done") {
         if (ctx.replies === 0 && res.output.trim()) queueReply(ctx, res.output.trim());
       } else if (res.stop === "aborted") {
         queueReply(ctx, "（已停下）");
@@ -364,6 +400,51 @@ export class Dispatcher {
       log("dispatch", "breaker tripped", { lane, n });
     }
     log("dispatch", "run end", { run: p.run_id, stop: res.stop, ms: Date.now() - t0, tools: res.tools.length, out_tokens: res.usage.output });
+  }
+
+  /**
+   * A triage draft run (§读2.4): work tier, a fresh session, only the chat's context triage put in `text`, the others
+   * column's tools cut to the read-only ones, and a turn no channel routes. Its only way out is the returned text,
+   * which triage files as a send approval as me (底线). Throws on failure or nothing written.
+   */
+  runDraft(j: DraftJob): Promise<string> {
+    const p = this.#draft(j);
+    this.#drafts.add(p);
+    void p.catch(() => {}).finally(() => this.#drafts.delete(p));
+    return p;
+  }
+
+  async #draft(j: DraftJob): Promise<string> {
+    const { db, h, runner } = this.d;
+    if (this.#closed) throw new Error("hub is stopping");
+    const tier: Tier = "work", src = `group:${j.chat}`, col = colOf(src);
+    let model: string | null = null;
+    try { model = tierConf(tier).model; } catch { /* reported by the run */ }
+    db.run(`INSERT INTO runs(id, lane, session_key, role, tier, model, status, input_ref, versions_json, started) VALUES (?,?,NULL,'draft',?,?, 'running', ?, ?, ?)`,
+      j.runId, j.lane, tier, model, putBlob(h.blobs, j.text), JSON.stringify({ ...j.versions, model }), Date.now());
+    // channel "draft" has no plugin: even if something tried to reply, the outbox would mark it unrouted
+    const turn: TurnContext = { channel: "draft", surface: "feishu:group", lane: j.lane, chat: j.chat, msg_id: j.msgId, thread: j.thread, src };
+    const ctx: ToolCtx = { db, h, run_id: j.runId, lane: j.lane, src, col, turn, node: this.d.node, replies: 0 };
+    const token = issueToken(db, { run_id: j.runId, tier, requester: "draft" });
+    log("dispatch", "draft run start", { run: j.runId, lane: j.lane });
+    let res: RunResult;
+    try {
+      res = await runner.run({
+        lane: j.lane, role: "draft", tier, system: j.system, input: j.text, ctx, token, signal: new AbortController().signal,
+        tools: toolsFor(col).filter((t) => t.readOnly),
+        onItem: (e) => { if (e.k === "message") itemStart(db, h.blobs, { lane: j.lane, run_id: j.runId, kind: "assistant", body: { text: e.text }, status: "done" }); },
+      });
+    } catch (e) {
+      res = { output: "", fullText: "", session_ref: "", stop: "error", error: String((e as Error)?.message ?? e), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, tools: [], undelivered: [] };
+    } finally {
+      revokeRun(db, j.runId);
+    }
+    const ok = res.stop === "done" && !!res.output.trim();
+    db.run("UPDATE runs SET status = ?, stop_reason = ?, error = ?, session_ref = ?, ended = ? WHERE id = ?",
+      ok ? "done" : "failed", res.stop, res.error ?? (ok ? null : "empty draft"), res.session_ref || null, Date.now(), j.runId);
+    log("dispatch", "draft run end", { run: j.runId, stop: res.stop, tools: res.tools.length });
+    if (!ok) throw new Error(res.error ?? "empty draft");
+    return redact(res.output.trim());
   }
 
   #requeue(rows: Row[], f: UpstreamFailure) {

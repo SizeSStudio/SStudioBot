@@ -48,6 +48,8 @@ export interface TriageDeps {
   complete?: Complete;
   /** the draft run (W1d runner); resolves to its final text, throws on failure */
   runDraft?: (j: DraftJob) => Promise<string>;
+  /** W1d's commitment check (commit-check.ts); without it the light call below with checkSystem() */
+  commitCheck?: (draft: string, o: { run_id: string; lane: string }) => Promise<{ hits: string[] }>;
   /** files the send approval and posts its cards (W1d approvals); the only way a draft leaves */
   submitSend?: (a: SendApproval) => Promise<number> | number;
   /** where notices go (03: push; until then the admin outlet) */
@@ -254,7 +256,11 @@ export class Triage {
       return;
     }
     let checks: unknown;
-    try { checks = this.#d.complete ? await this.#d.complete({ tier: "light", system: checkSystem(), user: draft, maxTokens: 400, json: true, requester: "check" }) : { hits: ["承诺检测没接上"] }; }
+    try {
+      // a hit only puts its reasons on the card: the draft goes to approval either way
+      checks = this.#d.commitCheck ? await this.#d.commitCheck(draft, { run_id: runId, lane: `draft:${r.chat_id}` })
+        : this.#d.complete ? await this.#d.complete({ tier: "light", system: checkSystem(), user: draft, maxTokens: 400, json: true, requester: "check" }) : { hits: ["承诺检测没接上"] };
+    }
     catch { checks = { hits: ["承诺检测没跑成"] }; }
     const id = await submitSend({
       kind: "send", title: `回复 · ${raw.chat_name ?? "群"}`, requester: "分拣起草", draft, run_id: runId, channel: "feishu", as_identity: "user",

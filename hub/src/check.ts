@@ -36,6 +36,21 @@ async function broken(job: string, code: number | null, signal: string | null, s
   return { kind: "broken", code, signal, stderr: head };
 }
 
+/**
+ * The Scheduler's CheckRunner over the local node: the same guard as runCheck, raw exit code and streams back. The
+ * Scheduler decides skip / run / broken and sends the one ops alert itself, so nothing is alerted here.
+ */
+export function nodeCheck(node: NodeClient, sbotHome: string) {
+  return async (cmd: string): Promise<{ code: number; stdout: string; stderr: string }> => {
+    const why = commandGuard(cmd, { sbotHome });
+    if (why) return { code: -1, stdout: "", stderr: why };
+    const cwd = node.connected() ? node.defaultCwd() : undefined;
+    if (!cwd) throw new Error("本机节点没连上，check 没法跑");
+    const r = await node.exec({ cmd, cwd });
+    return { code: r.code ?? -1, stdout: r.stdout, stderr: r.stderr || (r.signal ? `killed by ${r.signal}` : "") };
+  };
+}
+
 /** What the run is told about the check (empty for skip, which never starts a run). */
 export function checkText(o: CheckOutcome): string {
   if (o.kind === "run") return `（check 的输出）\n${o.stdout}`;

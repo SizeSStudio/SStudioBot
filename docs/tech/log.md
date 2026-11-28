@@ -4,9 +4,9 @@
 
 ## 断点
 
-- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合（P10 #37、P1 #38、P9 #40 纸面、P3/P4e/P11 #42、P5–P8 本 PR）。W1a #35、W1b #39、W1c #43 已合；W1d（分支 `w1d-hub-run`）、W1e（分支 `w1e-hub-channels`）两个子线程并行在做。
+- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合（P10 #37、P1 #38、P9 #40 纸面、P3/P4e/P11 #42、P5–P8 本 PR）。W1a #35、W1b #39、W1c #43、W1d #45、W1e #46 已合；W1 验收在分支 `w1-accept`（一个 PR，待审）。
 - 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度），11-28 在各自线程里续上，worktree 里的半成品都在。
-- 下一步：W1d 交来逐行审（闸门、审批、代理、守卫），W1e 交来审；先合的那个，另一个 rebase。两个都合了做 W1 验收（09 清单，测试 home 上逐条跑），然后向我报 W1。P2、P4 安卓真机项等手机。
+- 下一步：W1 验收 PR 审（动了草稿发出路径、承诺检测接线、check 的命令守卫、派发的回复路径），合了向我报 W1。要真发的几项等飞书测试应用；P2、P4 安卓真机项等手机。
 - 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
 
 ## 等你过目
@@ -33,6 +33,13 @@
 - ACP 新 session 默认 `auto`、不发权限请求，节点建 session 后切到 `default`（P5–P8，05）。
 - W1d 的 ※（PR 描述「等过目」有全表）：run 令牌放内存 credential store 不走环境变量；出网代理 7820–7828；连崩两次按 `inbox.tries`；熔断后非我输入直接 `failed`；找不到插件的发件标 `unrouted`；check 命令也过命令守卫；令牌不设 TTL；exec 每路输出留前 300 KB。
 - W1d 审后的 ※（#45「审后修」）：稳住对方的两句键名 `hold_text`、`hold_timeout_text`；承诺检测最多等 60 秒，调不通、不成形、超时都按命中；他人会话的出错提示改发管理出口；`hub.sock` 挪到 `$SBOT_HOME/node/`（0750，属组 `SBOT_NODE_GROUP`），部署时 `$SBOT_HOME` 要给节点组 `x`（0710），W7 写进 `deploy/`。
+- W1 验收的 ※（`w1-accept`）：
+  - 只有我打字的 run（typed 列）流式出卡片；定时、系统、他人会话的 run 照旧整条回。卡片开出来就算回复，不再另发一条；没开成（`shadow`、出错）才退回普通回复；超长的余下部分分条补发。
+  - 群草稿是 W1d 的 run：`role draft`、work 档、src `group:<chat>`（他人列）、只给他人列的只读工具、新 session、只带那一个群的上下文；turn 的渠道是 `draft`，没有插件接，写出的回复只会标 `unrouted`。草稿不进 inbox，跑到一半主挂了，这条草稿算丢（run 标 interrupted），下一轮分拣不重起。
+  - 分拣的承诺检测换成 W1d 那一份（`proxyCommitChecker`，同一提示词，调不通按命中）；没接时退回原来的 `checkSystem()`。
+  - 重启提示只数 `text` 行：流式卡片发出过的，提示里是「有过对外的动作」，不报条数。
+  - `check` 在本机节点的默认工作目录跑，先过命令守卫；节点没连上就算 check 坏了（照常跑并告警一次）。
+  - 每晚 `backup` 任务接上了 `runBackup`（之前 `do: backup` 没有处理函数）。
 
 ## 等你准备
 
@@ -65,6 +72,6 @@
 | W1a 骨架 | 根 workspace、tsconfig、`protocol/` 的 frames（含分片）、envelope、version、第一批 schema 和登记表；`import-check`、`protocol-check`；CI 的 server、protocol 步骤；`CLAUDE.md` 依赖方向 | 我 | 已合 #35 |
 | W1b Noise | 从 `probe/p1` 搬 `protocol/noise/`，过 cacophony 向量 | 我（照搬 + 逐行审） | 已合 #39 |
 | W1c 主的基座 | config（zod、`widening()`、表单描述、唯一写路径、`config_changes`、seed 同步）、db（04 全部表、`change_log` 触发器、清理）、cli 骨架、backup + restore、`hub/test/test-home.sh` | 子线程（Opus），我审 | 已合 #43（审后我改了 restore 对 home 外 `secrets.env` 的处理、`self.yaml` 不进 `config_changes`；部署机冒烟 22/22） |
-| W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | PR 审中（分支 `w1d-hub-run`） |
-| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | #46 已 rebase 到 W1d 上并合在一起（一个渠道注册表、W1d 的 `SendResult`/`OutboxRow`、启动接在 outbox 前、分拣经代理），待审 |
-| W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 我 | |
+| W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | 已合 #45 |
+| W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 已合 #46（rebase 到 W1d 上合在一起：一个渠道注册表、W1d 的 `SendResult`/`OutboxRow`、启动接在 outbox 前、分拣经代理） |
+| W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 子线程（Opus） | PR 待审（分支 `w1-accept`）。补了 `runDraft`、私聊流式卡片、check 接节点、`backup` 任务接线；部署机冒烟 `smoke-w1` 33/33、`smoke-w1d` 17/17、`smoke-w1e` 11/11。逐项：私聊流式卡片 测试过（假后端），真卡待测试应用；群 @我 → 草稿 → 审批 → 发 测试和冒烟过（`shadow`），真发待测试应用；我自己回了卡作废 过；中途 kill 过；self/ 守卫 过；来源标签 过；代理 401/403/只告警 过；check 三种结果 过；Y11 对齐 过（测试）；seed 不碰线上配置 过（测试）；备份 + 恢复 过 |

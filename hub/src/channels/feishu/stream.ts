@@ -145,6 +145,7 @@ export class CardStream implements StreamHandle {
 
   /** text past the card limit, to send as a follow-up */
   static overflow(text: string) { return text.length > MAX_CARD_CHARS ? text.slice(MAX_CARD_CHARS) : ""; }
+  overflow(text: string) { return CardStream.overflow(text); }
 }
 
 async function finishCard(api: Backend["api"], cardId: string, sequence: number, text: string) {

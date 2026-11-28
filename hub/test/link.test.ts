@@ -9,8 +9,9 @@ import { createHash, randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { monitorEventLoopDelay } from "node:perf_hooks";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket } from "ws";
 import { tempHome } from "./helpers.ts";
+import { startTap, type Tap } from "./ws-tap.ts";
 import { DeviceKey, auth, authBytes, openChannel, pair, settle, type Channel } from "./fake-device.ts";
 import { useCrypto } from "../../protocol/noise/crypto.ts";
 import { nodeAead, nodeDh } from "../../protocol/noise/node-crypto.ts";
@@ -34,10 +35,9 @@ const OTHER_PK = b64u(new Uint8Array(32).fill(7));   // listed in relay.yaml, ne
 let h: ReturnType<typeof tempHome>, hub: Hub, hubKey: HubKey, relay: ChildProcess, relayPort = 0;
 const relayLog: string[] = [];
 const notices: string[] = [];
-/** everything the relay received or sent, as recorded at the tap: [side, bytes] */
-const wire: ["hub" | "peer", Buffer][] = [];
-let tapPort = 0, tap: WebSocketServer;
-const peerUrl = () => `ws://127.0.0.1:${tapPort}/v1/peer`;
+/** everything the relay received or sent, as recorded at the tap (ws-tap.ts) */
+let tap: Tap;
+const peerUrl = () => `ws://127.0.0.1:${tap.port}/v1/peer`;
 const names: string[] = [];     // device names used, so the no-plaintext check can look for them
 const secrets: string[] = [];   // invite secrets handed out, likewise
 
@@ -45,32 +45,6 @@ const until = async (cond: () => boolean, ms = 3000, what = "condition") => {
   const end = Date.now() + ms;
   while (!cond()) { if (Date.now() > end) throw new Error(`timed out: ${what}`); await new Promise((r) => setTimeout(r, 10)); }
 };
-
-/**
- * A WS man in the middle: accepts on its own port, opens the same path on the relay, copies every message both ways
- * and records it. X-Real-IP is passed through so the relay (which trusts it from loopback) sees the "device's" IP.
- */
-async function startTap(): Promise<void> {
-  tap = new WebSocketServer({ host: "127.0.0.1", port: 0, perMessageDeflate: false, maxPayload: 1 << 20 });
-  await new Promise<void>((r) => tap.once("listening", () => r()));
-  tapPort = (tap.address() as { port: number }).port;
-  tap.on("connection", (down, req) => {
-    const side = (req.url ?? "").startsWith("/v1/hub") ? "hub" : "peer";
-    const headers: Record<string, string> = {};
-    for (const k of ["authorization", "x-sbot-hub", "x-real-ip"]) if (typeof req.headers[k] === "string") headers[k] = req.headers[k] as string;
-    const up = new WebSocket(`ws://127.0.0.1:${relayPort}${req.url}`, { headers, perMessageDeflate: false });
-    const queue: Buffer[] = [];
-    const ok = (c: number) => c === 1000 || (c >= 3000 && c <= 4999);
-    down.on("message", (d: Buffer) => { wire.push([side, Buffer.from(d)]); if (up.readyState === WebSocket.OPEN) up.send(d); else queue.push(d); });
-    up.on("open", () => { for (const d of queue.splice(0)) up.send(d); });
-    up.on("message", (d: Buffer) => { wire.push([side, Buffer.from(d)]); if (down.readyState === WebSocket.OPEN) down.send(d); });
-    up.on("close", (code, reason) => { if (ok(code)) down.close(code, reason); else down.terminate(); });
-    down.on("close", (code, reason) => { if (up.readyState === WebSocket.OPEN) { if (ok(code)) up.close(code, reason); else up.terminate(); } else up.terminate(); });
-    up.on("unexpected-response", () => { down.terminate(); up.terminate(); });
-    up.on("error", () => down.terminate());
-    down.on("error", () => up.terminate());
-  });
-}
 
 async function startRelayChild(): Promise<void> {
   const conf = join(h.root, "relay.yaml");
@@ -103,8 +77,8 @@ before(async () => {
   // the key first, so relay.yaml can list it; boot then finds the same file
   hubKey = loadOrCreateHubKey(h.keys);
   await startRelayChild();
-  await startTap();
-  writeFileSync(join(h.config, "console.yaml"), `relay:\n  enabled: true\n  url: ws://127.0.0.1:${tapPort}/v1/hub\n`);
+  tap = await startTap(() => relayPort);
+  writeFileSync(join(h.config, "console.yaml"), `relay:\n  enabled: true\n  url: ws://127.0.0.1:${tap.port}/v1/hub\n`);
   writeFileSync(h.secrets, `RELAY_TOKEN=${TOKEN}\n`, { mode: 0o600 });
   hub = await boot(h, { proxyPort: 0 });
   setAdminSink((t) => { notices.push(t); });
@@ -113,8 +87,7 @@ before(async () => {
 
 after(async () => {
   await hub?.close();
-  for (const c of tap?.clients ?? []) c.terminate();
-  await new Promise<void>((r) => (tap ? tap.close(() => r()) : r()));
+  await tap?.close();
   relay?.kill("SIGTERM");
 });
 
@@ -417,9 +390,9 @@ test("the relay saw ciphertext only: no frame JSON, paths, names, secrets or ful
   // the check itself catches plaintext (on either side)
   assert.equal(leak("hub", Buffer.from(encodeEnvelope(DATA, 1, new TextEncoder().encode('{"t":"req","id":1,"method":"GET","path":"/api/v1/status"}')))), '"t":');
   assert.equal(leak("peer", Buffer.from(names[0]!)), names[0]);
-  assert.ok(wire.length > 200, `tap recorded ${wire.length} messages`);
-  assert.ok(wire.some(([side, b]) => side === "hub" && decodeEnvelope(b)?.type === DATA), "hub-side DATA was recorded");
-  for (const [side, b] of wire) assert.equal(leak(side, b), undefined, `a ${side} message contains plaintext`);
+  assert.ok(tap.wire.length > 200, `tap recorded ${tap.wire.length} messages`);
+  assert.ok(tap.wire.some(([side, b]) => side === "hub" && decodeEnvelope(b)?.type === DATA), "hub-side DATA was recorded");
+  for (const [side, b] of tap.wire) assert.equal(leak(side, b), undefined, `a ${side} message contains plaintext`);
   const log = relayLog.join("\n");
   for (const n of ["203.0.113.50", "198.51.100.7", ...names, ...secrets, TOKEN]) assert.ok(!log.includes(n), `relay log contains ${n}`);
   assert.ok(log.includes("203.0.113.0/24"), "the masked IP is what it logs");

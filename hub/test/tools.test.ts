@@ -143,6 +143,39 @@ test("redaction: known values, patterns, and a stream that splits a secret", asy
   assert.match(got.join(""), /前面 \[已打码\] 后面/);
 });
 
+test("stream redaction: Chinese goes out as it comes; a key between Chinese characters or a key block cut anywhere stays masked", async () => {
+  await w1dHome("redact-cjk");
+  const tick = () => new Promise((r) => setTimeout(r, 15));
+  const feed = async (parts: string[]) => {
+    const got: string[] = [];
+    const s = new StreamRedactor((t) => got.push(t), 5, 4096);
+    for (const p of parts) { s.push(p); await tick(); }
+    s.flush();
+    return got;
+  };
+  // no spaces at all: still several pieces before the end of the message (before: one piece, at flush)
+  const zh = await feed(["好的，", "我先", "看一下", "样稿的", "第二版。"]);
+  assert.ok(zh.length >= 4, `pieces: ${JSON.stringify(zh)}`);
+  assert.equal(zh.join(""), "好的，我先看一下样稿的第二版。");
+  // a known value split right after a Chinese character
+  const k = await feed(["密钥是fake-upstream-", "key-not-real-0001，", "别外传"]);
+  assert.ok(!k.join("").includes("fake-upstream"), k.join(""));
+  assert.match(k.join(""), /密钥是\[已打码\]，别外传/);
+  // a private key block arriving line by line, its markers split at the spaces: nothing of the body ever goes out
+  const pem = (w: string) => `-----${w} ${"PRIVATE"} KEY-----`;
+  const body = "QUJDREVGR0hJSktMTU5PUA";
+  const p = await feed(["看这个：\n", pem("BEGIN").slice(0, 11), pem("BEGIN").slice(11) + "\n", body + "\n", body + "\n", pem("END").slice(0, 9), pem("END").slice(9), "\n完了"]);
+  assert.ok(!p.join("").includes(body), p.join(""));
+  assert.match(p.join(""), /^看这个：\n\[已打码\]\n完了$/);
+  // longer than `hold`: it goes out masked, what follows is dropped up to END
+  const got: string[] = [];
+  const s = new StreamRedactor((t) => got.push(t), 5, 64);
+  for (const x of [pem("BEGIN") + "\n", `${body}\n`.repeat(6), `${body}\n`.repeat(6), pem("END"), "\n之后"]) { s.push(x); await tick(); }
+  s.flush();
+  assert.ok(!got.join("").includes(body), got.join(""));
+  assert.match(got.join(""), /\[已打码\][\s\S]*之后$/);
+});
+
 test("run_items: tool args and results are cut to 2 KB and marked", async () => {
   const { h, db } = await setup();
   writeFileSync(join(h.agentHome, "journal", "long.md"), "长".repeat(5000));

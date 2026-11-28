@@ -17,7 +17,7 @@ import { RelayLink } from "../hub/src/link/relay-link.ts";
 import { createInvite } from "../hub/src/link/pairing.ts";
 import { removeDevice } from "../hub/src/link/devices.ts";
 import { ingest } from "../hub/src/inbox.ts";
-import { itemStart } from "../hub/src/items.ts";
+import { itemEnd, itemStart } from "../hub/src/items.ts";
 import { tempHome } from "../hub/test/helpers.ts";
 
 const h = tempHome("clients-e2e");
@@ -75,6 +75,9 @@ async function control(c: Ctl): Promise<object> {
       api.pump.onItem(String(c.run), String(c.lane), { k: "message", text: String(c.text) });
       api.pump.kick();
       return {};
+    case "tool_start":
+      return { item: itemStart(db, h.blobs, { lane: String(c.lane), run_id: String(c.run), kind: "tool", name: String(c.name), call_id: `call_${randomBytes(3).toString("hex")}`, body: { args: { cmd: "ls" } }, status: "running" }), kick: api.pump.kick() };
+    case "tool_end": itemEnd(db, h.blobs, Number(c.item), "done", { args: { cmd: "ls" }, result: "exit 0" }); api.pump.kick(); return {};
     case "end_run": db.run("UPDATE runs SET status = 'done', ended = ? WHERE id = ?", Date.now(), String(c.run)); api.pump.kick(); return {};
     // the network drops: the relay goes away and comes back on the same port; the hub's link re-registers by itself
     case "drop": await relay.close(); relay = await startRelay(relayConf(port), quiet); return {};

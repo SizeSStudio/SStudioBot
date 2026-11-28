@@ -3,6 +3,7 @@
 // an idem_key the plugin must treat as idempotent, which is what makes recover() (sending → queued) safe.
 import type { Db, Row } from "./db/db.ts";
 import { channelsConf } from "./config/load.ts";
+import { redact } from "./tools/redact.ts";
 import { log } from "./log.ts";
 
 export type SendResult = { ok: true; msg_id?: string } | { ok: false; error: string; retry?: boolean; unknown?: boolean };
@@ -67,7 +68,8 @@ export function enqueue(db: Db, o: Enqueue): number {
       `INSERT INTO outbox(approval_id, run_id, lane, channel, kind, card_id, as_identity, target_json, payload, idem_key, send_by, ts)
        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
       o.approval_id ?? null, o.run_id || null, o.lane ?? null, o.channel, o.kind ?? "text", o.card_id ?? null, o.as_identity ?? "bot",
-      JSON.stringify(o.target), o.payload, o.idem_key ?? null, o.send_by ?? null, Date.now(),
+      // text leaves the process: redacted here too, whoever wrote it (03 tools); cards are redacted by cardOf
+      JSON.stringify(o.target), (o.kind ?? "text") === "text" ? redact(o.payload) : o.payload, o.idem_key ?? null, o.send_by ?? null, Date.now(),
     ).lastInsertRowid);
     if (!o.idem_key) db.run("UPDATE outbox SET idem_key = ? WHERE id = ?", `sbot-ob-${id}`, id);
     return id;

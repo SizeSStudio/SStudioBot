@@ -154,3 +154,30 @@ test("run_items: tool args and results are cut to 2 KB and marked", async () => 
   assert.ok(Buffer.byteLength(it.body_json) < 2600);
   db.close();
 });
+
+test("node paths are made absolute on the hub before the guard: a relative path into $SBOT_HOME/keys is refused", async () => {
+  const { h, db } = await setup();
+  const { basename, dirname, join: j } = await import("node:path");
+  const asked: string[] = [];
+  const node = {
+    connected: () => true,
+    // the worst default for the guard: the directory that holds $SBOT_HOME
+    defaultCwd: () => dirname(h.root),
+    async exec(o: { cmd: string; cwd: string }) { asked.push(`exec ${o.cwd}`); return { code: 0, signal: null, stdout: "", stderr: "" }; },
+    async readFile(p: string) { asked.push(`read ${p}`); return { data: Buffer.from("x"), total: 1 }; },
+    async writeFile(p: string) { asked.push(`write ${p}`); },
+  };
+  const ctx = { ...ctxFor(db, h, "owner@client"), node };
+  const home = basename(h.root);
+  for (const [tool, args] of [["read_file", { path: `${home}/keys/hub.key` }], ["write_file", { path: `./${home}/config/x.yaml`, text: "a" }], ["bash", { cmd: "ls", cwd: `${home}/keys` }]] as const) {
+    assert.match(await callTool(toolNamed(tool)!, args, ctx), /^error: 拒绝/, tool);
+  }
+  assert.deepEqual(asked, [], "nothing reached the node");
+  // allowed paths reach the node absolute, resolved against its default directory
+  await callTool(toolNamed("read_file")!, { path: "notes/a.txt" }, ctx);
+  await callTool(toolNamed("bash")!, { cmd: "ls" }, ctx);
+  assert.deepEqual(asked, [`read ${j(dirname(h.root), "notes", "a.txt")}`, `exec ${dirname(h.root)}`]);
+  // no node, no default directory: a relative path can't be placed, so it's refused, not guessed
+  const offline = { ...ctxFor(db, h, "owner@client") };
+  assert.match(await callTool(toolNamed("read_file")!, { path: "notes/a.txt" }, offline), /^error: .*相对路径定不了位/);
+});

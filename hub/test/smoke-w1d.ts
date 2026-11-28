@@ -1,7 +1,8 @@
 // W1d smoke on a fresh home (run by hub/test/test-home.sh with this file; SBOT_HOME is that home, SBOT_PORT the
 // smoke port, which the LLM proxy takes). A fake upstream runs in this process; nothing leaves the machine.
 //   pi → proxy → fake upstream; a real local node (bash over hub.sock); the self/ guard on a timer run; the three
-//   proxy cases; an approval; check's three outcomes; kill -9 mid-run in a second home and restart.
+//   proxy cases; an approval; the commitment check on someone else's reply (held, fixed line out); check's three
+//   outcomes; kill -9 mid-run in a second home and restart.
 // Exits non-zero on the first failure. Prints names and counts only.
 import { spawn, type ChildProcess } from "node:child_process";
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
@@ -33,6 +34,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 // the fake upstream answers by what the last user message asks for
 const lastUser = (b: any): string => JSON.stringify((b.messages ?? []).filter((m: { role: string }) => m.role === "user").slice(-1));
 let respond = (b: any): Step => {
+  if (typeof b.system === "string" && b.system.startsWith("检查一条草稿")) return { text: '{"promise":true,"stance":false,"private":false,"hits":["虚构的承诺"]}' };
   const u = lastUser(b);
   if (u.includes("tool_result")) return { text: "做完了。" };
   if (u.includes("跑命令")) return { tool: { name: "bash", input: { cmd: "echo smoke-node-ok" } } };
@@ -56,7 +58,11 @@ ok(port === Number(process.env.SBOT_PORT), `proxy on the smoke port ${port}`);
 mkdirSync(join(h.agentHome, "self"), { recursive: true });
 writeFileSync(join(h.agentHome, "self", "smoke.md"), "虚构：只在冒烟测试里存在。\n");
 
-const node: ChildProcess = spawn(process.execPath, [join(HERE, "..", "..", "node", "src", "main.ts")], { env: { ...process.env, SBOT_LOG: "off" }, stdio: "ignore" });
+// test-home.sh runs with HOME = SBOT_HOME, and the node's default directory is its HOME — which the guard rightly
+// refuses as a bash cwd. A real node account has its own home; here the node gets a work dir of its own.
+const work = join(h.root, "work");
+mkdirSync(work, { recursive: true });
+const node: ChildProcess = spawn(process.execPath, [join(HERE, "..", "..", "node", "src", "main.ts")], { env: { ...process.env, SBOT_LOG: "off", SBOT_NODE_CWD: work }, stdio: "ignore" });
 await hub.node.waitConnected(15_000);
 ok(hub.node.connected(), "local node connected over hub.sock");
 
@@ -99,6 +105,12 @@ const d = decide(hub.db, ap.id, { decision: "approve", by: { kind: "device", dev
 ok(d.ok && !!d.outbox_id, "approved by me: one outbox row");
 await until(() => hub.db.one<{ s: string }>("SELECT status AS s FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!.s !== "queued", "settled");
 ok(hub.db.one<{ s: string }>("SELECT status AS s FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!.s === "unrouted", "no feishu plugin yet (W1e): unrouted, not lost");
+
+ingest(hub.db, { lane: "client:other", kind: "user", source: "smoke", source_msg_id: "smoke-other-1", payload: { text: "周五能来吗", sender_name: "虚构的人" }, turn: { channel: "client", surface: "smoke:dm", chat: "oc_smokeother" } });
+await until(() => !!hub.db.one("SELECT 1 FROM approvals WHERE kind = 'send' AND context_json LIKE '%\"hold\":true%'"), "held reply");
+const holdSent = () => hub.db.all<{ p: string; t: string }>("SELECT payload AS p, target_json AS t FROM outbox WHERE kind = 'text'").filter((r) => JSON.parse(r.t).chat === "oc_smokeother").map((r) => r.p);
+await until(() => holdSent().length > 0, "holding line");
+ok(holdSent().length === 1 && holdSent()[0] !== "在。" && !!hub.db.one("SELECT 1 FROM usage WHERE tier = 'light'"), "someone else's reply: light check hit → approval, only the fixed line went out");
 
 const cwd = h.root;
 const c1 = await runCheck(hub.node, { job: "smoke", cmd: "true", cwd, sbotHome: h.root });

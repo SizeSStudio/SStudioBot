@@ -106,3 +106,22 @@ test("expiry, supersede, and my reply in the trigger chat invalidate pending car
   assert.equal(JSON.parse(re.payload).status, "invalidated");
   done();
 });
+
+test("a secret in a draft: the card, approvals.draft and the sent text are the same redacted text", async () => {
+  const { db, done } = await setup();
+  const { FAKE_KEY } = await import("./fake-llm.ts");
+  const { cardOf } = await import("../src/approvals.ts");
+  const id = submitApproval(db, { ...sendSpec, draft: `钥匙是 ${FAKE_KEY}，别外传` });
+  const row = db.one<{ draft: string }>("SELECT * FROM approvals WHERE id = ?", id)!;
+  assert.ok(!row.draft.includes(FAKE_KEY));
+  assert.match(row.draft, /\[已打码\]/);
+  assert.ok(cardOf(db.one("SELECT * FROM approvals WHERE id = ?", id)!).lines.includes(row.draft), "the card shows exactly the stored draft");
+  const d = decide(db, id, { decision: "approve", by: { kind: "device", device_id: "dev_fake1" } });
+  assert.ok(d.ok && d.outbox_id);
+  assert.equal(db.one<{ p: string }>("SELECT payload AS p FROM outbox WHERE id = ?", d.ok ? d.outbox_id! : 0)!.p, row.draft, "what goes out is what I saw");
+  // an edited final text and any text row written straight to the outbox are redacted too
+  const id2 = submitApproval(db, { ...sendSpec, trigger: { ...sendSpec.trigger, msg_id: "om_trigger2" } });
+  const d2 = decide(db, id2, { decision: "approve", by: { kind: "device", device_id: "dev_fake1" }, final_text: `改成：${FAKE_KEY}` });
+  assert.equal(db.one<{ p: string }>("SELECT payload AS p FROM outbox WHERE id = ?", d2.ok ? d2.outbox_id! : 0)!.p, "改成：[已打码]");
+  done();
+});

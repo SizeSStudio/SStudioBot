@@ -2,7 +2,7 @@
 // reconnect with 1, 2, 5, 10, 30 s backoff (same steps as the relay link, 03). Sessions, adapters, MCP, upgrade: W2+.
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
-import { platform } from "node:os";
+import { homedir, platform } from "node:os";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL } from "../../protocol/version.ts";
 import type { Hello } from "../../protocol/node/hello.ts";
@@ -14,7 +14,7 @@ export function sockPath(env = process.env): string {
   if (env.SBOT_NODE_SOCK) return env.SBOT_NODE_SOCK;
   if (platform() === "win32") return "\\\\.\\pipe\\sbot-hub";
   if (!env.SBOT_HOME) throw new Error("set SBOT_NODE_SOCK or SBOT_HOME");
-  return join(resolve(env.SBOT_HOME), "run", "hub.sock");
+  return join(resolve(env.SBOT_HOME), "node", "hub.sock");
 }
 
 function sha(): string {
@@ -22,7 +22,10 @@ function sha(): string {
   return existsSync(f) ? (readFileSync(f, "utf8").split("\n")[0] ?? "dev").trim() : "dev";
 }
 
-export const helloOf = (): Hello => ({ version: PROTOCOL.current, sha: sha(), os: platform(), agents: [], capabilities: {}, quotas: {} });
+/** Where commands run and relative paths point when the hub names no directory: SBOT_NODE_CWD, else this account's home. */
+export const defaultCwd = (env = process.env) => resolve(env.SBOT_NODE_CWD || homedir());
+
+export const helloOf = (): Hello => ({ version: PROTOCOL.current, sha: sha(), os: platform(), agents: [], capabilities: {}, quotas: {}, cwd: defaultCwd() });
 
 const log: Logger = (msg, fields = {}) => {
   if (process.env.SBOT_LOG === "off") return;

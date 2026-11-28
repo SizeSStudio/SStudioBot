@@ -10,7 +10,8 @@ export interface Home {
   raw: string;           // raw/sha256/…
   keys: string;          // keys/ (hub's static key etc.; private, never printed)
   secrets: string;       // secrets.env (write-only for agents)
-  run: string;           // run/ (0700): hub.sock, hub-admin.sock
+  run: string;           // run/ (0700): hub-admin.sock
+  node: string;          // node/ (0750, group = the local node account's): hub.sock (node-link.ts)
   pi: string;            // pi/: the embedded runner's private agentDir, session files, cwd (W1d)
   staging: string;       // backup-staging/
   logs: string;
@@ -29,6 +30,7 @@ export function home(root = process.env.SBOT_HOME): Home {
     keys: join(r, "keys"),
     secrets: process.env.SBOT_SECRETS ?? join(r, "secrets.env"),
     run: join(r, "run"),
+    node: join(r, "node"),
     pi: join(r, "pi"),
     staging: join(r, "backup-staging"),
     logs: join(r, "logs"),

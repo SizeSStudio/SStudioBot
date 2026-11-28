@@ -25,6 +25,8 @@ export interface ApprovalSpec {
   request?: Record<string, unknown>; options?: { id: string; label: string; kind?: string }[]; context?: Record<string, unknown>;
   task_id?: string; attempt?: number; session_ref?: string; tool_use_id?: string;
   trigger?: { chat?: string; msg_id?: string; ts?: number };
+  /** §底3.4 commitment check result, shown on the card */
+  checks?: { hits: string[] };
 }
 
 const HOUR = 3600_000;
@@ -53,6 +55,8 @@ export function cardOf(a: Row): Card {
   const lines: string[] = [];
   if (kind === "send" && target) lines.push(`发到：${a.channel ?? ""} ${target.to ?? target.chat ?? ""}`.trim() + (a.as_identity === "user" ? "（用我的身份）" : ""));
   if (a.draft) lines.push(String(a.draft));
+  const checks = a.checks_json ? (JSON.parse(String(a.checks_json)) as { hits?: string[] }) : undefined;
+  if (checks?.hits?.length) lines.push(`⚠️ 承诺检测：${checks.hits.join("；")}`);
   const detailText = req ? String(req.command ?? req.path ?? JSON.stringify(req, null, 1)) : undefined;
   return redactDeep({
     approval_id: Number(a.id), kind, title: String(a.title ?? ""), lines,
@@ -66,18 +70,20 @@ export function cardOf(a: Row): Card {
 /**
  * Write a pending approval and put its card on the admin outlets whose channel can show cards. Clients see it from
  * the approvals table itself, so no client row. Returns the id (「已提交审批 #N」).
+ * The draft is redacted before it is stored: what the card shows is exactly what approving sends (03 tools: anything
+ * leaving the process is redacted).
  */
 export function submitApproval(db: Db, s: ApprovalSpec): number {
   const now = Date.now();
   const id = db.tx(() => {
     const id = Number(db.run(
       `INSERT INTO approvals(kind, origin_lane, run_id, task_id, attempt, session_ref, tool_use_id, requester, channel, target_json, as_identity,
-         title, draft, request_json, options_json, context_json, trigger_chat, trigger_msg_id, trigger_ts, expires_at, ts)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         title, draft, request_json, options_json, context_json, checks_json, trigger_chat, trigger_msg_id, trigger_ts, expires_at, ts)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       s.kind, s.origin_lane ?? null, s.run_id ?? null, s.task_id ?? null, s.attempt ?? null, s.session_ref ?? null, s.tool_use_id ?? null,
       s.requester ?? null, s.channel ?? null, s.target ? JSON.stringify(s.target) : null, s.as_identity ?? null,
-      redact(s.title), s.draft ?? null, s.request ? JSON.stringify(s.request) : null, s.options ? JSON.stringify(s.options) : null,
-      s.context ? JSON.stringify(s.context) : null, s.trigger?.chat ?? null, s.trigger?.msg_id ?? null, s.trigger?.ts ?? null, expiresAt(s.kind, now), now,
+      redact(s.title), s.draft != null ? redact(s.draft) : null, s.request ? JSON.stringify(s.request) : null, s.options ? JSON.stringify(s.options) : null,
+      s.context ? JSON.stringify(s.context) : null, s.checks ? JSON.stringify(s.checks) : null, s.trigger?.chat ?? null, s.trigger?.msg_id ?? null, s.trigger?.ts ?? null, expiresAt(s.kind, now), now,
     ).lastInsertRowid);
     const a = db.one("SELECT * FROM approvals WHERE id = ?", id)!;
     toOutlet(db, "admin", JSON.stringify(cardOf(a)), { kind: "card", lane: s.origin_lane, run_id: s.run_id, idem: `approval:${id}:card`, cardsOnly: true, noClient: true });
@@ -96,6 +102,8 @@ export type Decider =
 export function isMe(db: Db, by: Decider): boolean {
   if (by.kind === "device") {
     if (by.role === "node") return false;
+    // `cli` is hub-admin.sock (only the hub's own account can connect). No paired device may ever get this id:
+    // W2's pairing must never hand it out (03 link)
     if (by.device_id === "cli") return true;
     const d = db.one<{ role: string; removed_at: number | null }>("SELECT role, removed_at FROM devices WHERE id = ?", by.device_id);
     return !!d && d.role === "client" && d.removed_at == null;
@@ -126,12 +134,12 @@ export function decide(db: Db, id: number, d: Decision): DecideResult {
     if (!a) return { ok: false, error: `没有审批 #${id}` };
     if (a.status !== "pending") return { ok: false, error: `这张卡已经是 ${a.status}` };   // first decision wins
     if (a.expires_at != null && Number(a.expires_at) < Date.now()) {
-      db.run("UPDATE approvals SET status = 'expired', decided_by = 'code:expired', decided_at = ? WHERE id = ?", Date.now(), id);
+      expire(db, a, Date.now());
       return { ok: false, error: "已过期" };
     }
     if (d.draft_version != null && d.draft_version !== Number(a.draft_version)) return { ok: false, error: "草稿改过了，按最新的再决定" };
     const status = d.decision === "approve" ? "approved" : "rejected";
-    const final = d.decision === "approve" ? (d.final_text ?? (a.draft as string | null) ?? null) : null;
+    const final = d.decision === "approve" ? redact(d.final_text ?? (a.draft as string | null) ?? "") : null;
     db.run("UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decide_note = ?, final_text = ?, answer_json = ? WHERE id = ?",
       status, byText(d.by), Date.now(), d.note ?? null, final, d.answer ? JSON.stringify(d.answer) : null, id);
     let outbox_id: number | undefined;
@@ -166,14 +174,28 @@ function refreshCards(db: Db, a: Row, status: string) {
   }
 }
 
+/**
+ * pending → expired. A held reply in someone else's conversation (context.hold, reply.ts) also sends gate.yaml's
+ * fixed hold_timeout_text to that conversation, once (§底3.4).
+ */
+function expire(db: Db, a: Row, now: number) {
+  db.run("UPDATE approvals SET status = 'expired', decided_by = 'code:expired', decided_at = ? WHERE id = ? AND status = 'pending'", now, Number(a.id));
+  refreshCards(db, a, "expired");
+  const ctx = a.context_json ? (JSON.parse(String(a.context_json)) as { hold?: boolean }) : {};
+  if (a.kind === "send" && ctx.hold && a.channel) {
+    enqueue(db, {
+      channel: String(a.channel), target: JSON.parse(String(a.target_json ?? "{}")), payload: gateConf().hold_timeout_text,
+      lane: (a.origin_lane as string | null) ?? null, run_id: (a.run_id as string | null) ?? null,
+      send_by: now + gateConf().send_by_hours * HOUR, idem_key: `approval:${a.id}:hold-timeout`,
+    });
+  }
+}
+
 /** Expiry sweep: pending past expires_at → expired (glance/ask have none). */
 export function sweepApprovals(db: Db, now = Date.now()): number {
   return db.tx(() => {
     const rows = db.all("SELECT * FROM approvals WHERE status = 'pending' AND expires_at IS NOT NULL AND expires_at < ?", now);
-    for (const a of rows) {
-      db.run("UPDATE approvals SET status = 'expired', decided_by = 'code:expired', decided_at = ? WHERE id = ?", now, Number(a.id));
-      refreshCards(db, a, "expired");
-    }
+    for (const a of rows) expire(db, a, now);
     return rows.length;
   });
 }

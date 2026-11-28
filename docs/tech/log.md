@@ -24,6 +24,7 @@
 - 节点上 Claude Code 的工作区信任默认不预记，只用用户级规则；按仓库开、默认关、走 `widening()`（P5–P8 ※，05）。预记会让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，等于跑仓库里的代码。
 - ACP 新 session 默认 `auto`、不发权限请求，节点建 session 后切到 `default`（P5–P8，05）。
 - W1d 的 ※（PR 描述「等过目」有全表）：run 令牌放内存 credential store 不走环境变量；出网代理 7820–7828；连崩两次按 `inbox.tries`；熔断后非我输入直接 `failed`；找不到插件的发件标 `unrouted`；check 命令也过命令守卫；令牌不设 TTL；exec 每路输出留前 300 KB。
+- W1d 审后的 ※（#45「审后修」）：稳住对方的两句键名 `hold_text`、`hold_timeout_text`；承诺检测最多等 60 秒，调不通、不成形、超时都按命中；他人会话的出错提示改发管理出口；`hub.sock` 挪到 `$SBOT_HOME/node/`（0750，属组 `SBOT_NODE_GROUP`），部署时 `$SBOT_HOME` 要给节点组 `x`（0710），W7 写进 `deploy/`。
 
 ## 等你准备
 

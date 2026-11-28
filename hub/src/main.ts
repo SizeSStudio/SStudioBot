@@ -23,6 +23,7 @@ import { Outbox, toOutlet } from "./outbox.ts";
 import { startProxy } from "./proxy.ts";
 import { NodeLink } from "./node-link.ts";
 import { Dispatcher } from "./dispatch.ts";
+import { proxyCommitChecker } from "./commit-check.ts";
 import { PiRunner } from "./runner/pi.ts";
 import type { Runner } from "./runner/types.ts";
 import { registerBuiltinTools } from "./tools/builtin.ts";
@@ -91,10 +92,10 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => proxy.close() });
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
-    const dispatcher = new Dispatcher({ db, h, runner, node });
+    const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase) });
     // before anything can take new rows: what the last process left half done (§底1.2)
     dispatcher.recover();
-    await node.listen(h.run);
+    await node.listen(h.node);
     opened.push(node);
     // W1e: channels start here, before the outbox drains
     outbox.start();

@@ -1,31 +1,14 @@
 // The tools W1d brings: reply, memory_read, bash / read_file / write_file (through the local node), send (L2).
 // W1e registers its own (memory_search, self_list, ledgers, …) through the same registerTool().
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { isAbsolute, normalize, relative, resolve } from "node:path";
 import { z } from "zod";
-import { enqueue, toOutlet } from "../outbox.ts";
-import { gateConf } from "../config/load.ts";
+import { replyGated } from "../reply.ts";
 import { registerTool, type ToolCtx } from "./registry.ts";
 import { relToAgentHome } from "./guard.ts";
 
-const HOUR = 3600_000;
-
-/** Reply to where this round's input came from (TurnContext); with no turn (a job), to the main outlet. */
-export function queueReply(ctx: Pick<ToolCtx, "db" | "run_id" | "lane" | "turn">, text: string, countIt = true): number {
-  const { db } = ctx;
-  return db.tx(() => {
-    // callTool already counted the `reply` tool; the dispatcher's own sends count here
-    if (countIt) db.run("UPDATE runs SET side_effects = side_effects + 1 WHERE id = ?", ctx.run_id);
-    if (ctx.turn.channel === "outlet:main") {
-      const ids = toOutlet(db, "main", text, { lane: ctx.lane, run_id: ctx.run_id });
-      return ids[0] ?? 0;
-    }
-    return enqueue(db, {
-      channel: ctx.turn.channel, target: { ...ctx.turn }, payload: text, lane: ctx.lane, run_id: ctx.run_id,
-      send_by: Date.now() + gateConf().send_by_hours * HOUR,
-    });
-  });
-}
+// queueReply lives in reply.ts now (the others column needs the commitment check next to it)
+export { queueReply } from "../reply.ts";
 
 const MEMORY_MAX = 12_000;
 
@@ -35,7 +18,13 @@ export function registerBuiltinTools() {
     cols: { typed: true, system: true, others: "scoped" },
     description: "先发一句或分几条发给这一轮的来源。你的最终回答会自动发出；只有要先说一句再干活、或者要分条发时才用它。",
     schema: z.object({ text: z.string().min(1).max(8000) }),
-    async exec({ text }, ctx) { queueReply(ctx, text, false); ctx.replies++; return "已排进发件箱"; },
+    async exec({ text }, ctx) {
+      // callTool already counted it; in someone else's conversation the commitment check decides (§底3.4)
+      const r = await replyGated(ctx, text, false);
+      ctx.replies++;
+      return "sent" in r ? "已排进发件箱"
+        : `这句要我先过目（${r.hits.join("；")}），已转审批 #${r.approval}；对方先收到一句固定的回复。别重发，也别说已经答应了。`;
+    },
   });
 
   registerTool({
@@ -57,15 +46,25 @@ export function registerBuiltinTools() {
     },
   });
 
-  const cwdOf = (ctx: ToolCtx, cwd?: string) => cwd ?? process.env.SBOT_NODE_CWD ?? join(ctx.h.root, "..");
+  /**
+   * A path on the node, made absolute here so the guards judge exactly what the node will touch: absolute as given;
+   * relative against `base`, else the node's default directory (its account's home or SBOT_NODE_CWD, from its hello).
+   */
+  const onNode = (ctx: ToolCtx, p: string, base?: string): string => {
+    if (isAbsolute(p)) return normalize(p);
+    const b = base ?? ctx.node?.defaultCwd();
+    if (!b) throw new Error("本机节点没连上（或没报它的默认目录），相对路径定不了位；连上再试，或者写绝对路径");
+    return resolve(b, p);
+  };
+  const cwdOf = (ctx: ToolCtx, cwd?: string) => onNode(ctx, cwd ?? ".");
   const needNode = (ctx: ToolCtx) => { if (!ctx.node?.connected()) throw new Error("本机节点没连上，bash 和读写文件暂时用不了"); return ctx.node; };
 
   registerTool({
     name: "bash", level: "L1", readOnly: false,
     cols: { typed: true, system: false, others: false },
-    description: "在本机节点上以节点账号跑一条 bash 命令（bash -lc），返回退出码、stdout、stderr。不设时长；我说停会杀掉整个进程组。",
+    description: "在本机节点上以节点账号跑一条 bash 命令（bash -lc），返回退出码、stdout、stderr。不给 cwd 就在节点的默认目录（节点账号的 home）跑。不设时长；我说停会杀掉整个进程组。",
     schema: z.object({ cmd: z.string().min(1), cwd: z.string().optional() }),
-    touches: ({ cmd, cwd }) => ({ cmd: cwd ? `${cmd}\n${cwd}` : cmd }),
+    touches: ({ cmd, cwd }, ctx) => ({ cmd: `${cmd}\n${cwdOf(ctx, cwd)}` }),
     async exec({ cmd, cwd }, ctx) {
       const r = await needNode(ctx).exec({ cmd, cwd: cwdOf(ctx, cwd) }, ctx.signal);
       return [`exit ${r.code ?? `signal ${r.signal}`}`, r.stdout && `stdout:\n${r.stdout}`, r.stderr && `stderr:\n${r.stderr}`].filter(Boolean).join("\n");
@@ -75,11 +74,11 @@ export function registerBuiltinTools() {
   registerTool({
     name: "read_file", level: "L0", readOnly: true,
     cols: { typed: true, system: false, others: false },
-    description: "经本机节点读一个文件（UTF-8）。长的分段读：offset、len 按字节。",
+    description: "经本机节点读一个文件（UTF-8）。相对路径从节点的默认目录（节点账号的 home）算。长的分段读：offset、len 按字节。",
     schema: z.object({ path: z.string().min(1), offset: z.number().int().nonnegative().optional(), len: z.number().int().positive().max(1_000_000).optional() }),
-    touches: ({ path }) => ({ read: [path] }),
+    touches: ({ path }, ctx) => ({ read: [onNode(ctx, path)] }),
     async exec({ path, offset, len }, ctx) {
-      const r = await needNode(ctx).readFile(path, { offset, len: len ?? 200_000 });
+      const r = await needNode(ctx).readFile(onNode(ctx, path), { offset, len: len ?? 200_000 });
       const end = (offset ?? 0) + r.data.length;
       return (end < r.total || (offset ?? 0) > 0 ? `（读到第 ${end} 字节 / 共 ${r.total}）\n` : "") + r.data.toString("utf8");
     },
@@ -88,12 +87,13 @@ export function registerBuiltinTools() {
   registerTool({
     name: "write_file", level: "L1", readOnly: false,
     cols: { typed: true, system: false, others: false },
-    description: "经本机节点写一个文件（整份覆盖，append=true 时追加）。",
+    description: "经本机节点写一个文件（整份覆盖，append=true 时追加）。相对路径从节点的默认目录（节点账号的 home）算。",
     schema: z.object({ path: z.string().min(1), text: z.string(), append: z.boolean().optional() }),
-    touches: ({ path }) => ({ write: [path] }),
+    touches: ({ path }, ctx) => ({ write: [onNode(ctx, path)] }),
     async exec({ path, text, append }, ctx) {
-      await needNode(ctx).writeFile(path, Buffer.from(text, "utf8"), append);
-      return `已写入 ${path}（${Buffer.byteLength(text)} 字节）`;
+      const abs = onNode(ctx, path);
+      await needNode(ctx).writeFile(abs, Buffer.from(text, "utf8"), append);
+      return `已写入 ${abs}（${Buffer.byteLength(text)} 字节）`;
     },
   });
 

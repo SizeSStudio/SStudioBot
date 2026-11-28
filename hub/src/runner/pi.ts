@@ -100,10 +100,14 @@ export class PiRunner implements Runner {
     const sm = o.session_ref && existsSync(o.session_ref)
       ? pi.SessionManager.open(o.session_ref, this.dirs.sessions)
       : pi.SessionManager.create(this.dirs.cwd, this.dirs.sessions);
-    const { session } = await pi.createAgentSession({
+    // two locks on pi's own tools (read, bash, edit, write): builtins off, and an allowlist of exactly this round's
+    // names (a custom tool replaces a builtin of the same name, so our `bash` is ours). Typed, so a misspelt option fails tsc.
+    const opts = {
       cwd: this.dirs.cwd, agentDir: this.dirs.agentDir, model, thinkingLevel: "off", modelRuntime: runtime, resourceLoader,
-      settingsManager, sessionManager: sm, noTools: "builtin", customTools: piTools(o.tools, o.ctx, tools, o.signal),
-    } as never) as { session: pi.AgentSession };
+      settingsManager, sessionManager: sm, noTools: "builtin", tools: o.tools.map((t) => t.name),
+      customTools: piTools(o.tools, o.ctx, tools, o.signal) as unknown as pi.ToolDefinition[],
+    } satisfies pi.CreateAgentSessionOptions;
+    const { session } = await pi.createAgentSession(opts);
 
     const live: Live = { session, steered: [] };
     this.#live.set(o.lane, live);

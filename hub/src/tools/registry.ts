@@ -7,6 +7,7 @@ import type { Db } from "../db/db.ts";
 import type { Home } from "../home.ts";
 import type { Col, TurnContext } from "../turn.ts";
 import type { ExecRes } from "../../../protocol/node/hello.ts";
+import type { CommitChecker } from "../commit-check.ts";
 import { submitApproval, type ApprovalSpec } from "../approvals.ts";
 import { itemEnd, itemStart } from "../items.ts";
 import { commandGuard, selfGuard } from "./guard.ts";
@@ -16,6 +17,8 @@ import { log } from "../log.ts";
 /** The local node as tools see it (node-link.ts implements it). */
 export interface NodeClient {
   connected(): boolean;
+  /** the node's default directory (its hello); relative paths are resolved against it on the hub, before the guards */
+  defaultCwd(): string | undefined;
   exec(o: { cmd: string; cwd: string; env?: Record<string, string>; stdin?: string }, signal?: AbortSignal): Promise<ExecRes>;
   readFile(path: string, o?: { offset?: number; len?: number }): Promise<{ data: Buffer; total: number }>;
   writeFile(path: string, data: Buffer, append?: boolean): Promise<void>;
@@ -26,6 +29,8 @@ export interface ToolCtx {
   node?: NodeClient; signal?: AbortSignal; call_id?: string;
   /** replies queued by this run (the dispatcher sends the final text only when there were none) */
   replies: number;
+  /** §底3.4: the others column's commitment check; missing = every reply there goes to approval (fail closed) */
+  commitCheck?: CommitChecker;
 }
 
 export interface ToolDef<S extends z.ZodObject = z.ZodObject> {
@@ -74,7 +79,8 @@ export async function callTool(def: ToolDef, rawArgs: unknown, ctx: ToolCtx): Pr
   if (!parsed.success) return refuse(`参数不对：${parsed.error.issues.slice(0, 4).map((i) => `${i.path.join(".") || "(根)"} ${i.message}`).join("；")}`);
   const args = parsed.data;
   // 3 guards: where it goes, never what it writes
-  const t = def.touches?.(args, ctx) ?? {};
+  let t: ReturnType<NonNullable<ToolDef["touches"]>>;
+  try { t = def.touches?.(args, ctx) ?? {}; } catch (e) { return refuse(String((e as Error)?.message ?? e).slice(0, 300)); }
   for (const p of t.read ?? []) {
     const why = selfGuard(p, ctx.col, h.agentHome) ?? commandGuard(p, { sbotHome: h.root });
     if (why) return refuse(why);

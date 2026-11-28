@@ -10,6 +10,7 @@ export const Hello = z.object({
   capabilities: z.record(z.string(), z.record(z.string(), z.boolean())),  // per agent, P5–P8: only 3/3 is true
   quotas: z.record(z.string(), z.unknown()),
   max_parallel: z.number().int().positive().optional(),
+  cwd: z.string().optional(),         // the node's default directory (SBOT_NODE_CWD, else its account's home); the hub resolves relative paths against it
 });
 export const HelloRes = z.object({
   target_sha: z.string(),             // 05: differs from `sha` → the node upgrades itself

@@ -1,19 +1,51 @@
-// The local node's link (03 link, 05): hub.sock under run/ (0700), the socket 0660 so the node account's group can
-// connect. Connecting there is `role: node`, device id `local`, no pairing (same machine, file permissions, veto 3).
+// The local node's link (03 link, 05): hub.sock in its own directory $SBOT_HOME/node/ (0750, group = the local node
+// account's group from SBOT_NODE_GROUP, else the hub's own), the socket 0660. Not under run/: run/ is 0700 for the
+// admin socket, and a node account that can't enter run/ couldn't reach a socket inside it whatever its mode.
+// Connecting is `role: node`, device id `local`, no pairing (same machine, file permissions, veto 3).
 // Requests go both ways on one connection: the node says hello; the hub sends /node/v1/exec and fs/* down.
 import { createServer, type Server, type Socket } from "node:net";
-import { chmodSync, existsSync, unlinkSync } from "node:fs";
-import { join } from "node:path";
+import { chmodSync, chownSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { encodeFrame, parseFrame, type Req, type Res } from "../../protocol/frames.ts";
 import { encodeLen, FrameReader } from "../../protocol/lenframe.ts";
 import { PROTOCOL } from "../../protocol/version.ts";
 import { ExecRes, FsReadRes, Hello, type HelloRes } from "../../protocol/node/hello.ts";
-import { ensureRunDir } from "./admin-socket.ts";
 import type { NodeClient } from "./tools/registry.ts";
 import { log } from "./log.ts";
 
-export const nodeSocketPath = (runDir: string) =>
-  process.env.SBOT_NODE_SOCK ?? (process.platform === "win32" ? "\\\\.\\pipe\\sbot-hub" : join(runDir, "hub.sock"));
+export const nodeSocketPath = (nodeDir: string) =>
+  process.env.SBOT_NODE_SOCK ?? (process.platform === "win32" ? "\\\\.\\pipe\\sbot-hub" : join(nodeDir, "hub.sock"));
+
+/** A group name (from /etc/group) or a numeric gid. */
+export function gidOf(group: string, groupFile = "/etc/group"): number {
+  if (/^\d+$/.test(group)) return Number(group);
+  for (const line of existsSync(groupFile) ? readFileSync(groupFile, "utf8").split("\n") : []) {
+    const [name, , gid] = line.split(":");
+    if (name === group && gid && /^\d+$/.test(gid)) return Number(gid);
+  }
+  throw new Error(`SBOT_NODE_GROUP=${group}: no such group`);
+}
+
+/**
+ * $SBOT_HOME/node/: ours, 0750, group = the node account's (so it can enter and connect, nobody else can). Returns
+ * the gid it set, if any. Changing a directory's group needs the hub's account to be in that group (deploy, 05).
+ */
+export function ensureNodeDir(dir: string, group = process.env.SBOT_NODE_GROUP): number | undefined {
+  mkdirSync(dir, { recursive: true, mode: 0o750 });
+  if (process.platform === "win32") return undefined;
+  const st = statSync(dir);
+  if (process.getuid && st.uid !== process.getuid()) throw new Error(`${dir} is not owned by this account (uid ${st.uid}); refusing to put hub.sock there`);
+  let gid: number | undefined;
+  if (group) {
+    gid = gidOf(group);
+    try { chownSync(dir, st.uid, gid); } catch (e) { throw new Error(`can't give ${dir} to group ${group} (is the hub's account in it?): ${(e as Error).message}`); }
+    // the node account also has to pass through $SBOT_HOME itself; say so instead of failing silently later
+    const up = statSync(dirname(dir));
+    if (!(up.gid === gid ? up.mode & 0o010 : up.mode & 0o001)) log("node-link", "the node group can't enter SBOT_HOME (needs g+x with that group, 05)", {});
+  }
+  chmodSync(dir, 0o750);
+  return gid;
+}
 
 type Pending = { resolve: (r: Res) => void; reject: (e: Error) => void };
 
@@ -27,18 +59,24 @@ export class NodeLink implements NodeClient {
 
   constructor(targetSha: string) { this.targetSha = targetSha; }
 
-  async listen(runDir: string): Promise<string> {
-    const path = nodeSocketPath(runDir);
-    if (!process.env.SBOT_NODE_SOCK) ensureRunDir(runDir);
+  async listen(nodeDir: string): Promise<string> {
+    const path = nodeSocketPath(nodeDir);
+    const gid = process.env.SBOT_NODE_SOCK ? undefined : ensureNodeDir(nodeDir);
     if (process.platform !== "win32" && existsSync(path)) unlinkSync(path);
     this.#server = createServer((sock) => this.#accept(sock));
     await new Promise<void>((res, rej) => { this.#server!.once("error", rej); this.#server!.listen(path, () => { this.#server!.off("error", rej); res(); }); });
-    if (process.platform !== "win32") chmodSync(path, 0o660);
+    if (process.platform !== "win32") {
+      chmodSync(path, 0o660);
+      if (gid !== undefined) chownSync(path, statSync(path).uid, gid);
+    }
     log("node-link", "listening", { socket: "hub.sock" });
     return path;
   }
 
   connected() { return !!this.#sock && !this.#sock.destroyed && !!this.hello; }
+
+  /** The node's own default directory, from its hello. */
+  defaultCwd() { return this.connected() ? this.hello?.cwd : undefined; }
 
   /** Resolves once a node has said hello (tests, startup checks). */
   async waitConnected(ms = 10_000) {

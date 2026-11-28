@@ -145,4 +145,4 @@ type AgentEvent =
 
 - `deploy/node/install.sh`（Linux、Mac）、`deploy/node/install.ps1`（Windows）：克隆到 `~/.local/share/sbot-node`（Windows `%LOCALAPPDATA%`）、`npm ci --ignore-scripts`、装服务。
 - 配对：`sbot-node pair '<链接>'`（链接来自 `sbot pair --node`、客户端「加一台」选节点、飞书 `/pair node`）。设备私钥：Linux 存 `~/.config/sbot-node/device.key`（0600）；Mac 存钥匙串；Windows 用 DPAPI 加密存文件 ※（节点没有 Electron 的 `safeStorage`；同一系统用户的进程读得到，同 §底3.8 第二行）。
-- 本机节点不配对，连 `hub.sock`（03 link）。Windows 主：named pipe `\\.\pipe\sbot-hub`，ACL 只给主的账号和本机节点账号；Mac、Windows 当主时两者同一个用户（§底3.8）。
+- 本机节点不配对，连 `hub.sock`（03 link）：Linux、Mac 是 `$SBOT_HOME/node/hub.sock`（`SBOT_NODE_SOCK` 可改），目录 0750、属组是本机节点账号的组（`SBOT_NODE_GROUP`）。hello 里报 `cwd`：这台的默认目录（`SBOT_NODE_CWD`，否则节点账号的 home），主按它把相对路径变成绝对路径再过守卫。Windows 主：named pipe `\\.\pipe\sbot-hub`，ACL 只给主的账号和本机节点账号；Mac、Windows 当主时两者同一个用户（§底3.8）。

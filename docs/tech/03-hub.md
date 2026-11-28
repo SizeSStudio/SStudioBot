@@ -64,7 +64,7 @@
     steer(lane: string, text: string, inbox_id: number): Promise<boolean>;   // false = 插不进，调用方排队 ※（pi 的 steer 是异步的）
   }
   ```
-- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`（`$SBOT_HOME/pi/`）、`noTools: "builtin"` + `customTools`。`models.json` 不写 key：每个 run 自己一个 `ModelRuntime`，令牌放进内存里的 credential store（`setRuntimeApiKey("sbot", token)`）※——lane 并发跑，一个进程共用的 `$SBOT_RUN_TOKEN` 环境变量会串。工具 schema 给 pi 时用 zod 的输入形状（`io: "input"`）：pi 在执行前按它校验参数，输出形状里带默认值的字段算必填，靠默认值的调用会被 pi 挡掉、到不了 `callTool`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
+- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`（`$SBOT_HOME/pi/`）、`noTools: "builtin"` + `customTools`，再加 `tools` 允许列表只放这一轮的工具名（同名的自定义工具顶掉 pi 自带的，`bash` 是我们的）；选项按 pi 的类型写，拼错 tsc 报。`models.json` 不写 key：每个 run 自己一个 `ModelRuntime`，令牌放进内存里的 credential store（`setRuntimeApiKey("sbot", token)`）※——lane 并发跑，一个进程共用的 `$SBOT_RUN_TOKEN` 环境变量会串。工具 schema 给 pi 时用 zod 的输入形状（`io: "input"`）：pi 在执行前按它校验参数，输出形状里带默认值的字段算必填，靠默认值的调用会被 pi 挡掉、到不了 `callTool`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
 - `onItem` 转发 pi 的 `message_update`、`tool_execution_start/end`，先打码再写 `run_items`、推 delta（§触6.4）；回调出错只记日志，不影响 run。
 - **提示词**（R7）：`promptFiles()` 加载 `AGENTS.md`、`SOUL.md`、`USER.md`、`MEMORY.md`，以及只在我亲手发的那一轮加载的 `VOICE.md`、`self/practice.md`（截短）和本月、本周前瞻要点（§附2.15、§附2.16）。拼装顺序在 `systemPrompt()` 一处定。超了各自上限截断并在提示里说「超了」，不静默。召回片段和「记忆改了」放 user 消息，不进 system。
 - **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。W1d 先用 pi 自带的压缩 ※，自己的摘要随 memory（W1e）。
@@ -82,14 +82,15 @@
 - 本轮工具 = 列 ∩ 域规则。列由 `ctx.src` 判：`owner@` → typed，`job@`/`system@` → system，他人会话 → others。`node` 设备的任务经 MCP 调时按 system 列。
 - **调用顺序**（`callTool`）：列检查 → zod 校验 → 守卫 → 闸门（L0、L1 执行；L2 写 `approvals` 立即返回「已提交审批 #N」）→ 执行 → 结果打码 → `run_items`。异常转成 `error: …` 字符串给模型，不抛给 runner。
 - **`self/` 守卫**（R1）：一个函数 `selfGuard(path, ctx)` 在所有读路径的工具（`memory_read`、`memory_search`、`timeline_query`、`readings_query`、`self_*`、`bash`/读写文件）里调，不分渠道。规则照 §读5.1 和三列表：typed 可整份；system 只给条目级（`self_list`），`habits.md`、`rhythms.md`、`charts/`、`practice.md`、`timeline.md`、出生信息整份不给；others 读不到 `self/`、身体、时间线。`self_mark`、`reading_revisit` 改看 `ctx.src` 前缀，不看来源字符串里有没有 `owner`。
-- **`bash` 和读写文件**：只在 typed 列，经本机节点 `/node/v1/exec`、`fs/*`（05）以节点账号跑。命令守卫（软边界，§底3.8）：拒绝命令或路径里出现 `$SBOT_HOME`（`db/`、`config/`、`keys/`、`secrets.env`、`agent-home/` 原文件）、`/proc/*/environ`、`/run/sbot`、渠道 CLI 的凭证目录；只看去哪，不看写进去的内容（同旧 `coreGuard`）。被拒的写进 `run_items`，告诉模型为什么。
-- **打码**：一个 `redact(text)`：已知密钥的值（从 `secrets.env` 和 `keys/` 读进内存的那份）+ 常见密钥格式（`sk-`、`ghp_`、`xox`、PEM 头、`AKIA`、JWT 三段）。流式按 50～100 ms 一批、在行或空白边界整段替换（§触6.4）。日志、`run_items`、事件流、审批卡都过它。
+- **`bash` 和读写文件**：只在 typed 列，经本机节点 `/node/v1/exec`、`fs/*`（05）以节点账号跑。命令守卫（软边界，§底3.8）：拒绝命令或路径里出现 `$SBOT_HOME`（`db/`、`config/`、`keys/`、`secrets.env`、`agent-home/` 原文件）、`/proc/*/environ`、`/run/sbot`、渠道 CLI 的凭证目录；只看去哪，不看写进去的内容（同旧 `coreGuard`）。被拒的写进 `run_items`，告诉模型为什么。路径先在主这边变成绝对路径再给守卫看，发给节点的也是这份：相对路径按给的 `cwd`，没给就按节点 hello 里报的默认目录（`SBOT_NODE_CWD`，否则节点账号的 home）；节点没连上就拒，不猜。`bash` 不给 `cwd` 也在这个默认目录跑。
+- **打码**：一个 `redact(text)`：已知密钥的值（从 `secrets.env` 和 `keys/` 读进内存的那份）+ 常见密钥格式（`sk-`、`ghp_`、`xox`、PEM 头、`AKIA`、JWT 三段）。流式按 50～100 ms 一批、在行或空白边界整段替换（§触6.4）。日志、`run_items`、事件流、审批卡都过它。审批的草稿在写进 `approvals.draft` 之前就打码，`outbox` 的文字行写入时再过一遍：卡上看到的和批了发出去的是同一份。
+- **他人会话的回复**（§底3.4）：others 列里 agent 写的东西，最终回答和 `reply` 工具都一样，发出前先做承诺检测（`commit-check.ts`）：经自己的代理用这个 run 的 light 档令牌发一次请求，按 JSON 答三项。没命中就发；命中、答得不成形、调不通、超过 60 秒 ※，都转 `send` 审批（`checks_json` 记原因，卡上显示，`context_json.hold = true`），对方先收到 `gate.yaml` 的 `hold_text`；卡过期再发 `hold_timeout_text` ※，一次。两句都是固定文字，不由模型写。typed、system 列不检测。others 列的出错提示不发给对方，改发管理出口 ※。§底3.4 的条件 ①（这个 surface 允许自动）随 W1e 的渠道配置接 ※；在那之前 others 的回复都走检测。
 - `bash` 之外，新加只读工具标 `readOnly: true`；注册表测试检查「L0 且 `readOnly: false`」的都要有注释写为什么。
 
 ## approvals（§底3.2、§底3.3、§办3.3）
 
 - kind：`send` | `plan` | `glance` | `ask` | `proposal` | `rollback`。状态机照 §底3.3。
-- **只认我答**：决定来自 `client` 设备，或渠道回调里操作人是 owner 的 ID。`node` 角色、主 agent、别的 agent 都不能决定。同一台设备发起的自己能批（D6）。
+- **只认我答**：决定来自 `client` 设备，或渠道回调里操作人是 owner 的 ID。`cli` 是 `hub-admin.sock`，配对生成的设备 id 永远不会是 `cli`（W2 配对要保证）。`node` 角色、主 agent、别的 agent 都不能决定。同一台设备发起的自己能批（D6）。
 - 决定在一个事务里：查状态和 `draft_version` → 改状态 → 写 `decided_by`（`device:<id>` / `feishu`）→ 后续（`send` 进发件箱原样发批准时的版本；`plan` 往原 lane 投 `approval` 事件；`glance`/`ask` 经 `tasks` 把答案发回同一个 session）。
 - **卡片模型和渠道无关**：`Card { title, lines[], question, options[{id, label, recommended?, cost?}], detail?: { kind: "cmd"|"path"|"args"|"diff", text, folded } }`。客户端直接画；飞书插件渲染成卡片 JSON，命令、路径、参数完整显示，长的折叠（§办3.3）。每路渲染结果记 `approvals.cards_json`，决定后每一路都改卡（飞书用回调 token 延迟更新，§底3.3）。
 - 过期：`approval_ttl_hours`（旧键，沿用；§底3.3 有 `expired`）。看一眼卡不过期（§办3.3：等的时候不设超时），只在节点或 agent 进程重启时作废。
@@ -202,9 +203,9 @@ interface ChannelPlugin {
 
 ## link
 
-- 本机 socket（`$SBOT_HOME/run/`，目录 0700）：
-  - `hub.sock`：本机节点（文件属组给节点账号，0660）。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
-  - `hub-admin.sock`：`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
+- 本机 socket：
+  - `hub.sock`：本机节点，在单独的 `$SBOT_HOME/node/`（0750，属组是节点账号的组，组名或 gid 取 `SBOT_NODE_GROUP`，没设就跟主同组），socket 0660 ※。不放 `run/`：`run/` 是 0700，节点账号进不去，里面的 socket 权限再开也连不上。要节点账号够得着，`$SBOT_HOME` 本身要给那个组 `x`（属组设成它、0710），主的账号要在那个组里（改目录属组要求）；部署时设，主启动时查到进不去会记日志。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
+  - `hub-admin.sock`：在 `$SBOT_HOME/run/`（0700），`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
 - 中继：`relay.enabled` 时主连 `wss://…/v1/hub`，按 06 注册，断了按 1、2、5、10、30 秒退避重连。
 - 删设备：06。
 
@@ -257,7 +258,7 @@ interface ChannelPlugin {
 
 | 文件 | 变化 |
 |---|---|
-| `gate.yaml` | 加 `push`（§触1.1 那段）；`improve_budget_usd` → `improve_alert_usd`；`expert_daily_limit` 照认、读成 `models.yaml` `tiers.expert.daily_alert`；`proactive_daily_cap`、`approval_ttl_hours`、`send_by_hours`、`sensitive_words`、`attention` 沿用 |
+| `gate.yaml` | 加 `push`（§触1.1 那段）；`improve_budget_usd` → `improve_alert_usd`；`expert_daily_limit` 照认、读成 `models.yaml` `tiers.expert.daily_alert`；`proactive_daily_cap`、`approval_ttl_hours`、`send_by_hours`、`sensitive_words`、`attention` 沿用；加 `hold_text`、`hold_timeout_text`（§底3.4 稳住对方的两句固定话，有默认值）※ |
 | `models.yaml` | `budgets.*` 改只告警；tier 加 `daily_alert` |
 | `jobs.yaml` | 加 `check`；`improve` 去掉 `min_days`（旧键忽略，表单删）；dream 行加 `max_delete`、`max_add`、`archive_days` |
 | `self.yaml` | 加 `measure`（§寸8：`breaker`、`stuck_minutes`、`infer_min_convs`、`dismiss_window`、早报等整理卡的 30 分钟……）；旧顶层键照认 |

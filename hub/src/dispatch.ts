@@ -16,7 +16,8 @@ import { setKick } from "./inbox.ts";
 import { issueToken, revokeRun } from "./proxy.ts";
 import { classifyUpstream, nextAttempt, retryDeadline, type UpstreamFailure } from "./retry.ts";
 import { toolsFor, toolNamed, type NodeClient, type ToolCtx } from "./tools/registry.ts";
-import { queueReply } from "./tools/builtin.ts";
+import { queueReply, replyGated } from "./reply.ts";
+import type { CommitChecker } from "./commit-check.ts";
 import { itemStart } from "./items.ts";
 import { promptFiles, systemPrompt } from "./runner/prompt.ts";
 import { submitApproval, invalidateForOwnerMessage } from "./approvals.ts";
@@ -56,7 +57,11 @@ export function replyTurn(rows: Row[]): TurnContext {
 
 type Active = { run_id: string; ac: AbortController; stopped: boolean; done: Promise<void> };
 
-export interface DispatchDeps { db: Db; h: Home; runner: Runner; node?: NodeClient; batchMax?: number; onItem?: (run_id: string, lane: string, e: ItemEvent) => void }
+export interface DispatchDeps {
+  db: Db; h: Home; runner: Runner; node?: NodeClient; batchMax?: number; onItem?: (run_id: string, lane: string, e: ItemEvent) => void;
+  /** §底3.4 for the others column; missing → every agent-written reply there waits for approval */
+  commitCheck?: CommitChecker;
+}
 
 export class Dispatcher {
   readonly d: DispatchDeps;
@@ -258,7 +263,7 @@ export class Dispatcher {
   async #execute(lane: string, p: { rows: Row[]; run_id: string; src: string; tier: Tier; role: Role; session_ref?: string }, a: Active) {
     const { db, h, runner } = this.d;
     const t0 = Date.now(), col = colOf(p.src), turn = { ...replyTurn(p.rows), src: p.src };
-    const ctx: ToolCtx = { db, h, run_id: p.run_id, lane, src: p.src, col, turn, node: this.d.node, replies: 0 };
+    const ctx: ToolCtx = { db, h, run_id: p.run_id, lane, src: p.src, col, turn, node: this.d.node, replies: 0, commitCheck: this.d.commitCheck };
     const token = issueToken(db, { run_id: p.run_id, tier: p.tier, requester: p.role });
     log("dispatch", "run start", { run: p.run_id, lane, src: p.src, n: p.rows.length });
     let res: RunResult;
@@ -278,6 +283,12 @@ export class Dispatcher {
       revokeRun(db, p.run_id);
     }
     if (a.stopped && res.stop !== "done") res.stop = "aborted";
+    // in someone else's conversation the final answer passes the commitment check first (§底3.4); it is async, so it
+    // happens here, before #finish's transaction, and #finish then sees a reply and sends nothing more
+    if (col === "others" && res.stop === "done" && ctx.replies === 0 && res.output.trim()) {
+      try { await replyGated(ctx, res.output.trim()); } catch (e) { log("dispatch", "gated reply failed", { run: p.run_id, err: String((e as Error)?.message ?? e).slice(0, 200) }); }
+      ctx.replies++;
+    }
     this.#finish(lane, p, res, ctx, t0);
   }
 
@@ -307,7 +318,8 @@ export class Dispatcher {
       } else if (!scheduled.length || p.rows.some((r) => !isScheduled(r))) {
         // a scheduled row waiting for upstream says nothing yet; anything else in the batch hears about the error
         const why = `这一轮出错了：${String(res.error ?? "").slice(0, 200)}`;
-        if (ctx.col === "system") void notify.admin(`${lane}：${why}`);
+        // the error text is ours, not for another person's conversation: system and others both go to the admin outlet ※
+        if (ctx.col !== "typed") void notify.admin(`${lane}：${why}`);
         else queueReply(ctx, `（${why}）`);
       }
       if (scheduled.length) this.#requeue(scheduled, failure!);

@@ -35,8 +35,8 @@ test("fs: write, append, ranged read", () => {
   assert.equal(readFile(join(dir, "z")).total, 0);
 });
 
-test("socket path: SBOT_NODE_SOCK, else SBOT_HOME/run/hub.sock", () => {
+test("socket path: SBOT_NODE_SOCK, else SBOT_HOME/node/hub.sock", () => {
   assert.equal(sockPath({ SBOT_NODE_SOCK: "/tmp/x.sock" }), "/tmp/x.sock");
-  if (process.platform !== "win32") assert.equal(sockPath({ SBOT_HOME: "/home/fake/sbot" }), "/home/fake/sbot/run/hub.sock");
+  if (process.platform !== "win32") assert.equal(sockPath({ SBOT_HOME: "/home/fake/sbot" }), "/home/fake/sbot/node/hub.sock");
   assert.throws(() => sockPath({}));
 });

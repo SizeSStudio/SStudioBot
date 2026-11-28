@@ -106,7 +106,7 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 
 | 路由 | 用途 |
 |---|---|
-| `POST /node/v1/hello { version, sha, os, agents, capabilities, quotas, max_parallel? }` | 连上先报；回 `{ target_sha, min_version }`（05 升级） |
+| `POST /node/v1/hello { version, sha, os, agents, capabilities, quotas, max_parallel?, cwd? }` | 连上先报；回 `{ target_sha, min_version }`（05 升级） |
 | `POST /node/v1/tasks/:id/events { attempt, from_seq, events[] }` | 统一事件批量回传（05）；`attempt` 小于当前的整批丢 |
 | `POST /node/v1/tool-calls { task_id, attempt, tool_call_id, name, args }` | 节点 agent 调主的 MCP 工具（下面） |
 | `POST /node/v1/permissions { task_id, attempt, request_id, title, detail, options }` | 权限请求、`ask` → 看一眼卡（§办3.3） |

@@ -100,3 +100,33 @@ test("a tool call that leans on a schema default reaches callTool (send without 
     assert.match(JSON.stringify(llm.seen[1]!.body.messages), /已提交审批 #/);
   } finally { await hub.close(); await llm.close(); }
 });
+
+test("pi offers the model exactly this round's tools, ours, none of pi's own; others' replies pass the light check", async () => {
+  const { toolsFor } = await import("../src/tools/registry.ts");
+  const { DEFAULTS } = await import("../src/config/schemas.ts");
+  const isCheck = (b: any) => typeof b.system === "string" && b.system.startsWith("检查一条草稿");
+  const llm = await fakeLlm((b) => isCheck(b)
+    ? { text: '{"promise":true,"stance":false,"private":false,"hits":["周五三点到"]}' }
+    : { text: userTexts(b).includes("周五") ? "好的，周五下午三点我一定到。" : "在。" });
+  const h = await w1dHome("runner-tools", { port: llm.port });
+  const hub = await boot(h, { proxyPort: 0 });
+  try {
+    ingest(hub.db, mine("你在吗"));
+    await until(() => sent(hub.db).includes("在。"), 20_000, "typed reply");
+    const names = (b: any) => (b.tools ?? []).map((t: { name: string }) => t.name).sort();
+    const typed = llm.seen[0]!.body;
+    assert.deepEqual(names(typed), toolsFor("typed").map((t) => t.name).sort());
+    for (const builtin of ["read", "edit", "write"]) assert.ok(!names(typed).includes(builtin), builtin);
+    assert.match(typed.tools.find((t: { name: string }) => t.name === "bash").description, /本机节点/, "bash is ours, not pi's");
+
+    // someone else, on the built-in client channel (no device id, no owner stamp → others)
+    ingest(hub.db, { lane: "client:other", kind: "user", source: "fake", source_msg_id: "ro1", payload: { text: "周五能来吗", sender_name: "阿乙" }, turn: { channel: "client", surface: "fake:dm", chat: "oc_fakeother1" } });
+    await until(() => !!hub.db.one("SELECT 1 FROM approvals WHERE kind = 'send'"), 20_000, "held for approval");
+    const main = llm.seen.find((s) => !isCheck(s.body) && userTexts(s.body).includes("周五"))!.body;
+    assert.deepEqual(names(main), toolsFor("others").map((t) => t.name).sort());
+    const check = llm.seen.find((s) => isCheck(s.body))!.body;
+    assert.equal(check.model, "claude-fake-light");
+    await until(() => sent(hub.db).includes(DEFAULTS.gate.hold_text), 10_000, "holding line");
+    assert.ok(!sent(hub.db).includes("好的，周五下午三点我一定到。"), "the draft waits for me");
+  } finally { await hub.close(); await llm.close(); }
+});

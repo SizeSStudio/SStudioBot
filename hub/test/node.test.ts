@@ -3,12 +3,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tempHome } from "./helpers.ts";
-import { NodeLink } from "../src/node-link.ts";
+import { ensureNodeDir, gidOf, NodeLink, nodeSocketPath } from "../src/node-link.ts";
 import { runCheck, checkText } from "../src/check.ts";
 import { setAdminSink } from "../src/notify.ts";
 
@@ -17,7 +17,7 @@ const NODE_MAIN = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "nod
 async function setup() {
   const h = tempHome("node");
   const link = new NodeLink("dev");
-  const sock = await link.listen(h.run);
+  const sock = await link.listen(h.node);
   const child: ChildProcess = spawn(process.execPath, [NODE_MAIN], { env: { ...process.env, SBOT_NODE_SOCK: sock, SBOT_LOG: "off" }, stdio: "ignore" });
   await link.waitConnected(10_000);
   const notes: string[] = [];
@@ -89,9 +89,44 @@ test("the node reconnects after the hub side drops", async () => {
   const dir = mkdtempSync(join(tmpdir(), "sbot-node-re-"));
   await s.link.close();
   const link2 = new NodeLink("dev");
-  await link2.listen(s.h.run);
+  await link2.listen(s.h.node);
   await link2.waitConnected(15_000);
   assert.equal((await link2.exec({ cmd: "echo back", cwd: dir })).stdout.trim(), "back");
   s.child.kill("SIGTERM");
   await link2.close();
+});
+
+test("hub.sock: its own dir 0750 (group = the node account's), socket 0660; run/ stays the admin socket's 0700", { skip: process.platform === "win32" }, async () => {
+  const h = tempHome("nodesock");
+  const before = process.env.SBOT_NODE_GROUP;
+  // a group the test account is surely in: its own primary group, by number
+  process.env.SBOT_NODE_GROUP = String(process.getgid!());
+  const link = new NodeLink("dev");
+  try {
+    const sock = await link.listen(h.node);
+    assert.equal(sock, nodeSocketPath(h.node));
+    assert.ok(!sock.startsWith(h.run), "not under run/");
+    const dir = statSync(h.node), file = statSync(sock);
+    assert.equal(dir.mode & 0o777, 0o750);
+    assert.equal(file.mode & 0o777, 0o660);
+    assert.equal(dir.gid, process.getgid!());
+    assert.equal(file.gid, process.getgid!());
+    if (existsSync(h.run)) assert.equal(statSync(h.run).mode & 0o777, 0o700);
+    // a loosened dir is put back
+    const { chmodSync } = await import("node:fs");
+    chmodSync(h.node, 0o777);
+    ensureNodeDir(h.node);
+    assert.equal(statSync(h.node).mode & 0o777, 0o750);
+  } finally {
+    if (before === undefined) delete process.env.SBOT_NODE_GROUP; else process.env.SBOT_NODE_GROUP = before;
+    await link.close();
+  }
+});
+
+test("SBOT_NODE_GROUP: a name from the group file, a number, or a refusal", () => {
+  const f = join(mkdtempSync(join(tmpdir(), "sbot-group-")), "group");
+  writeFileSync(f, "wheel:*:0:root\nsbot-fake:x:4321:\n");
+  assert.equal(gidOf("sbot-fake", f), 4321);
+  assert.equal(gidOf("77", f), 77);
+  assert.throws(() => gidOf("nobody-fake", f), /no such group/);
 });

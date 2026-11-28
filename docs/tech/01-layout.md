@@ -69,7 +69,7 @@ docs/tech/           这套文件
 
 ## CI（GitHub Actions）
 
-落地（W1a）：leak、server、protocol、core、shell 都是同一个必过的 `check` job 里的步骤，每个 PR 都跑（几十秒，省得按路径拆 job 后必过检查对不上）；clients 以后单独一个 job。`protocol-check` 的快照在 `protocol/snapshot.json`，出 App 时 `node scripts/protocol-check.ts --write`；`import-check` 也扫 `core/`（只查方向，不查 `.ts` 后缀）。
+落地（W1a）：leak、server、protocol、core、shell 都是同一个必过的 `check` job 里的步骤，每个 PR 都跑（几十秒，省得按路径拆 job 后必过检查对不上）；clients 是单独的 `.github/workflows/clients.yml`（W2c），按路径触发，几分钟，暂不设为必过。`protocol-check` 的快照在 `protocol/snapshot.json`，出 App 时 `node scripts/protocol-check.ts --write`；`import-check` 也扫 `core/`（只查方向，不查 `.ts` 后缀）。
 
 | job | 什么时候跑 | 做什么 |
 |---|---|---|

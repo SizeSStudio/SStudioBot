@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "SStudioBot",
+    "slug": "sstudiobot",
+    "version": "0.1.0",
+    "scheme": "sstudiobot",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "android": { "package": "app.sbot.client", "allowBackup": false },
+    "web": { "bundler": "metro", "output": "single", "lang": "zh-CN" },
+    "plugins": [
+      ["expo-router", { "asyncRoutes": { "web": false, "default": false } }],
+      ["expo-camera", { "cameraPermission": "扫配对码", "microphonePermission": false, "recordAudioAndroid": false }],
+      "react-native-quick-crypto"
+    ],
+    "experiments": { "typedRoutes": false }
+  }
+}

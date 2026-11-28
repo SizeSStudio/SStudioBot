@@ -1,0 +1,47 @@
+name: clients
+# docs/tech/07 「CI」: the app's TS, the store / connection / render tests, the end-to-end test against the real relay
+# and hub, the web export (size, nothing instance-shaped in it) and one headless start of the desktop shell.
+on:
+  pull_request:
+    paths: ["clients/**", "protocol/**", "scripts/clients-e2e-hub.ts", "scripts/leak-guard.sh", ".github/workflows/clients.yml"]
+  push:
+    branches: [main]
+    paths: ["clients/**", "protocol/**", "scripts/clients-e2e-hub.ts", "scripts/leak-guard.sh", ".github/workflows/clients.yml"]
+permissions:
+  contents: read
+jobs:
+  clients:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: clients
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: deps (no install scripts; the root's too, for the e2e test's hub and relay)
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          (cd .. && npm ci --ignore-scripts --no-audit --no-fund)
+      - name: zod and @noble/* match the root lockfile
+        run: node scripts/lock-check.ts
+      - name: typecheck
+        run: npm run typecheck
+      - name: tests (store, connection, render, pairing code, desktop keys, e2e through relay and hub)
+        run: npm test
+      - name: web export
+        run: npm run web
+      - name: bundle size and built-in addresses
+        run: node scripts/bundle-report.ts app/dist
+      - name: nothing instance-shaped in the bundle
+        run: bash ../scripts/leak-guard.sh --dir app/dist
+      - name: electron binary (install.js checks it against the SHASUMS256 the electron package ships)
+        run: node node_modules/electron/install.js
+      - name: desktop selftest (evil samples, zero external requests, CSP canary)
+        run: |
+          # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox needs; allow them rather than
+          # starting Electron with --no-sandbox
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          npm run desktop:web
+          xvfb-run -a npm run selftest

@@ -9,7 +9,7 @@ import { createPublicKey, randomBytes, verify } from "node:crypto";
 import { PROTOCOL } from "../../../protocol/version.ts";
 import { respond, NoiseProtocolError, type ClientHello, type Transport } from "../../../protocol/noise/channel.ts";
 import { encodeFrame, parseFrame, type Auth, type Frame, type Pair, type Req } from "../../../protocol/frames.ts";
-import { AUTH_PREFIX, PAIR_PREFIX, b64u, fromB64u, signedBytes } from "../../../protocol/pair.ts";
+import { AUTH_PREFIX, CLOSE_AUTH, CLOSE_PROTOCOL, CLOSE_REMOVED, CLOSE_VERSION, PAIR_PREFIX, b64u, fromB64u, signedBytes } from "../../../protocol/pair.ts";
 import type { Db } from "../db/db.ts";
 import type { HubKey } from "./keys.ts";
 import type { Role } from "./roles.ts";
@@ -23,7 +23,7 @@ import { log } from "../log.ts";
 export type Handler = (req: Req, caller: Caller, conn: Conn) => Promise<Out>;
 
 // close codes the hub sends a device through the relay
-export const C_AUTH = 4401, C_REMOVED = 4410, C_PROTOCOL = 4400, C_VERSION = 4426;
+export const C_AUTH = CLOSE_AUTH, C_REMOVED = CLOSE_REMOVED, C_PROTOCOL = CLOSE_PROTOCOL, C_VERSION = CLOSE_VERSION;
 /** From OPEN to an authenticated channel; the relay separately gives the hub 10 s to send message 2. */
 export const AUTH_MS = 10_000;
 

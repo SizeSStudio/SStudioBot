@@ -1,0 +1,17 @@
+{
+  "name": "sbot-clients",
+  "private": true,
+  "type": "module",
+  "workspaces": ["app", "desktop"],
+  "engines": { "node": ">=24 <25" },
+  "scripts": {
+    "test": "node --test 'app/test/*.test.ts' 'desktop/test/*.test.ts'",
+    "typecheck": "tsc -p app/tsconfig.json && tsc -p desktop/tsconfig.json",
+    "web": "npm -w app run export:web",
+    "desktop:web": "rm -rf desktop/web && cp -R app/dist desktop/web",
+    "desktop": "npm -w desktop start",
+    "selftest": "npm -w desktop run selftest",
+    "lock-check": "node scripts/lock-check.ts",
+    "bundle-report": "node scripts/bundle-report.ts app/dist"
+  }
+}

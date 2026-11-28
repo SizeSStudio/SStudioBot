@@ -1,0 +1,41 @@
+@import 'tailwindcss';
+@import 'uniwind';
+
+@layer theme {
+  :root {
+    @variant light {
+      --color-background: #ffffff;
+      --color-foreground: #0a0a0a;
+      --color-muted: #f5f5f5;
+      --color-muted-foreground: #737373;
+      --color-border: #e5e5e5;
+      --color-primary: #171717;
+      --color-primary-foreground: #fafafa;
+      --color-accent: #f5f5f5;
+      --color-popover: #ffffff;
+      --color-destructive: #dc2626;
+    }
+    @variant dark {
+      --color-background: #0a0a0a;
+      --color-foreground: #fafafa;
+      --color-muted: #262626;
+      --color-muted-foreground: #a3a3a3;
+      --color-border: #2e2e2e;
+      --color-primary: #fafafa;
+      --color-primary-foreground: #171717;
+      --color-accent: #262626;
+      --color-popover: #171717;
+      --color-destructive: #f87171;
+    }
+  }
+}
+
+@theme {
+  --radius-lg: 10px;
+  --font-sans: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+/* RN Web 的根元素重置；原来在 Expo 默认 index.html 的内联 <style> 里，挪到这里好让 CSP 不需要为它开 'unsafe-inline' */
+html, body { height: 100%; }
+body { overflow: hidden; }
+#root { display: flex; height: 100%; flex: 1; }

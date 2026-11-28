@@ -18,7 +18,9 @@ async function setup() {
   const h = tempHome("node");
   const link = new NodeLink("dev");
   const sock = await link.listen(h.node);
-  const child: ChildProcess = spawn(process.execPath, [NODE_MAIN], { env: { ...process.env, SBOT_NODE_SOCK: sock, SBOT_LOG: "off" }, stdio: "ignore" });
+  // the node's own files go to the test home, never to this account's ~/.config / ~/.local/state
+  const nodeEnv = { SBOT_NODE_SOCK: sock, SBOT_LOG: "off", SBOT_NODE_STATE: join(h.root, "node-state"), SBOT_NODE_CONFIG: join(h.root, "node-config"), SBOT_NODE_KEYSTORE: "file" };
+  const child: ChildProcess = spawn(process.execPath, [NODE_MAIN], { env: { ...process.env, ...nodeEnv }, stdio: "ignore" });
   await link.waitConnected(10_000);
   const notes: string[] = [];
   setAdminSink((t) => { notes.push(t); });

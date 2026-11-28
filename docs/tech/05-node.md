@@ -10,12 +10,16 @@ node/src/
   link.ts          本机：长度前缀帧；远端：中继 + Noise + auth（共用 protocol/）
   sessions.ts      session 表（内存 + 本地 state 文件）、空闲释放、排空
   adapters/        claude.ts · codex.ts · pi.ts · acp.ts —— 同一个接口
-  events.ts        各家事件 → 统一事件
-  mcp.ts           sbot MCP server（stdio 小程序 + Claude in-process）
+  outbox.ts        事件的 seq、本地 spool（断线时攒着）、批量回传和确认
+  peer.ts          通道上双向的请求
+  config.ts        node.yaml、状态目录
+  keys.ts          设备私钥（文件 0600 / 钥匙串 / DPAPI）
+  mcp.ts           sbot MCP：stdio 小程序 + 守护进程的 ctl socket（四家都用这一个 ※）
   exec.ts          只本机节点：bash、读写文件、check
   git.ts           worktree、diff、CI 查询（用节点自己的 git / gh 登录）
-  upgrade.ts       fetch、校验、排空、切换
-  cli.ts           sbot-node pair | status | mcp
+  upgrade.ts       fetch、校验、自检、切换、30 秒试运行和回退
+  cli.ts           sbot-node pair | status | run | mcp | selftest
+  adapters/quota.ts、rpc.ts、pi-ext.ts   额度特征串；JSONL 子进程；pi 的 MCP 扩展
 ```
 
 节点**不存定时状态**（§底4.1）：续跑、CI 查询、空闲释放、worktree 扫描都是主发来的单次指令。本地 state 文件只存「哪个 task 对应哪个 session_ref、进程 pid」，重启后用来续接。
@@ -57,7 +61,7 @@ interface AgentAdapter {
 
 | agent | 接法（锁版本，P5–P8 核实） | 插话 | 权限请求 | 续接 | 我们的 MCP |
 |---|---|---|---|---|---|
-| Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.332 `query()`，流式输入（AsyncIterable，推消息 `priority: "next"` 就是插话） | ✓ | `canUseTool`；`settingSources: ["user","project","local"]`，规则外的才到它（项目规则要工作区已信任，见下） | `resume` | `mcpServers` in-process（`createSdkMcpServer`） |
+| Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.332 `query()`，流式输入（AsyncIterable，推消息 `priority: "next"` 就是插话） | ✓ | `canUseTool`；`settingSources: ["user","project","local"]`，规则外的才到它（项目规则要工作区已信任，见下） | `resume` | `mcpServers.sbot` 的 stdio 项，指向 `sbot-node mcp` ※（原写 in-process；四家一个实现） |
 | Codex | `codex app-server` 0.172.0（JSON-RPC over stdio，不带 `jsonrpc` 字段） | `turn/steer`（要带 `expectedTurnId`） | 服务端发 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；调 MCP 工具另发 `mcpServer/elicitation/request` | `thread/resume` | `thread/start`、`thread/resume` 的 `config` 里给 `mcp_servers.sbot.command/args/env`，指向 `sbot-node mcp`，不改 `~/.codex/config.toml` |
 | pi | `pi --mode rpc` 1.6.1（JSONL，只按 LF 切） | `steer` | 没有（照实报 `permissions: false`） | `--session <文件>`（`get_state` 的 `sessionFile` 就是 `session_ref`） | **没有 `--mcp-config`**；节点带一个 pi 扩展（`-e`），里面 `pi.registerMcpServer("sbot", { command, args, env, exposure: "direct" })`，配置经环境变量传 |
 | 其他 | ACP，客户端 acpx 0.23.0 的库入口 `acpx/runtime`（够用，不换 SDK） | ✗，排到下一轮 | `session/request_permission`（新 session 要先 `session/set_mode` 到 `default`，见下） | `session/resume`（`unstable_resumeSession` 的现名；agent 的 `sessionCapabilities.resume` 为真才有）→ `session/load`（`loadSession` 为真；会重放历史）→ 新 session 读 `progress.md`；acpx 自己按这个顺序选 | `session/new` 的 `mcpServers` |
@@ -117,16 +121,18 @@ type AgentEvent =
 
 ## sbot MCP（02「远端节点怎么调主的 MCP 工具」）
 
-- `sbot-node mcp --session <ref>`：stdio MCP server，经本机 socket 连节点守护进程，守护进程转 `POST /node/v1/tool-calls`。
+- `sbot-node mcp`：stdio MCP server，经守护进程的 ctl socket（`<state>/ctl.sock`，0600；路径太长时在 tmpdir，Windows named pipe）连守护进程，守护进程转 `POST /node/v1/tool-calls`。是哪个 session 靠环境变量 `SBOT_NODE_MCP_KEY`：每个 session 一个随机句柄 ※，只在节点内存里对上 task 和 attempt；它不是密钥，拿到它的进程也只能以这个 session 的名义调主下发给它的工具，主照样过闸门。session 结束句柄作废，旧句柄调用回错误。
+- Claude Code 的 workspace trust 不预记（见上）：节点不写 `.claude.json`。
 - 工具列表由主下发（hello 的回复里带 schema），节点不写死；主按三列表第二列加 `submit_report`、`ask` 给。
-- 反向开放：我自己开的 agent 也能挂 `sbot-node mcp`（不带 `--session`，算这台节点的 ad hoc 调用）；主那边 `mcp_open` 关着就全部 403。
+- 反向开放：我自己开的 agent 也能挂 `sbot-node mcp`（不带句柄，算这台节点的 ad hoc 调用，工具是 hello 回复里的）；主那边 `mcp_open` 关着就全部 403。
+- 沙箱账号 `sbot-w` 连不上 0600 的 ctl socket ※：Claude 经 `worker-exec`（沙箱模式）跑时，sbot MCP 不可用；主机模式（`sbot-h`）和其他机器不受影响。
 
 ## 本机节点专有：exec、fs、check
 
 - `POST /node/v1/exec { cmd, cwd, env?, stdin? }`：`bash -lc`（Windows `pwsh -NoProfile -Command`），以节点账号跑；输出流式回 `run_items`（经主）；不设时长和输出上限，主 agent 的「停」会发 `interrupt` 杀进程组。
 - `fs/read`、`fs/write`：路径照 03 的命令守卫在主上先过一遍，节点不再判（守卫只放一处）。
 - 只有本机节点（`device_id = local`）收这几条；远端节点收到回 403 ※（主 agent 的 `bash` 设计上就是经本机节点，§办1.2）。
-- Linux 主机模式：每个 agent 和 exec 经 `deploy/worker/worker-exec --host` 起 transient service（沿用，不另起 `systemd-run --user`），`MemoryMax=6G`、`KillMode=control-group`、`OOMScoreAdjust=+500`，去掉 `RuntimeMaxSec`（§办3.4）。沙箱模式（`sbot-w`，1G）照旧可选。
+- Linux 主机模式（W4b 施工 ※）：节点本身是 `sbot-h` 的 systemd 服务（`deploy/node/sbot-node.service`：`MemoryMax=6G`、`KillMode=control-group`、`Restart=always`、不设 `RuntimeMaxSec`）。Codex、pi、ACP 和 exec 是它的子进程，共用这 6G。Claude Code 在 `node.yaml` 设了 `linux.worker_exec` 时经 `sudo -n worker-exec --host` 起（`deploy/worker` 不改：它自己的 6G、`OOMScoreAdjust=-500`、`RuntimeMaxSec=5h` 照旧，要去掉得另开 PR 改 `deploy/worker`），cwd 得是 `/srv/data/sbot-h/tasks/` 下的目录；沙箱模式（`sbot-w`，1G）照旧可选。没设就是普通子进程。
 
 ## worktree 和 CI（§办3.4）
 
@@ -142,12 +148,12 @@ type AgentEvent =
 ## 升级（veto 8，round-1 第 8 题）
 
 1. hello 回复里 `target_sha` 和自己的不同 → 进升级。
-2. `git fetch origin` → `git cat-file -e <sha>` → 校验 `git merge-base --is-ancestor <sha> origin/main`（只认合进 `main` 的提交，主被冒充也推不来别的代码）→ `npm ci --ignore-scripts -w node -w protocol` 到一个新目录（`releases/<sha>/`，同 01 的布局）→ 跑 `node --check` 自检。
+2. `git fetch origin` → `git cat-file -e <sha>` → 校验 `git merge-base --is-ancestor <sha> origin/main`（只认合进 `main` 的提交，主被冒充也推不来别的代码）→ `git archive` 到一个新目录（`releases/<sha>/`，同 01 的布局）→ `npm ci --ignore-scripts --omit=dev -w node -w protocol` → 自检 `cli.ts selftest`（加载每个模块，比 `node --check` 多查 import）※。没过的目录删掉，不留。只有装过的节点（`SBOT_NODE_ROOT`，`deploy/node/install.sh` 装的）才升级；开发时直接跑的不动。
 3. 排空 → 切 `current` → 进程退出码 75，由服务管理器（systemd / launchd / 计划任务）拉起新版本。
-4. 新版本连不上主、或 30 秒内崩：服务管理器第二次拉起时 `main.ts` 看到 `ROLLBACK_FROM` 标记就切回旧目录，并在 hello 里报「升级失败」。
+4. 新版本连不上主、或 30 秒内崩：标记文件 `<root>/upgrade.json` 记着从哪升到哪和试运行开始的时间 ※（替原来写的 `ROLLBACK_FROM`）。新版本 30 秒内没连上主就自己切回旧目录退出；崩了的话服务管理器再拉起它时还在试运行期，`startup()` 切回旧目录退出 75。旧版本起来后在 hello 的 `upgrade` 里报 `{from, to, ok: false, error}`，并且不再升到这个 sha。回退靠 `startup()` 能跑起来 ※：新版本连 `startup()` 都跑不到（比如入口语法错）的情况由第 2 步的自检挡在切换之前。
 
 ## 安装和配对
 
-- `deploy/node/install.sh`（Linux、Mac）、`deploy/node/install.ps1`（Windows）：克隆到 `~/.local/share/sbot-node`（Windows `%LOCALAPPDATA%`）、`npm ci --ignore-scripts`、装服务。
-- 配对：`sbot-node pair '<链接>'`（链接来自 `sbot pair --node`、客户端「加一台」选节点、飞书 `/pair node`）。设备私钥：Linux 存 `~/.config/sbot-node/device.key`（0600）；Mac 存钥匙串；Windows 用 DPAPI 加密存文件 ※（节点没有 Electron 的 `safeStorage`；同一系统用户的进程读得到，同 §底3.8 第二行）。
+- `deploy/node/install.sh`（W4b，写好没装，要手动跑）：Mac 上以我自己的账号装 launchd LaunchAgent（`sbot-node.plist.in`，克隆到 `~/.local/share/sbot-node`）；主所在的服务器上 `--server` 以 root 跑，装 `sbot-h` 的 systemd 服务（`/srv/data/sbot-h/node`，`SBOT_NODE_SOCK` 写进 `/etc/sbot-node.env`）。第一个 release 和升级一样：`git archive`、`npm ci --ignore-scripts`、自检。克隆地址取跑它的那个 checkout 的 origin，仓库里不写。`install.ps1`（Windows）还没写 ※，DPAPI 和目录切换在 Windows 上没测过 ※。
+- 配对：`sbot-node pair '<链接>'`（链接来自 `sbot pair --node`、客户端「加一台」选节点、飞书 `/pair node`）。设备私钥：Linux 存 `~/.config/sbot-node/device.key`（0600）；Mac 存钥匙串；Windows 用 DPAPI 加密存文件 ※（节点没有 Electron 的 `safeStorage`；同一系统用户的进程读得到，同 §底3.8 第二行）。新钥匙先放内存，主接受了配对才写进去：配对被拒（链接用过、过期、撤销）时原来的配对原样留着。
 - 本机节点不配对，连 `hub.sock`（03 link）：Linux、Mac 是 `$SBOT_HOME/node/hub.sock`（`SBOT_NODE_SOCK` 可改），目录 0750、属组是本机节点账号的组（`SBOT_NODE_GROUP`）。hello 里报 `cwd`：这台的默认目录（`SBOT_NODE_CWD`，否则节点账号的 home），主按它把相对路径变成绝对路径再过守卫。Windows 主：named pipe `\\.\pipe\sbot-hub`，ACL 只给主的账号和本机节点账号；Mac、Windows 当主时两者同一个用户（§底3.8）。

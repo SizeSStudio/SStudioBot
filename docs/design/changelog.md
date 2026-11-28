@@ -2,6 +2,9 @@
 
 从新到旧。设计变了，同一个 PR 里改对应文件、`../DESIGN.md` 的索引和这里。旧条目照当时写的留着，不改口吻和编号；v0.26 之前的纯数字号查 `renumber-v026.md`。
 
+### W4b 节点（2026-11-28）
+§办3.3 补一句：agent 给的「总是允许」类选项不转给我 ※（点了会让 agent 记下更宽的规则）。§办3.4 写清 ACP 的插话由主排到下一轮、界面照实说。其余设计正文不用改；施工定下的细节在 `tech/05-node.md`，※ 的等我过目：sbot MCP 四家一个 stdio 小程序（Claude 原写 in-process，`tech/02-protocol.md` 跟着改），session 句柄放 agent 的环境变量（不是密钥）；沙箱账号 `sbot-w` 连不上 0600 的 ctl socket；服务器上的节点是 `sbot-h` 的服务（6G），Claude 经 `worker-exec --host`，`deploy/worker` 不改（它的 `RuntimeMaxSec=5h` 照旧）；升级的标记是 `upgrade.json`，自检是 `selftest`，回退靠新版本的 `startup()` 跑得起来；未跟踪的文件在定稿 diff 里只列名字；`install.ps1` 没写，Windows 的 DPAPI 和切换没测。`deploy/node/` 写好没装。
+
 ### W3b 推（2026-11-28）
 §触1.1 暂缓补一句：暂缓了的卡中途看过，到点照样提醒，处理了才不提醒（看一眼不是我要的那次提醒）。其余设计正文不用改；施工定下的细节在 `tech/03-hub.md` push、`tech/04-schema.md` push_queue 和 kv，※ 的等我过目：哪几类占 §寸2 额度（它自己起的才占）；省心时「通知」类（派到别的机器、CI 第 3 次红）和它自己的 follow-up 也只在看；正看着的那条直接算看过；没有早报任务时夜里攒的白天照常推；FCM 服务账号的三个密钥名；早报的事实块眼下只有推这边的和待批张数，其余等 ledgers 的 `morningText` 搬过来；切到省心时翻「养」等 §改1。W4a 的 `pushNotice` 改走 `enqueue`（W4a 的 ※「W3b 之前通知只写进 `push_queue`」到期）。
 

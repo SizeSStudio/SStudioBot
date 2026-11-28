@@ -1,0 +1,35 @@
+# sbot-node on the hub's own server (docs/tech/05 「安装和配对」): the local node, account sbot-h, connects to the hub's
+# hub.sock (no pairing). Installed by deploy/node/install.sh --server; nothing installs it automatically.
+# Claude Code runs through /usr/local/lib/sbot/worker-exec --host (deploy/worker, unchanged: its own 6G, its own
+# RuntimeMaxSec) when node.yaml has `linux: { worker_exec: /usr/local/lib/sbot/worker-exec }`; other agents are
+# children of this unit and share its MemoryMax.
+[Unit]
+Description=SStudioBot node (local, sbot-h)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=sbot-h
+Group=sbot-h
+# SBOT_NODE_SOCK (the hub's hub.sock), written by install.sh; no secrets in it
+EnvironmentFile=/etc/sbot-node.env
+Environment=SBOT_NODE_ROOT=/srv/data/sbot-h/node
+Environment=HOME=/srv/data/sbot-h/home
+Environment=NODE_ENV=production
+WorkingDirectory=/srv/data/sbot-h/home
+ExecStart=/opt/node/bin/node /srv/data/sbot-h/node/current/node/src/cli.ts run
+# exit 75 after an upgrade or a rollback: start again at once (current/ already points at the new release)
+Restart=always
+RestartSec=1
+# the trial is 30 s: a release crashing inside it must be started again inside it too, so no long back-off
+StartLimitIntervalSec=0
+# SIGTERM closes the agents (3 s each, then killed); their sessions come back as `released` in the next hello and the
+# hub resumes them. Draining before an upgrade is the node's own, not systemd's.
+TimeoutStopSec=30s
+KillMode=control-group
+MemoryMax=6G
+TasksMax=2048
+UMask=0027
+
+[Install]
+WantedBy=multi-user.target

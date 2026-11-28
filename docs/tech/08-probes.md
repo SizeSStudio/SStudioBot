@@ -138,7 +138,47 @@
 
 - 不过：那一项报 `false`，照实显示（§办3.2），不模拟。acpx 库入口不够用 → 换 `@agentclientprotocol/sdk`。
 
-结果：
+结果（2026-11-28；每项在 `/tmp` 的一次性 git 仓库里跑 3 次，3/3 才算 `true`；代码在分支 `probe/p5-p8` 的 `probes/p5-p8/`，README 有跑法；用各家最便宜的档、`low` 推理，提示词一两句）：
+
+版本（全部精确锁）：`@anthropic-ai/claude-agent-sdk` 0.3.332（带的 Claude Code 2.1.332）；`codex-cli` 0.172.0；pi 1.6.1；`acpx` 0.23.0；`@agentclientprotocol/sdk` 2.12.0；接的 ACP agent 是 `@agentclientprotocol/claude-agent-acp` 0.113.0；Node 25.8.1。依赖审计（`npm ci --ignore-scripts`，151 个包）：整棵树只有 `esbuild` 一处 `postinstall`（acpx → tsx 带的），没有 `binding.gyp`，跳过脚本后四家全部照跑，符合 01 的收录条件；acpx 9.2 MB、MIT、alpha。
+
+| 能力 | Claude Code | Codex | pi | ACP（acpx + claude-agent-acp） |
+|---|---|---|---|---|
+| 插话（本轮下一个工具边界生效） | `true` 3/3 | `true` 3/3 | `true` 3/3 | `false`：协议没有，适配器返回 false、排下一轮（agent 自报的 `promptQueueing` 没测） |
+| 权限请求，允许和拒绝都生效 | `true` 3/3，规则外的才进 `canUseTool` | `true` 3/3：命令 3/3、改文件 3/3 | `false`：pi 没有权限请求 | `true` 3/3（acpx 3/3、SDK 3/3） |
+| `AskUserQuestion` 转 `ask` | `true` 3/3 | 未测（协议有 `item/tool/requestUserInput`，适配器已接，没造用例）；按 `ask: false` 报 | `false` | `false`（未测） |
+| 杀进程后续接 | `true` 3/3（`resume`） | `true` 3/3（`thread/resume`） | `true` 3/3（`--session`） | `session/resume` `true` 3/3；`session/load` `true` 3/3；acpx 库自己选，3/3 走的是 `session/resume`；新开 session 读 `progress.md` 3/3 |
+| 我们的 MCP 工具能调 | `true` 3/3（in-process） | `true` 3/3（`thread/start` 的 `config`） | 经扩展 `true` 3/3；**`--mcp-config`：`false`** 0/3（`Unknown option`） | `true` 3/3（`session/new` 的 `mcpServers`；acpx 3/3、SDK 3/3） |
+| 运行中的 diff | 未专测（`Edit`/`Write` 的输入就是） | `true` 3/3：`turn/diff/updated` 每次 2 条更新，末条 201 字节、含 `+hello-diff` | 未测 | 未测 |
+
+「杀进程」是把节点进程那棵树整个 SIGKILL（在 `sleep 30` 工具调用进行中），换一个新进程续接，再问「我前两句说了什么」，两句原文都要对上（codeword 和被打断的那句）。
+
+延迟（agent 事件 → 本机主替身，unix socket，长度前缀帧，`hrtime`，各家 3 轮共 20～330 条事件）：p50 0.05～0.21 ms，p95 0.3～1.2 ms，最大 1.9 ms。这只是本机一段；中继那一段在 P1（回环上比直连多 +1.1 ms）。两段相加远低于 500 ms 的门槛，但「经中继到主」整条没有单独端到端测 ※（等 W4 节点真连中继时看）。
+
+发现，照 05 改了（同一个 PR）：
+
+- **Claude 项目规则要工作区已信任**：`settingSources` 含 `project` 也没用，SDK 不弹信任框；首测 0/1，规则内的 `mkdir` 也进了 `canUseTool`。预记 `projects[<realpath>].hasTrustDialogAccepted` 后 3/3（用户规则、项目规则都生效，规则外的两条才进 `canUseTool`）。※ 预记信任同时让仓库里 `.claude/` 的 hooks 和 MCP 配置生效，所以先定为默认不预记、只用用户级规则，按仓库开（默认关，走 `widening()`，05）；等我过目。另：`allowedTools` 里写了的工具会绕过 `canUseTool`（SDK 警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），所以只放 `mcp__sbot__*`。
+- **ACP 新 session 默认 `auto`，没有权限请求**：`claude-agent-acp` 不设 `defaultMode` 时分类器自动放行，权限项首测 0 条请求；`session/set_mode` 到 `default` 后 3/3。节点建 session 必须切。
+- **pi 没有 `--mcp-config`**，`mcp: false`（这条路）。pi 内置 MCP，挂法是节点带一个扩展（`-e`），里面 `pi.registerMcpServer("sbot", { command, args, env, exposure: "direct" })`；`exposure: "direct"` 工具才会声明给模型；3/3。`~/.pi/agent/mcp.json` 那条路没测（会动用户配置，节点不走）。
+- **Codex 挂 MCP 不用动 `~/.codex/config.toml`**：`thread/start`、`thread/resume` 的 `config` 里给 `mcp_servers.sbot.command/args/env` 就行。Codex 和 ACP 调这个工具都会先问一次（`mcpServer/elicitation/request`；ACP 是标题带 `sbot:` 的 `session/request_permission`）；闸门在主上，节点对 sbot 自己的工具直接答允许。
+- **acpx 库入口够用**：mcp、权限、续接三项都 3/3，不用换 SDK；SDK 直连也 3/3，作后备。acpx 对有 `sessionCapabilities.resume` 的 agent 发 `session/resume`，没有才退到 `session/load`；`unstable_resumeSession` 在 SDK 2.12.0 里已是 `session/resume`，**两条都可用**。`session/load` 会把历史重放成 `session/update`，适配器要在登记 session 之前接住，不然重放内容进事件流。
+- **插话的前提**：只在工具边界生效；同一回复里并行发的几个工具调用之间没有边界。探针第一版提示词没拆开，Codex 误报 1/3、pi 2/3、Claude 0/1，拆成两次回复后三家都 3/3。这是用例的毛病不是 agent 的，但产品上同样成立（插话最迟等到这批工具做完）。
+- `acp:progress-md` 跑了 8 次，7/8 过；那一次失败是探针自己的策略拒掉了 agent 用 shell 读 `progress.md`（回复里写着「The shell command to read it was declined」）。放行只读命令后 3/3。agent 本身没问题，但提醒：新 session 读 `progress.md` 要给读文件的权限。
+
+额度上限原文（**一条也没真触发**，没去烧额度；下面都是从装好的 CLI 和 SDK 产物里读出来的，Codex 的整句是从二进制里拆开的片段，按代码拼，没见过整句实物。真遇到时把实物补进来；识别表在 `probes/p5-p8/lib/quota.ts`，单元测了表里的串）：
+
+- Claude Code 2.1.332：
+  - 模板 `You've hit your <限额名>` 后接 ` · resets <时间>`；限额名随 `rateLimitType`：`five_hour`→`5-hour limit`（也有 `You've hit your session limit`）、`seven_day`→`weekly limit`、`seven_day_opus`→`Opus limit`、`seven_day_sonnet`→`Sonnet limit`、`seven_day_overage_included`→`Fable limit`、`overage`→`usage credit limit`。其他：`You've hit your monthly spend limit.`、`You've hit your fast limit`、`You've reached your Fable limit for this week. Switch models?`。
+  - SDK 导出的 `USAGE_LIMIT_ERROR_PREFIXES`（认文本的稳定前缀）：`You've hit your`、`You've reached your`、`You're out of usage credits`、`Your org is out of usage · add funds to continue`、`Your org is out of usage · contact your admin`、`Your seat type doesn't include usage credits`、`Your seat type doesn't include usage`、`Your usage allocation has been disabled by your admin`、`Your group's usage limit is set to $0`、`Fable 5 requires usage credits`、`You're out of extra usage`、`Your seat type doesn't include extra usage`。
+  - 结构化（优先用）：流里 `rate_limit_event.rate_limit_info`：`status`（`allowed`／`allowed_warning`／`rejected`）、`resetsAt`（Unix 秒）、`rateLimitType`、`utilization`；助手消息 `error`：`rate_limit`、`billing_error`。
+- Codex 0.172.0：
+  - 文本片段：`You’ve hit your usage limit.`（弯引号），后接 `Upgrade to Plus to continue using Codex (https://chatgpt.com/explore/plus),`、`Visit https://chatgpt.com/settings/usage to purchase more credits`、`Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/settings/usage to purchase more credits`、`To get more access now, send a request to your admin` 之一；`You’ve hit your usage limit for <模型>. Switch to another model now,`；恢复时间用 ` Try again at <%b %-d, %Y %-I:%M %p>`；工作区：`Your workspace is out of credits. Add credits to continue.`、`You hit your spend cap set in your workspace. Increase your spend cap to continue.`；`Quota exceeded. Check your plan and billing details.`。
+  - 结构化（优先用）：`turn/completed` 里 `turn.error.codexErrorInfo` 为 `usageLimitExceeded`、`rateLimitExceeded`（另有 `apiKeySpendLimitExceeded`、`projectSpendLimitExceeded`、`organizationSpendLimitExceeded`、`sessionBudgetExceeded`）；`account/rateLimits/updated` 的快照里 `primary`/`secondary` 窗口 `{ usedPercent, windowDurationMins, resetsAt }`（`resetsAt` 单位没验证）、`rateLimitReachedType`：`rate_limit_reached`、`workspace_owner_credits_depleted`、`workspace_member_credits_depleted`、`workspace_owner_usage_limit_reached`、`workspace_member_usage_limit_reached`。
+- pi 1.6.1：只有文本，随 provider 变。ChatGPT 订阅的：`You have hit your ChatGPT usage limit (<plan> plan). Try again in ~<N> min.`（按错误里的 `resets_at` 算）；`subscription_sharing_usage_limit_exceeded` 后接 `Check your ChatGPT usage: https://chatgpt.com/settings/usage`；`subscription_sharing_workplace_individual_usage_limit_exceeded` 后接 `You've reached your ChatGPT workspace's usage limit. Ask your workspace admin to increase it at admin.openai.com → Workspace → Usage limits.`。pi 自己的「不重试」清单：`GoUsageLimitError`、`FreeUsageLimitError`、`Monthly usage limit reached`、`available balance`、`insufficient_quota`、`out of budget`、`quota exceeded`、`billing`、`subscription_sharing_usage_limit_exceeded`、`subscription_sharing_workplace_individual_usage_limit_exceeded`、`"code": 1308`；其余 429 按退避重试，服务端要求的等待超过上限报 `Server requested <N>s retry delay (max: <M>s)`。RPC 里是 `message_end` 的助手消息 `stopReason: "error"` 加 `errorMessage`。探针用的 provider 是代理，没触发过。
+- ACP（claude-agent-acp 0.113.0）：回合失败的错误 `data` 是 `{ errorKind: "rate_limit", rateLimit: <同 Claude 的 rate_limit_info> }`；`session/update` 的 `_meta["_claude/rateLimit"]` 带同一份信息。其他 ACP agent（codex-acp 等）没接，没看。
+- 都没有的：Claude Code 的「`Claude AI usage limit reached|<时间戳>`」老格式在 2.1.332 里已找不到，表里不留。
+
+没测到的：Codex 的 `ask`（`item/tool/requestUserInput`）、Claude 和 ACP 的运行中 diff、pi 的 `mcp.json` 路、ACP agent 自报的 `promptQueueing` 能否用来插话、节点 → 中继 → 主的整条延迟。
 
 ## P9 飞书卡片回调
 

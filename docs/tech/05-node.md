@@ -57,12 +57,18 @@ interface AgentAdapter {
 
 | agent | 接法（锁版本，P5–P8 核实） | 插话 | 权限请求 | 续接 | 我们的 MCP |
 |---|---|---|---|---|---|
-| Claude Code | `@anthropic-ai/claude-agent-sdk` `query()`，流式输入（AsyncIterable，推消息就是插话） | ✓ | `canUseTool`；`settingSources: ["user","project","local"]`，规则外的才到它 | `resume` | `mcpServers` in-process |
-| Codex | `codex app-server`（JSON-RPC over stdio） | `turn/steer` | 服务端发 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval` | `thread/resume` | Codex 的 MCP 配置指向 `sbot-node mcp` |
-| pi | `pi --mode rpc`（JSONL） | `steer` | 没有（照实报 `permissions: false`） | `--session <文件>` | `--mcp-config` |
-| 其他 | ACP，客户端 acpx（库入口不够用换 `@agentclientprotocol/sdk`） | ✗，排到下一轮 | `session/request_permission` | `session/load` → `unstable_resumeSession` → 新 session 读 `progress.md` | `session/new` 的 `mcpServers` |
+| Claude Code | `@anthropic-ai/claude-agent-sdk` 0.3.332 `query()`，流式输入（AsyncIterable，推消息 `priority: "next"` 就是插话） | ✓ | `canUseTool`；`settingSources: ["user","project","local"]`，规则外的才到它（项目规则要工作区已信任，见下） | `resume` | `mcpServers` in-process（`createSdkMcpServer`） |
+| Codex | `codex app-server` 0.172.0（JSON-RPC over stdio，不带 `jsonrpc` 字段） | `turn/steer`（要带 `expectedTurnId`） | 服务端发 `item/commandExecution/requestApproval`、`item/fileChange/requestApproval`；调 MCP 工具另发 `mcpServer/elicitation/request` | `thread/resume` | `thread/start`、`thread/resume` 的 `config` 里给 `mcp_servers.sbot.command/args/env`，指向 `sbot-node mcp`，不改 `~/.codex/config.toml` |
+| pi | `pi --mode rpc` 1.6.1（JSONL，只按 LF 切） | `steer` | 没有（照实报 `permissions: false`） | `--session <文件>`（`get_state` 的 `sessionFile` 就是 `session_ref`） | **没有 `--mcp-config`**；节点带一个 pi 扩展（`-e`），里面 `pi.registerMcpServer("sbot", { command, args, env, exposure: "direct" })`，配置经环境变量传 |
+| 其他 | ACP，客户端 acpx 0.23.0 的库入口 `acpx/runtime`（够用，不换 SDK） | ✗，排到下一轮 | `session/request_permission`（新 session 要先 `session/set_mode` 到 `default`，见下） | `session/resume`（`unstable_resumeSession` 的现名；agent 的 `sessionCapabilities.resume` 为真才有）→ `session/load`（`loadSession` 为真；会重放历史）→ 新 session 读 `progress.md`；acpx 自己按这个顺序选 | `session/new` 的 `mcpServers` |
 
-- Claude 的 `AskUserQuestion` 转成 `ask`（§附2.19）。
+- Claude 的 `AskUserQuestion` 转成 `ask`（§附2.19）：`canUseTool` 里截下，答案放进 `updatedInput.answers` 回给模型。
+- P5–P8 实测要照做的几条（08 有数）：
+  - Claude：`allowedTools` 里写了的工具不再进 `canUseTool`（SDK 会警告 `CLAUDE_SDK_CAN_USE_TOOL_SHADOWED`），只放我们自己的 `mcp__sbot__*`（闸门在主上）。项目级规则、hooks 只在工作区已信任时加载，SDK 不弹信任框；要让项目规则生效，节点得在 agent 的配置目录里为这个 cwd 预记信任（`.claude.json` 的 `projects[<realpath>].hasTrustDialogAccepted`）※：默认**不预记**，只有用户级规则生效。预记信任会同时让仓库里的 `.claude/` hooks 和 MCP 配置生效，等于跑仓库里的代码，而任务的工作目录可能是别人的仓库；所以做成按仓库开的开关（节点配置里每个仓库一项，默认关，打开走 `widening()`），我点了才预记。
+  - ACP（`claude-agent-acp`）：新 session 默认起在 `auto`，**不发权限请求**，直接自动放行；节点建 session 后必须 `session/set_mode` 到 `default`（acpx 库里是 `runtime.setMode`）。
+  - Codex、ACP 调我们自己的 MCP 工具也会先问一次（`mcpServer/elicitation/request`、带 `sbot:` 标题的 `session/request_permission`）；闸门在主上，节点对 `sbot` 自己的工具请求直接答允许，不进卡片，其余照常转。
+  - pi 没有权限请求；扩展里的 `tool_call` 钩子能返回 `block` 拦下，但那是拒绝不是询问，不当权限系统用。
+  - 插话只在工具边界生效：一轮里并行发的几个工具调用之间没有边界，插话要等这一批结束。
 - 做不到的照实报，不拿自动回答冒充（§办3.2）。
 - 升级任一 agent 的 SDK、CLI、acpx：先跑 P5–P8 探针，过了才换（`unstable_` 开头的会变）。
 
@@ -88,7 +94,14 @@ type AgentEvent =
 
 ### 认出额度上限
 
-各家错误里的特征串（Claude 的 5 小时、每周上限，Codex 的 rate limit 带 reset）→ `quota` 事件，带恢复时间。认不出恢复时间的报 `resets_at` 空，主每 30 分钟发一次重试指令（同 §底4.3）。特征串放 `adapters/*.ts` 里的表，P5–P7 收集实例。
+各家错误 → `quota` 事件，带恢复时间。认不出恢复时间的报 `resets_at` 空，主每 30 分钟发一次重试指令（同 §底4.3）。特征串放 `adapters/*.ts` 里的表。先认结构化字段，文本只兜底：
+
+- Claude：流里的 `rate_limit_event`（`status: "rejected"`，带 `resetsAt`、`rateLimitType`）；助手消息的 `error: "rate_limit"`；文本以 SDK 导出的 `USAGE_LIMIT_ERROR_PREFIXES` 开头。
+- Codex：`turn/completed` 里 `turn.error.codexErrorInfo` 为 `usageLimitExceeded`、`rateLimitExceeded`（另有各种 `*SpendLimitExceeded`、`sessionBudgetExceeded`）；`account/rateLimits/updated` 带每个窗口的 `resetsAt`。
+- pi：随 provider 变，只有文本，认 pi 自己的终止类清单（08 有）；没有结构化的恢复时间。
+- ACP：错误的 `data.errorKind` 为 `rate_limit`，`data.rateLimit` 带 Claude 的限额信息。
+
+原文都是从装好的 CLI 里读出来的，没有真烧到额度；真遇到时把原文补进 08。
 
 ## 权限和问我（§办3.3）
 

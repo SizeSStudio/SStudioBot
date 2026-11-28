@@ -364,6 +364,7 @@ CREATE INDEX timers_task ON timers(task_id, status) WHERE task_id IS NOT NULL;
 CREATE TABLE kv(k TEXT PRIMARY KEY, v TEXT) STRICT, WITHOUT ROWID;
 ```
 - 照旧用的键：`job.<name>.last`、`job.<name>.retry`、`dream.*`、`quiet.held`、`matter_review.*`、`self.changes`、`seed.state`、`observer.*`、`sentinel.*`、`improve.last_run`、`source.<id>.*`、`task.seq`、`triage.notified_at`、`release.*`、`graph.built`、`upgrade.lens_jobs`、`groupcard:<msgid>`。
+- W3 加：`ease` = `{on, since}`（省心，§寸6；只有 push 写，同事务显式发 `ease` 实体 ※；切换另记 `config_changes`）。
 - 挪走或不用的：
   - `feishu.owner_dm_chat` → `channel.feishu.owner_dm_chat`（channels/feishu 自己的状态）；
   - `proactive.<day>` → 按 push_queue 算；
@@ -1213,6 +1214,7 @@ pump 怎么读、合并、按角色过滤、心跳、发 `reset`，都见 §触6
 | nodes | node | 显式 | 只有 nodes 模块写；状态变了才发，心跳不发 |
 | task_sessions、worktrees、task_prs | task（ref = task_id） | 显式 | 只有 tasks 模块写 |
 | reads | read | 显式 | 只有 push 写 |
+| kv `ease` | ease | 显式 | 只有 push 写（W3） |
 | push_queue | 被推条目的 entity | 显式 | 暂缓要让别的设备收起那张卡 |
 | suggestions | suggestion | 显式 | 只有 ledgers 写 |
 | matter_reviews | tidy | 显式 | 只有每日整理写 |

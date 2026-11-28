@@ -34,3 +34,26 @@ test("snapshot frames may say how many chunks they hold", () => {
   assert.equal(f?.t === "snapshot" && f.chunk_seq, 3);
   assert.ok(parseFrame(JSON.stringify({ t: "snapshot", run: "r_1", item: "r_1:a0", text: "hi" })));
 });
+
+test("W3 writes: every write has a kind, bodies parse, old clients ignore the new fields", async () => {
+  const { WRITES, DecideReq, CLIENT_OP_ID, Conflict, MessageReq, ThreadCreateReq } = await import("../api/write.ts");
+  const { PresenceReq, ReadReq, PushTokenReq, PushData } = await import("../api/push.ts");
+  for (const [route, w] of Object.entries(WRITES)) assert.match(route, /^(POST|PUT|PATCH|DELETE) \/api\/v1\//, route), assert.ok(w.kind);
+  assert.equal(WRITES["POST /api/v1/approvals/:id/decide"]!.kind, "confirmed");
+  assert.equal(WRITES["POST /api/v1/approvals/:id/decide"]!.locked, true);
+  assert.ok(CLIENT_OP_ID.safeParse("6f1c0b6e-2f0a-4a51-9b39-0d4c7f2e8a11").success);
+  assert.equal(CLIENT_OP_ID.safeParse("x").success, false);
+  assert.equal(DecideReq.safeParse({ action: "answer", draft_version: 1, option_id: "allow_once" }).success, true);
+  assert.equal(DecideReq.safeParse({ action: "approve" }).success, false, "draft_version is required");
+  assert.equal(MessageReq.safeParse({ text: "" }).success, false);
+  assert.equal(ThreadCreateReq.safeParse({ domain: "owner" }).success, false);
+  assert.equal(Conflict.parse({ error: "草稿改过了" }).error, "草稿改过了");
+  assert.equal(PresenceReq.safeParse({ foreground: true, viewing: "thread:th_k3x9a1b2" }).success, true);
+  assert.equal(PresenceReq.safeParse({ foreground: true, viewing: "not a ref" }).success, false);
+  assert.equal(ReadReq.safeParse({ entity: "approval", id: "12" }).success, true);
+  assert.equal(PushTokenReq.safeParse({ token: null }).success, true);
+  assert.equal(PushData.safeParse({ ref: "approval:12", cat: "approval", channel: "approval", personal: "0", push_id: "7" }).success, true);
+  // a W2 hub's thread / bootstrap still parses with the W3 schemas (all new fields optional)
+  assert.equal(Thread.parse(thread).mainline_id, undefined);
+  assert.ok(BootstrapRes.parse({ seq: 0, threads: [], timelines: {}, runs: [], approvals: [], tasks: [], devices: [] }));
+});

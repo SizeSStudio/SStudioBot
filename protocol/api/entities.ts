@@ -5,6 +5,7 @@
 // Forward compatibility: statuses and kinds are plain strings (the known values are in the comments), so a newer hub
 // adding a value doesn't make an older client's parse fail. Unknown entities are ignored by clients (02).
 import { z } from "zod";
+import { Ease, Read } from "./push.ts";
 
 const ms = z.number().int();
 const text = z.string();
@@ -35,6 +36,8 @@ export const Thread = z.object({
   pinned: z.boolean(),
   created_at: ms,
   last_item_at: ms.nullable(),
+  /** W3: the root of the mainline its matter sits under (along parent_id / merged_into, computed on read, §触6.5) */
+  mainline_id: z.number().int().nullable().optional(),
 });
 export type Thread = z.infer<typeof Thread>;
 
@@ -154,6 +157,9 @@ export const Approval = z.object({
   /** send: the message it became; null before it was queued */
   delivery: Delivery.nullable(),
   ts: ms,
+  /** W3 暂缓: tonight | morning | monday, and when it comes back; null = not snoozed */
+  snooze: z.string().nullable().optional(),
+  snooze_until: ms.nullable().optional(),
 });
 export type Approval = z.infer<typeof Approval>;
 
@@ -197,12 +203,16 @@ export const Device = z.object({
   last_ip_masked: z.string().nullable(),
   removed_at: ms.nullable(),
   removed_by: z.string().nullable(),
+  /** W3: has an FCM token (the token itself never leaves the hub) */
+  push: z.boolean().optional(),
 });
 export type Device = z.infer<typeof Device>;
 
 /** `ev.entity` → the shape of `ev.data` on upsert. A delete carries no data. Only grows. */
 export const ENTITY_DATA = {
   thread: Thread, input: Input, run: Run, item: Item, approval: Approval, task: Task, device: Device,
+  // W3: `read` id = its ref; `ease` has the one id "ease"
+  read: Read, ease: Ease,
 } as const;
 export type EntityName = keyof typeof ENTITY_DATA;
 export const ENTITY_NAMES = Object.keys(ENTITY_DATA) as EntityName[];

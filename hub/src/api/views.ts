@@ -5,7 +5,9 @@
 import { existsSync, openSync, readSync, closeSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { Approval, BlobRef, Device, EntityData, EntityName, Input, Item, Run, Task, Thread, TimelineEntry } from "../../../protocol/api/entities.ts";
+import type { Ease, Read } from "../../../protocol/api/push.ts";
 import type { Db, Row } from "../db/db.ts";
+import { localMidnight } from "../time.ts";
 import { redact, redactDeep } from "../tools/redact.ts";
 
 const PREVIEW = 2048;
@@ -110,6 +112,15 @@ export const deviceView = (r: Row): Device => ({
   removed_at: int(r.removed_at), removed_by: str(r.removed_by),
 });
 
+export const readView = (r: Row): Read => ({ ref: String(r.ref), upto_ts: int(r.upto_ts), read_at: Number(r.read_at), via: String(r.via) });
+
+/** kv `ease` = {on, since} (W3b writes it). 第 N 天 counts local days, 1 on the day it went on. */
+export function easeView(r: Row | undefined, now = Date.now()): Ease {
+  const v = json(r?.v) as { on?: boolean; since?: number } | null;
+  if (!v?.on || typeof v.since !== "number") return { on: false, since: null, day: null };
+  return { on: true, since: v.since, day: Math.max(1, Math.round((localMidnight(now) - localMidnight(v.since)) / 86400_000) + 1) };
+}
+
 /** The table and key behind each entity the stream carries. */
 const SOURCE: Record<EntityName, { sql: string; key: (ref: string) => string | number }> = {
   thread: { sql: "SELECT * FROM threads WHERE id = ?", key: (r) => r },
@@ -119,6 +130,9 @@ const SOURCE: Record<EntityName, { sql: string; key: (ref: string) => string | n
   approval: { sql: "SELECT * FROM approvals WHERE id = ?", key: Number },
   task: { sql: "SELECT * FROM tasks WHERE id = ?", key: (r) => r },
   device: { sql: "SELECT * FROM devices WHERE id = ?", key: (r) => r },
+  read: { sql: "SELECT * FROM reads WHERE ref = ?", key: (r) => r },
+  // ease is always there (off when the kv row is missing): the LEFT JOIN gives one row either way
+  ease: { sql: "SELECT kv.v FROM (SELECT ? AS id) one LEFT JOIN kv ON kv.k = 'ease' AND one.id = 'ease'", key: (r) => r },
 };
 
 export const isEntity = (e: string): e is EntityName => Object.hasOwn(SOURCE, e);
@@ -132,6 +146,8 @@ export function fromRow<E extends EntityName>(db: Db, blobs: string, entity: E, 
     case "approval": return approvalView(db, blobs, r) as EntityData[E];
     case "task": return taskView(blobs, r) as EntityData[E];
     case "device": return deviceView(r) as EntityData[E];
+    case "read": return readView(r) as EntityData[E];
+    case "ease": return easeView(r) as EntityData[E];
   }
   throw new Error(`no view for ${String(entity)}`);
 }

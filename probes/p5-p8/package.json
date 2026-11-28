@@ -1,0 +1,15 @@
+{
+  "name": "sbot-probe-p5-p8",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "dependencies": {
+    "@agentclientprotocol/claude-agent-acp": "0.113.0",
+    "@agentclientprotocol/sdk": "2.12.0",
+    "@anthropic-ai/claude-agent-sdk": "0.3.332",
+    "@anthropic-ai/sdk": "1.14.0",
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "acpx": "0.23.0",
+    "zod": "4.6.7"
+  }
+}

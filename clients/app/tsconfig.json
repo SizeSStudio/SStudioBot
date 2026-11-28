@@ -1,5 +1,15 @@
 {
   "extends": "expo/tsconfig.base",
-  "compilerOptions": { "strict": true, "allowImportingTsExtensions": true, "noEmit": true },
-  "include": ["**/*.ts", "**/*.tsx", "uniwind-types.d.ts"]
+  "compilerOptions": {
+    "strict": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "zod": ["./../node_modules/zod"],
+      "@noble/*": ["./../node_modules/@noble/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx", "uniwind-types.d.ts", "env.d.ts"],
+  "exclude": ["node_modules", "dist", "android", "ios", ".expo"]
 }

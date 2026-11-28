@@ -10,7 +10,8 @@ import { writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parsePairCode, PAIR_LINK_PREFIX, type PairCode } from '../../protocol/link.ts'
+import { PAIR_LINK_PREFIX, type PairCode } from '../../protocol/pair.ts'
+import { PAIR_ERROR_TEXT, readPairCode } from '../app/src/conn/pairCode.ts'
 import { classifyLink } from '../app/src/render/links.ts'
 import { backendOf, BackendRefused, canHoldKeys, DeviceKeys } from './keys.ts'
 import { buildCsp, makeHandler, ORIGIN, SCHEME } from './protocol.ts'
@@ -95,9 +96,10 @@ function registerBridge() {
 
   handle('pair.accept', async (link: unknown) => {
     if (!canHoldKeys(backend)) return { ok: false, error: new BackendRefused(backend).message }
-    const p = parsePairCode(String(link))
-    if (!p.ok) return { ok: false, error: p.error }
-    await getKeys().ensure()
+    if (readPairing()) return { ok: false, error: '这台已经配对了：要换一个主，先在设备页「解除配对」' }
+    const p = readPairCode(String(link))
+    if (!p.ok) return { ok: false, error: PAIR_ERROR_TEXT[p.error] }
+    await getKeys().renew() // every pairing gets a fresh key (06)
     pending = p.code
     incomingLink = null
     setTimeout(() => win?.webContents.reload(), 50) // so the CSP's connect-src has this relay
@@ -118,7 +120,12 @@ function registerBridge() {
     pending = null
   })
   handle('pair.current', () => readPairing())
-  handle('pair.forget', () => { rmSync(pairingFile(), { force: true }); setTimeout(() => win?.webContents.reload(), 50) })
+  handle('pair.forget', async () => {
+    rmSync(pairingFile(), { force: true })
+    pending = null
+    await getKeys().forget()
+    setTimeout(() => win?.webContents.reload(), 50)
+  })
   handle('pair.takeLink', () => { const l = incomingLink; incomingLink = null; return l })
 
   handle('link.open', async (url: unknown) => {
@@ -164,8 +171,14 @@ app.whenReady().then(async () => {
     }
     await new Promise((r) => setTimeout(r, 1000)) // late requests (fonts, lazy images) would show up now
     const rendered = done ? await w.webContents.executeJavaScript(`document.querySelectorAll('[data-testid="selftest-sample"]').length`) : 0
-    console.log(JSON.stringify({ selftest: done ? 'rendered' : 'timeout', samples: rendered, backend, external, cspErrors }))
-    code = done && rendered > 0 && external.length === 0 && cspErrors.length === 0 ? 0 : 1
+    const clean = external.length === 0 && cspErrors.length === 0
+    const report = { selftest: done ? 'rendered' : 'timeout', samples: rendered, backend, external: [...external], cspErrors: [...cspErrors] }
+    // canary: a remote fetch from the page must be refused by the CSP and seen here, or the counts above prove nothing
+    await w.webContents.executeJavaScript(`fetch('https://canary.invalid/x').catch(() => 0)`)
+    await new Promise((r) => setTimeout(r, 500))
+    const canary = cspErrors.length > report.cspErrors.length && external.length === report.external.length
+    console.log(JSON.stringify({ ...report, canary: canary ? 'refused and seen' : 'NOT SEEN' }))
+    code = done && rendered > 0 && clean && canary ? 0 : 1
   } catch (e) {
     console.error('selftest:', e instanceof Error ? e.message : String(e))
   }

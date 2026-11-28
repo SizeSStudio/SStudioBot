@@ -6,7 +6,7 @@ import { existsSync, mkdtempSync, readFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { ed25519 } from '@noble/curves/ed25519.js'
-import { signedMessage } from '../../../protocol/link.ts'
+import { AUTH_PREFIX, PAIR_PREFIX, signedBytes } from '../../../protocol/pair.ts'
 import { backendOf, BackendRefused, canHoldKeys, DeviceKeys, type SafeStorageLike } from '../keys.ts'
 
 // a fake safeStorage: XOR is enough to tell "not stored in the clear"
@@ -49,9 +49,22 @@ test('same key across instances; noble verifies; purposes differ; the file is no
   assert.match(await b.deviceId(), /^[0-9a-f]{64}$/)
   const sig = Buffer.from(await b.sign(H, C, 'auth'), 'base64url')
   const h = Buffer.from(H, 'base64url'), c = Buffer.from(C, 'base64url'), pub = Buffer.from(pk, 'base64url')
-  assert.equal(ed25519.verify(sig, signedMessage('auth', h, c), pub), true)
-  assert.equal(ed25519.verify(sig, signedMessage('pair', h, c), pub), false)
+  assert.equal(ed25519.verify(sig, signedBytes(AUTH_PREFIX, h, c), pub), true)
+  assert.equal(ed25519.verify(sig, signedBytes(PAIR_PREFIX, h, c), pub), false)
   assert.doesNotMatch(readFileSync(file).toString('latin1'), /MC4CAQAwBQYDK2Vw/) // the PKCS#8 Ed25519 header
+})
+
+test('renew makes a new key; forget removes it', async () => {
+  const file = path.join(dir(), 'device.key')
+  const k = new DeviceKeys(file, fake('keychain'), 'keychain')
+  const a = await k.publicKey()
+  await k.renew()
+  const b = await k.publicKey()
+  assert.notEqual(a, b)
+  assert.equal(await new DeviceKeys(file, fake('keychain'), 'keychain').publicKey(), b)
+  await k.forget()
+  assert.equal(existsSync(file), false)
+  await assert.rejects(new DeviceKeys(file, fake('basic_text'), 'basic_text').renew(), BackendRefused)
 })
 
 test('sign checks its inputs', async () => {

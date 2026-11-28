@@ -11,6 +11,10 @@ export const PAIR_PREFIX = "sbot-pair/1";
 
 const te = new TextEncoder();
 
+/** Close codes the hub sends a device (06 「关闭码」; the relay passes 4000–4999 through). Here so clients can act on
+ * them: auth and removed mean "pair again", version means "update the app", protocol is a reconnect. */
+export const CLOSE_PROTOCOL = 4400, CLOSE_AUTH = 4401, CLOSE_REMOVED = 4410, CLOSE_VERSION = 4426;
+
 /** prefix || handshake hash || challenge — what the device's Ed25519 key signs. */
 export function signedBytes(prefix: typeof AUTH_PREFIX | typeof PAIR_PREFIX, handshakeHash: Uint8Array, challenge: Uint8Array): Uint8Array {
   const p = te.encode(prefix);

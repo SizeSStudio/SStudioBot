@@ -6,18 +6,20 @@
 //        ▲                        ▲                                                              │
 //        └── auth_failed          └──── retry / waiting_hub (4404) ◀── close / error / timeout ◀─┘
 //
-// - A failed auth is a CLOSE with reason "auth" (06): the key or the device is gone, so it doesn't retry; pair again.
+// - Close codes (06 「关闭码」): 4401 auth / 4410 removed → stop, pair again (with a new key: a key the hub has seen
+//   can't pair twice); 4426 version → "update the app"; 4404 hub offline → «等主上线» with the same backoff; anything
+//   else (network, 4400 protocol, relay limits) → retry with backoff.
 // - After a drop, `after` is the store's cursor: the newest `ev.seq` / `beat.seq` (02), so nothing is skipped and a
 //   replayed `ev` is dropped by seq. A `reset` frame clears the store and bootstraps again on the same connection.
 // - Reads only in W2: pending requests fail on a drop; W3 adds the write queue with `client_op_id`.
-import { sha256 } from "@noble/hashes/sha2.js";
 import { finishInitiator, startInitiator, type Transport } from "../../../../protocol/noise/channel.ts";
 import { encodeFrame, parseFrame, type Frame, type Req, type Res } from "../../../../protocol/frames.ts";
 import { PROTOCOL } from "../../../../protocol/version.ts";
 import { CLOSE_HUB_OFFLINE } from "../../../../protocol/envelope.ts";
 import { MetaRes } from "../../../../protocol/api/meta.ts";
 import { BootstrapRes, StreamRes } from "../../../../protocol/api/stream.ts";
-import { AUTH_CLOSE_REASON, b64uDecode, b64uEncode, CHALLENGE_BYTES, peerUrl, type PairCode, type SigPurpose } from "../../../../protocol/link.ts";
+import { b64u, CLOSE_AUTH, CLOSE_REMOVED, CLOSE_VERSION, deviceIdOf, fromB64u, type PairCode } from "../../../../protocol/pair.ts";
+import { peerUrl } from "./pairCode.ts";
 import type { Store } from "../store/store.ts";
 import { Backoff } from "./backoff.ts";
 
@@ -31,6 +33,9 @@ export interface SocketLike {
   onclose: ((e: { code: number; reason: string }) => void) | null;
   onerror: ((e: unknown) => void) | null;
 }
+
+export type SigPurpose = "auth" | "pair";
+const CHALLENGE_BYTES = 32;
 
 /** The device key, wherever it lives (Keystore, Electron main). Strings are base64url. */
 export interface Signer {
@@ -51,9 +56,11 @@ export type ConnState =
   | { s: "live" }
   | { s: "retry"; at: number; why: string }
   | { s: "waiting_hub"; at: number }
-  | { s: "auth_failed" }
+  /** the hub refused this device (bad signature, unknown) or removed it: pair again */
+  | { s: "auth_failed"; why: "refused" | "removed" }
   | { s: "pair_failed"; why: string }
-  | { s: "upgrade"; min: number }
+  /** the hub needs a newer protocol than this app speaks; null = it said so by closing (4426) */
+  | { s: "upgrade"; min: number | null }
   | { s: "stopped" };
 
 export interface ConnDeps {
@@ -147,7 +154,7 @@ export class Connection {
     sock.onopen = () => {
       if (gen !== this.#gen) return;
       try {
-        const { hs, message } = startInitiator(b64uDecode(hubPk), { v: PROTOCOL.current, role: "client", purpose: "pair" in t ? "pair" : "auth" });
+        const { hs, message } = startInitiator(fromB64u(hubPk), { v: PROTOCOL.current, role: "client", purpose: "pair" in t ? "pair" : "auth" });
         this.#hs = hs;
         this.#set({ s: "handshake" });
         sock.send(message);
@@ -180,9 +187,9 @@ export class Connection {
     // the hub may say its own minimum here (02 「版本」); meta below says it for sure
     const min = (hello as { min?: unknown }).min;
     if (typeof min === "number" && min > PROTOCOL.current) return this.#upgrade(gen, min);
-    const challenge = b64uDecode(hello.challenge);
+    const challenge = fromB64u(hello.challenge);
     if (challenge.length !== CHALLENGE_BYTES) throw new Error("bad challenge");
-    const hash = b64uEncode(transport.handshakeHash);
+    const hash = b64u(transport.handshakeHash);
     this.#set({ s: "auth" });
     if ("pairing" in t) {
       const sig = await this.#d.signer.sign(hash, hello.challenge, "auth");
@@ -203,7 +210,7 @@ export class Connection {
     if (m.protocol.min > PROTOCOL.current) return this.#upgrade(gen, m.protocol.min);
     if ("pair" in t) {
       const public_key = await this.#d.signer.publicKey();
-      const pairing: Pairing = { hub_pk: t.pair.code.hub_pk, relay: t.pair.code.relay, device_id: deviceIdOf(public_key), role: t.pair.code.role };
+      const pairing: Pairing = { hub_pk: t.pair.code.hub_pk, relay: t.pair.code.relay, device_id: deviceIdOf(fromB64u(public_key)), role: t.pair.code.role };
       await this.#d.onPaired?.(pairing);
       if (gen !== this.#gen) return;
       this.#target = { pairing }; // a later reconnect authenticates; the pairing secret is spent
@@ -257,16 +264,21 @@ export class Connection {
     const was = this.state.s;
     this.#dropSocket();
     if (!this.#target) return;
-    if (reason === AUTH_CLOSE_REASON) {
+    if (code === CLOSE_AUTH || code === CLOSE_REMOVED) {
       if ("pair" in this.#target) return this.#set({ s: "pair_failed", why: "hub refused the code (used, expired, or not this hub)" });
-      return this.#set({ s: "auth_failed" });
+      return this.#set({ s: "auth_failed", why: code === CLOSE_REMOVED ? "removed" : "refused" });
     }
+    if (code === CLOSE_VERSION) return this.#upgradeNow(null);
     if (code === CLOSE_HUB_OFFLINE) return this.#schedule("waiting_hub", "hub offline");
     this.#afterLoss(`closed ${code}${reason ? ` ${reason}` : ""} in ${was}`);
   }
 
   #upgrade(gen: number, min: number): void {
     if (gen !== this.#gen) return;
+    this.#upgradeNow(min);
+  }
+
+  #upgradeNow(min: number | null): void {
     const target = this.#target;
     this.#teardown();
     this.#target = target;
@@ -343,9 +355,8 @@ export class Connection {
   }
 }
 
-export function deviceIdOf(publicKeyB64u: string): string {
-  return [...sha256(b64uDecode(publicKeyB64u))].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
+/** device_id of a base64url public key (06: hex sha256 of the 32 raw bytes). */
+export const deviceIdOfKey = (publicKeyB64u: string): string => deviceIdOf(fromB64u(publicKeyB64u));
 
 function toBytes(data: unknown): Uint8Array | null {
   if (data instanceof Uint8Array) return data;

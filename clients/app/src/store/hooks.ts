@@ -10,18 +10,15 @@ function useVersion(store: Store, key: string): number {
 
 export function useEntity<E extends EntityName>(store: Store, entity: E, id: string | undefined): Rec<E> | undefined {
   const v = useVersion(store, `row:${entity}:${id ?? ""}`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => (id ? store.get(entity, id) : undefined), [store, entity, id, v]);
 }
 
 export function useList<E extends EntityName>(store: Store, entity: E, filter?: (r: Rec<E>) => boolean): Rec<E>[] {
   const v = useVersion(store, `entity:${entity}`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => (filter ? store.list(entity).filter(filter) : store.list(entity)), [store, entity, v]);
 }
 
 export function useTimeline(store: Store, lane: string | undefined): { rows: TimelineRow[]; live: Live[] } {
   const v = useVersion(store, `lane:${lane ?? ""}`);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => (lane ? { rows: store.timeline(lane), live: store.liveOn(lane) } : { rows: [], live: [] }), [store, lane, v]);
 }

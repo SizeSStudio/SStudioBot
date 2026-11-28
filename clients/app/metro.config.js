@@ -3,8 +3,17 @@ const { getDefaultConfig } = require('expo/metro-config')
 const { withUniwindConfig } = require('uniwind/metro')
 
 const config = getDefaultConfig(__dirname)
+const clients = path.resolve(__dirname, '..')
+const repo = path.resolve(clients, '..')
 
-// lowlight 的入口顺带 import 了 highlight.js 的全部语言（1.5 MB 源码）；我们只要 createLowlight，自己注册 16 种
+// protocol/ lives at the repo root (07 目录): watch it, and resolve what it imports (zod, @noble/*) from
+// clients/node_modules only, never the root's (CI checks both lockfiles pin the same versions)
+config.watchFolders = [...(config.watchFolders ?? []), path.join(repo, 'protocol')]
+config.resolver.nodeModulesPaths = [path.join(clients, 'node_modules')]
+config.resolver.disableHierarchicalLookup = true
+
+// lowlight's entry also imports every highlight.js language (1.5 MB of source); we only want createLowlight and
+// register 16 ourselves
 const lowlightCore = path.join(path.dirname(require.resolve('lowlight')), 'lib/index.js')
 const upstream = config.resolver.resolveRequest
 config.resolver.resolveRequest = (ctx, name, platform) => {

@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "target": "ESNext", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "noEmit": true,
+    "allowImportingTsExtensions": true, "verbatimModuleSyntax": true, "erasableSyntaxOnly": true, "skipLibCheck": true,
+    "types": ["node"], "lib": ["ESNext", "DOM"],
+    "paths": { "zod": ["./../node_modules/zod"], "@noble/*": ["./../node_modules/@noble/*"] }
+  },
+  "include": ["*.ts", "test/*.ts"]
+}

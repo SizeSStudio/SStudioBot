@@ -1,7 +1,7 @@
 // What Electron's preload gives the page (07 bridge; desktop/preload.cjs). Android has no bridge: it uses the
 // device-key module directly. The private key never crosses: the page gets a public key and signatures.
-import type { PairCode, SigPurpose } from '../../../protocol/link.ts'
-import type { Pairing } from './conn/machine.ts'
+import type { PairCode } from '../../../protocol/pair.ts'
+import type { Pairing, SigPurpose } from './conn/machine.ts'
 
 export type SbotBridge = {
   device: { publicKey(): Promise<string>; sign(handshakeHash: string, challenge: string, purpose: SigPurpose): Promise<string> }

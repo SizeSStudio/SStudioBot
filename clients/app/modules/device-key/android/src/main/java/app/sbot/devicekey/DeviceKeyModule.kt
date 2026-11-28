@@ -44,10 +44,11 @@ class DeviceKeyModule : Module() {
   // Ed25519 SPKI is a fixed 12-byte header + the 32-byte key
   private fun rawPublic(encoded: ByteArray): ByteArray = encoded.copyOfRange(encoded.size - 32, encoded.size)
 
-  private fun hardwarePublic(): ByteArray? {
+  private fun hardwarePublic(create: Boolean): ByteArray? {
     if (Build.VERSION.SDK_INT < 33) return null
     val ks = keyStore()
     ks.getCertificate(ED_ALIAS)?.let { return rawPublic(it.publicKey.encoded) }
+    if (!create) return null
     // try StrongBox first, then the TEE; any failure means this device's KeyMint has no Ed25519
     for (strong in listOf(true, false)) {
       if (strong && !hasStrongBox()) continue
@@ -98,8 +99,16 @@ class DeviceKeyModule : Module() {
   override fun definition() = ModuleDefinition {
     Name("DeviceKey")
 
-    AsyncFunction("hardwarePublicKey") { ->
-      hardwarePublic()?.let { Base64.encodeToString(it, B64) }
+    AsyncFunction("hardwarePublicKey") { create: Boolean ->
+      hardwarePublic(create)?.let { Base64.encodeToString(it, B64) }
+    }
+
+    // a new pairing gets a new key (06: a key the hub has seen can never pair again); unpairing drops it
+    AsyncFunction("deleteKeys") { ->
+      val ks = keyStore()
+      if (ks.containsAlias(ED_ALIAS)) ks.deleteEntry(ED_ALIAS)
+      wrappedFile().delete()
+      Unit
     }
 
     AsyncFunction("hardwareSign") { message: String ->

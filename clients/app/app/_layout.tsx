@@ -1,25 +1,38 @@
 import '../global.css'
-import { Stack } from 'expo-router'
+import { useEffect } from 'react'
+import { Stack, useRouter } from 'expo-router'
 import { StatusBar } from 'expo-status-bar'
 import { View } from 'react-native'
 import { useSafeAreaInsets } from 'react-native-safe-area-context'
-import { PortalHost } from '@rn-primitives/portal'
 import { useUniwind } from 'uniwind'
+import { boot, useConn } from '../src/conn/client.ts'
+import { device } from '../src/device/device'
+import { setIncomingLink } from '../src/pair/incoming.ts'
+import { ConnBanner, UpgradeScreen } from '../src/ui/ConnBanner.tsx'
 import { LinkGateProvider } from '../src/ui/linkGate.tsx'
 
 export default function Root() {
   const { theme } = useUniwind()
   const insets = useSafeAreaInsets()
+  const router = useRouter()
+  const s = useConn()
+  useEffect(() => { void boot() }, [])
+  // a sstudiobot://pair link from the OS (Electron: via main; Android: Linking) opens the pair screen, filled in
+  useEffect(() => device.onLink((l) => { setIncomingLink(l); router.push('/pair') }), [router])
   return (
     <LinkGateProvider>
-      {/* 安卓 15 起强制 edge-to-edge：不留顶部安全区，标题压在状态栏下，按钮点不到 */}
-      {/* 第三方组件不认 className（Uniwind 只映射 RN 自带组件），所以用 insets + View */}
+      {/* Android 15 forces edge-to-edge: leave the top inset or the header sits under the status bar */}
+      {/* third-party components ignore className (Uniwind maps RN's own only), hence insets + View */}
       <View className="flex-1 bg-background" style={{ paddingTop: insets.top }}>
-        <Stack screenOptions={{ headerShown: false }} />
+        {s.s === 'upgrade' ? <UpgradeScreen min={s.min} /> : (
+          <>
+            <ConnBanner />
+            <Stack screenOptions={{ headerShown: false }} />
+          </>
+        )}
       </View>
-      {/* 状态栏图标跟应用主题走，不跟系统 */}
+      {/* status bar icons follow the app's theme, not the system's */}
       <StatusBar style={theme === 'dark' ? 'light' : 'dark'} />
-      <PortalHost />
     </LinkGateProvider>
   )
 }

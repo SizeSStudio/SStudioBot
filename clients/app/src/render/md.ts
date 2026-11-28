@@ -40,10 +40,10 @@ function walk(tokens: Tok[], root: Container, dead: boolean) {
       else if (tok.type === 'heading_open') node = { t: 'h', level: Number(tok.tag.slice(1)) || 1, c: [] }
       else if (tok.type === 'ordered_list_open') node = { t: 'ol', start: Number(tok.attrGet('start') ?? 1), c: [] }
       else if (tok.type === 'th_open' || tok.type === 'td_open') {
-        const style = tok.attrGet('style') ?? ''
+        const style = String(tok.attrGet('style') ?? '')
         node = { t: tok.type === 'th_open' ? 'th' : 'td', align: /text-align:(\w+)/.exec(style)?.[1] ?? null, c: [] }
       } else if (tok.type === 'link_open') {
-        const href = tok.attrGet('href') ?? ''
+        const href = String(tok.attrGet('href') ?? '')
         node = { t: 'link', href, verdict: classifyLink(href), c: [] }
       } else node = { t: 'strong', c: [] } // 不认识的容器：取不到这里（html: false），保守按普通文字容器
       top().c.push(node)
@@ -73,7 +73,7 @@ function walk(tokens: Tok[], root: Container, dead: boolean) {
         break
       }
       case 'image': {
-        const src = tok.attrGet('src') ?? ''
+        const src = String(tok.attrGet('src') ?? '')
         const alt = (tok.children ?? []).map(c => c.content).join('') || tok.content
         let verdict = classifyLink(src)
         if (dead) verdict = { ...verdict, ok: false, reason: 'streaming' }

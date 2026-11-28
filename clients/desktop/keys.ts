@@ -3,8 +3,10 @@
 // would store it in the clear (`basic_text`) is refused: no key, no pairing, no downgrade.
 import { createHash, createPrivateKey, createPublicKey, generateKeyPairSync, sign as edSign, type KeyObject } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { readFile, rename, writeFile } from 'node:fs/promises'
-import { signedMessage, type SigPurpose } from '../../protocol/link.ts'
+import { readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { AUTH_PREFIX, PAIR_PREFIX, signedBytes } from '../../protocol/pair.ts'
+
+export type SigPurpose = 'auth' | 'pair'
 
 /** The bits of Electron's safeStorage we use (the async API; the sync one is deprecated since Electron 45). */
 export type SafeStorageLike = {
@@ -73,6 +75,22 @@ export class DeviceKeys {
     this.#priv = priv
   }
 
+  /** A fresh key for a new pairing (06: a key the hub has seen, even a removed one, can never pair again). */
+  async renew(): Promise<void> {
+    await this.#loading?.catch(() => {})
+    if (!canHoldKeys(this.#backend)) throw new BackendRefused(this.#backend)
+    this.#priv = this.#pub = null
+    await rm(this.#file, { force: true })
+    await this.ensure()
+  }
+
+  /** Unpaired for good: the key goes with the pairing. */
+  async forget(): Promise<void> {
+    await this.#loading?.catch(() => {})
+    this.#priv = this.#pub = null
+    await rm(this.#file, { force: true })
+  }
+
   async #save(priv: KeyObject): Promise<void> {
     const der = priv.export({ format: 'der', type: 'pkcs8' })
     const tmp = this.#file + '.tmp'
@@ -88,7 +106,7 @@ export class DeviceKeys {
     if (!B64U.test(handshakeHash) || !B64U.test(challenge)) throw new Error('bad input')
     if (purpose !== 'auth' && purpose !== 'pair') throw new Error('bad purpose')
     await this.ensure()
-    const msg = signedMessage(purpose, Buffer.from(handshakeHash, 'base64url'), Buffer.from(challenge, 'base64url'))
+    const msg = signedBytes(purpose === 'auth' ? AUTH_PREFIX : PAIR_PREFIX, Buffer.from(handshakeHash, 'base64url'), Buffer.from(challenge, 'base64url'))
     return b64u(edSign(null, msg, this.#priv!))
   }
 }

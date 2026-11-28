@@ -21,7 +21,7 @@ const THREAD: Thread = {
 const APPROVAL = (v = 1, extra: Partial<Approval> = {}): Approval => ({
   id: "ap_1", kind: "send", status: "pending", title: "回一封邮件", origin_lane: LANE,
   run_id: null, task_id: null, requester: null,
-  channel: "mail", target: "alex@example.test", as_identity: "user", draft: "第一版稿子",
+  channel: "mail", target: "示例收件人", as_identity: "user", draft: "第一版稿子",
   draft_version: v, request: null, request_blob: null, options: null, answer: null,
   context: null, context_blob: null, refs: null, checks: null,
   delivery: null, decided_at: null, decided_by: null, decide_note: null, final_text: null,

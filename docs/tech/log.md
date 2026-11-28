@@ -4,10 +4,10 @@
 
 ## 断点
 
-- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合（P10 #37、P1 #38、P9 #40 纸面、P3/P4e/P11 #42、P5–P8 本 PR）。W1a #35、W1b #39、W1c #43、W1d #45、W1e #46 已合；W1 验收在分支 `w1-accept`（一个 PR，待审）。
+- 当前：W0 ② 探针除 P2、P4 安卓真机项外都已合（P10 #37、P1 #38、P9 #40 纸面、P3/P4e/P11 #42、P5–P8 本 PR）。W1a #35、W1b #39、W1c #43、W1d #45、W1e #46、W1 验收 #47 已合，W1 完成。W2 开工：W2a（中继、主的 link、配对、认证、角色、设备，分支 `w2a-link`）、W2b（`protocol/api` schema 先出一个小 PR `w2b-schemas`，再 pump、bootstrap、stream、只读 `/api/v1`，分支 `w2b-read-api`）两个子线程并行。
 - 11-27 21:20 前后所有子线程同时死于「Claude API server error」（额度），11-28 在各自线程里续上，worktree 里的半成品都在。
-- 下一步：W1 验收 PR 审（动了草稿发出路径、承诺检测接线、check 的命令守卫、派发的回复路径），合了向我报 W1。要真发的几项等飞书测试应用；P2、P4 安卓真机项等手机。
-- 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
+- 下一步：W2b 的 schema PR 合了就开 W2c（`clients/`：连接状态机、store、渲染、主对话和 thread 只读、设备页、Electron 壳、安卓密钥模块和配对）。W2a 交来逐行审（配对、认证、角色、中继），W2b 交来审授权入口；W2a 合了 W2b 把授权换成真的。中继只在服务器本机测，不装、不动 nginx、`relay.enabled` 不开：W2 验收要经中继真连时停下等我。要真发的几项等飞书测试应用；P2、P4 安卓真机项等手机。
+- 被打断时：`git ls-remote --heads origin 'probe/*' 'w0-probe-*' 'w1*' 'w2*'` 看哪些交了；子线程死了先看它的 worktree（`git worktree list`）里有没有半成品，有就在原线程里续，没有才按本表重开。
 
 ## 等你过目
 
@@ -48,6 +48,7 @@
 | 安卓手机连上 adb | P1 Hermes 速度、P2、P4 安卓、P11 安卓项 | 先用安卓模拟器测能测的，真机项标「待测」 |
 | Firebase 项目、`google-services.json`、FCM 服务账号 | P2 FCM、W3 推 | `fcm.enabled` 关着，推走飞书 |
 | 单独的飞书测试应用 | P9 卡片回调 50 次、W1 起要真发的验收项 | 测试 home 里飞书 `shadow` 模式（09） |
+| 中继域名（DNS 只解析）、nginx 一段、`relay.enabled` 开 | W2 验收里经中继真连的各项（手机扫码连上、中继抓包、20 连接实测在线上） | 中继在服务器本机 127.0.0.1 上测；`deploy/relay/` 写好不装，开不开你定 |
 | 备份用的 age 公钥 | W1 备份加密的真机验收 | 测试 home 里用临时生成的一对 |
 
 ## 各波
@@ -74,4 +75,4 @@
 | W1c 主的基座 | config（zod、`widening()`、表单描述、唯一写路径、`config_changes`、seed 同步）、db（04 全部表、`change_log` 触发器、清理）、cli 骨架、backup + restore、`hub/test/test-home.sh` | 子线程（Opus），我审 | 已合 #43（审后我改了 restore 对 home 外 `secrets.env` 的处理、`self.yaml` 不进 `config_changes`；部署机冒烟 22/22） |
 | W1d 跑起来 | inbox、runner（pi 嵌入，换模型按 P10）、tools（三列表 + `readOnly` + 守卫 + 打码）、approvals、outbox + 出口组、proxy、egress、本机节点最小件（exec、fs、check，经 `hub.sock`） | 子线程（Opus），我逐行审（闸门、审批、代理、守卫） | 已合 #45 |
 | W1e 渠道和账本 | channels（ChannelPlugin + 飞书，`shadow`，后端按 P9）、sources、triage、ledgers、memory、timers + Sentinel | 子线程（Opus），我审 | 已合 #46（rebase 到 W1d 上合在一起：一个渠道注册表、W1d 的 `SendResult`/`OutboxRow`、启动接在 outbox 前、分拣经代理） |
-| W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 子线程（Opus） | PR 待审（分支 `w1-accept`）。补了 `runDraft`、私聊流式卡片、check 接节点、`backup` 任务接线；部署机冒烟 `smoke-w1` 33/33、`smoke-w1d` 17/17、`smoke-w1e` 11/11。逐项：私聊流式卡片 测试过（假后端），真卡待测试应用；群 @我 → 草稿 → 审批 → 发 测试和冒烟过（`shadow`），真发待测试应用；我自己回了卡作废 过；中途 kill 过；self/ 守卫 过；来源标签 过；代理 401/403/只告警 过；check 三种结果 过；Y11 对齐 过（测试）；seed 不碰线上配置 过（测试）；备份 + 恢复 过 |
+| W1 验收 | 09 W1 验收清单在测试 home 上逐条跑 | 子线程（Opus） | 已合 #47。补了 `runDraft`、私聊流式卡片、check 接节点、`backup` 任务接线；部署机冒烟 `smoke-w1` 33/33、`smoke-w1d` 17/17、`smoke-w1e` 11/11。逐项：私聊流式卡片 测试过（假后端），真卡待测试应用；群 @我 → 草稿 → 审批 → 发 测试和冒烟过（`shadow`），真发待测试应用；我自己回了卡作废 过；中途 kill 过；self/ 守卫 过；来源标签 过；代理 401/403/只告警 过；check 三种结果 过；Y11 对齐 过（测试）；seed 不碰线上配置 过（测试）；备份 + 恢复 过 |

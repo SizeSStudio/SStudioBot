@@ -39,14 +39,14 @@ class FakeRunner implements Runner {
   }
 }
 
-async function setup(runner: Runner, batchMax?: number) {
+async function setup(runner: Runner, batchMax?: number, command?: (name: string, arg: string, lane: string) => string | undefined) {
   const h = await w1dHome("dispatch", { port: 1 });
   const db = openDb(h.db);
   mkdirSync(join(h.agentHome, "self"), { recursive: true });
   writeFileSync(join(h.agentHome, "self", "rhythm.md"), "虚构：早起。\n");
   const notes: string[] = [];
   setAdminSink((t) => { notes.push(t); });
-  const d = new Dispatcher({ db, h, runner, batchMax });
+  const d = new Dispatcher({ db, h, runner, batchMax, command });
   return { h, db, d, notes, async done() { await d.stop(1000); db.close(); } };
 }
 
@@ -232,5 +232,20 @@ test("errors: a system-column run tells the admin outlet; a scheduled row that h
   assert.ok(row.not_before > Date.now());
   assert.equal(JSON.parse(row.payload_json).retry.n, 1);
   assert.equal(s.db.one<{ r: string }>("SELECT stop_reason AS r FROM runs WHERE lane = 'job:b'")!.r, "upstream_retry");
+  await s.done();
+});
+
+test("a channel command the link answers (/pair, /devices) is replied to and never becomes a run; others stay text", async () => {
+  const r = new FakeRunner(() => ({ output: "当成文字了" }));
+  const seen: string[] = [];
+  const s = await setup(r, undefined, (name, arg, lane) => { seen.push(`${name}|${arg}|${lane}`); return name === "pair" ? "配对链接（虚构）" : undefined; });
+  s.d.start(30);
+  ingest(s.db, mine("feishu:dm:owner", "/pair node", { kind: "command", payload: { text: "/pair node", cmd: "pair", arg: "node" } }));
+  await until(() => texts(s.db).includes("配对链接（虚构）"), 5000, "pair reply");
+  ingest(s.db, mine("feishu:dm:owner", "/nope", { kind: "command", payload: { text: "/nope", cmd: "nope", arg: "" } }));
+  await until(() => r.calls.length === 1, 5000, "unknown command runs as text");
+  await s.d.idle();
+  assert.deepEqual(seen, ["pair|node|feishu:dm:owner", "nope||feishu:dm:owner"]);
+  assert.match(r.calls[0]!.input, /\/nope/);
   await s.done();
 });

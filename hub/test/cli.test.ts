@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createConnection } from "node:net";
 import { statSync } from "node:fs";
+import { join } from "node:path";
 import { tempHome } from "./helpers.ts";
 import { Usage, parseArgs, run } from "../src/cli.ts";
 import { FRAME_MAX, FrameReader, adminRequest, adminSocketPath, encodeLen, startAdminSocket } from "../src/admin-socket.ts";
@@ -12,12 +13,14 @@ test("parseArgs: the commands 03 lists", () => {
   assert.deepEqual(parseArgs(["status"]), { cmd: "status" });
   assert.deepEqual(parseArgs(["restore", "f.age", "--identity", "k.txt"]), { cmd: "restore", file: "f.age", identity: "k.txt", force: false });
   assert.deepEqual(parseArgs(["restore", "--force", "-i", "k", "f"]), { cmd: "restore", file: "f", identity: "k", force: true });
-  assert.deepEqual(parseArgs(["pair", "--node"]), { cmd: "later", name: "pair", wave: "W2" });
-  assert.deepEqual(parseArgs(["devices", "rm", "d1"]), { cmd: "later", name: "devices", wave: "W2" });
+  assert.deepEqual(parseArgs(["pair"]), { cmd: "pair", role: "client" });
+  assert.deepEqual(parseArgs(["pair", "--node"]), { cmd: "pair", role: "node" });
+  assert.deepEqual(parseArgs(["devices"]), { cmd: "devices" });
+  assert.deepEqual(parseArgs(["devices", "rm", "d1"]), { cmd: "devices-rm", id: "d1" });
   assert.equal((parseArgs(["chat"]) as { wave: string }).wave, "W3");
   assert.equal((parseArgs(["upgrade", "--ref", "abc"]) as { wave: string }).wave, "W4");
   assert.equal((parseArgs(["import", "anything"]) as { wave: string }).wave, "W6");
-  for (const bad of [["restore", "f"], ["restore"], ["upgrade"], ["devices", "x"], ["pair", "-x"], ["nope"], ["status", "x"]]) assert.throws(() => parseArgs(bad), Usage, bad.join(" "));
+  for (const bad of [["restore", "f"], ["restore"], ["upgrade"], ["devices", "x"], ["pair", "-x"], ["pair", "--node", "--node"], ["devices", "rm"], ["nope"], ["status", "x"]]) assert.throws(() => parseArgs(bad), Usage, bad.join(" "));
   assert.deepEqual(parseArgs([]), { cmd: "help" });
 });
 
@@ -42,7 +45,11 @@ test("hub boots and answers status over hub-admin.sock; socket 0600, run dir 070
     const r = await adminRequest(h.run, "GET", "/api/v1/status");
     assert.equal(r.status, 200);
     const s = StatusRes.parse(r.body);
-    assert.equal(s.hub_key_fingerprint, null);
+    // 06: the key is made on first start, 0600; status shows its fingerprint and the public half, never the secret
+    assert.match(s.hub_key_fingerprint ?? "", /^[0-9a-f]{64}$/);
+    assert.match(s.hub_pk ?? "", /^[A-Za-z0-9_-]{43}$/);
+    assert.equal(statSync(join(h.keys, "hub.key")).mode & 0o777, 0o600);
+    assert.deepEqual(s.relay, { enabled: false, connected: false });
     assert.equal(s.db_version, 1);
     assert.equal((await adminRequest(h.run, "GET", "/api/v1/nope")).status, 404);
     const out: string[] = [];

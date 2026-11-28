@@ -225,7 +225,7 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 - 写请求：`client_op_id` 去重和业务写入同一事务（02）。
 - **pump**：每 100 ms 读 `change_log` 里 `seq > 上次`，同批同实体合并，发送时用和 GET 同一个视图函数取最新内容，按连接过滤（`node` 不收客户端流；`personal` 只发 `client`）。心跳带最新 `seq`。慢连接：持久事件停读、之后补；delta 直接丢、缓过来发 snapshot（§触6.4）。
 - 视图函数是 bootstrap、GET、事件三处共用的唯一取数处。
-- W2b 落地（`hub/src/api/`）：入口 `Api.dispatch(req, { device_id, role, conn? })`，进来先调一次 `authorize(caller, req)`（`authz.ts`），W2a 之前用同规则的替身，换成真的是 `createApi({ authorize })` 一行；不过就 403，`node` 在 `/api/v1` 下全 403。路径里的 `?a=b` 并进 `query`（CLI 用）。错方法 405，没有的路由 404（写路由 W3 才有）。`conn` 是 link 给的 `{ send(frame), writable() }`，没有 `conn` 的调用方（CLI、测试）开不了流。列表和 bootstrap 都在一个事务里读，带当时的 `seq`。
+- W2b 落地（`hub/src/api/`）：入口 `Api.dispatch(req, { device_id, role, conn? })`，进来先调一次 `authorize(caller, req)`（`authz.ts`），W2a 起是 `link/roles.ts` 的（只认规范路径，`..`、`//`、`%2e` 之类在入口就 403），`main.ts` 经 `createApi({ authorize })` 传进来；不过就 403，`node` 在 `/api/v1` 下全 403。路径里的 `?a=b` 并进 `query`（CLI 用）。错方法 405，没有的路由 404（写路由 W3 才有）。`conn` 是 link 给的 `{ send(frame), writable() }`，没有 `conn` 的调用方（CLI、测试）开不了流。列表和 bootstrap 都在一个事务里读，带当时的 `seq`。
 - pump 落地：每条连接一个游标；心跳的 `seq` 是这条连接补到的位置。回复正文的 delta 由派发的 `onItem` 喂进来（`main.ts`），键 `<run>:a<n>`；工具输出 `toolText(run, item, text)`（W4 节点流式时接）。游标落后到被清理（04 §10.4）或 `after` 比最新还新 → `reset` 并关掉这条流。
 - `threads` 行 ※：进输入时（`inbox.ingest` 同一事务）和 run 结束时由 `touchThread` 建或更新 `last_item_at`。`console:main`、`feishu:dm:owner` 是 `personal`，`feishu:wb:*`、`console:t:th_*`、`task:t*` 是 `work`，别的 lane（triage、draft、outlet……）没有。时间线按 `(ts, 来源次序, id)` 排，游标对客户端不透明；inbox、approvals、tasks 按 lane 还没索引 ※（04 §13 的量级扫一遍是毫秒）。
 
@@ -234,7 +234,8 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 - 本机 socket：
   - `hub.sock`：本机节点，在单独的 `$SBOT_HOME/node/`（0750，属组是节点账号的组，组名或 gid 取 `SBOT_NODE_GROUP`，没设就跟主同组），socket 0660 ※。不放 `run/`：`run/` 是 0700，节点账号进不去，里面的 socket 权限再开也连不上。要节点账号够得着，`$SBOT_HOME` 本身要给那个组 `x`（属组设成它、0710），主的账号要在那个组里（改目录属组要求）；部署时设，主启动时查到进不去会记日志。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
   - `hub-admin.sock`：在 `$SBOT_HOME/run/`（0700），`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
-- 中继：`relay.enabled` 时主连 `wss://…/v1/hub`，按 06 注册，断了按 1、2、5、10、30 秒退避重连。
+- 中继：`relay.enabled` 时主连 `wss://…/v1/hub`，按 06 注册，断了按 1、2、5、10、30 秒退避重连。一条 WS 上按 sid 一个会话一个 Noise 响应方（`hub/src/link/session.ts`，不绑传输，以后直连复用）；中继不可信，坏信封、不认识的 sid 直接丢。
+- 主密钥在 `link/keys.ts`，在读 `secrets.env` 之前生成或读入（`keys/` 下的文件打码器都认）。通道里的请求进 `api.dispatch`（`authorize` 在它入口，函数是 `link/roles.ts` 的，`api/authz.ts` 转出），通道关了调 `api.closeConn`。`hub-admin.sock` 走 `main.ts` 的 `router`：先过同一个 `authorize`（调用方 `cli`、角色 `client`），设备的写由 `link/service.ts` 接，其余交给 `api.dispatch`。
 - 删设备：06。
 
 ## tasks 和 nodes（§办3）
@@ -277,8 +278,9 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 `sbot pair [--node]`、`sbot devices [rm <id>]`、`sbot status`（版本、主公钥指纹、中继、节点、缺哪些 Linux 可选件）、`sbot chat`（终端里接主对话 lane，等同一台 client）、`sbot upgrade --ref <sha>`、`sbot restore <文件> --identity <私钥文件> [--force]`、`sbot import ...`（09 的重建）。都经 `hub-admin.sock`，除了 `restore` ※：它要换掉主正在用的库，所以在主停着时本地跑，socket 上有主应答就拒绝。
 
 - `hub-admin.sock` 帧：u32 大端长度 + 一个应用帧（JSON），上限和 Noise 重组后一样 1 MiB；不加密，靠 run 目录 0700、socket 0600、属主是主的账号。Windows 用命名管道 `\\.\pipe\sbot-hub-admin`。
-- `status` 走 `GET /api/v1/status`（`protocol/api/status.ts`）：版本、提交号、协议版本、主公钥指纹（W2 前是 `null`）、启动时间、库版本；中继、节点、可选件跟着各自的波次加字段。
-- 退出码：0 成功、1 失败、2 参数不对、3 还没做（报是哪一波：`pair`、`devices` W2，`chat` W3，`upgrade` W4，`import` W6）。
+- `status` 走 `GET /api/v1/status`（`protocol/api/status.ts`）：版本、提交号、协议版本、主公钥指纹（W2 前是 `null`）、启动时间、库版本；中继、节点、可选件跟着各自的波次加字段。W2a 加 `relay { enabled, connected }` 和 `hub_pk`（公钥原文，抄进 `relay.yaml` 用）※。
+- `sbot pair` 打二维码（`uqr`，终端 Unicode 半格）和链接，提醒这是 10 分钟的一次性密码；中继没开时照出码并说现在连不上。
+- 退出码：0 成功、1 失败、2 参数不对、3 还没做（报是哪一波：`chat` W3，`upgrade` W4，`import` W6）。
 
 ## 配置键变化（Y11）
 

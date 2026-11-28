@@ -1,0 +1,35 @@
+# nginx in front of sbot-relay (docs/tech/06): TLS ends here, the WS upgrade goes to 127.0.0.1:7840.
+# __HOST__ is the relay's domain (instance config, never in the repo). DNS only, no CDN proxy (06 ※).
+# A public entrance: the owner decides when to turn it on (CLAUDE.md 底线). Nothing installs this file.
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    server_name __HOST__;
+
+    ssl_certificate     /etc/letsencrypt/live/__HOST__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__HOST__/privkey.pem;
+
+    # the relay logs masked IPs itself; nginx keeps no access log for it
+    access_log off;
+    client_max_body_size 0;
+
+    location = /healthz { proxy_pass http://127.0.0.1:7840; }
+
+    location ~ ^/v1/(hub|peer)$ {
+        proxy_pass http://127.0.0.1:7840;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        # overwrite, never append: the relay trusts this header only from loopback and takes it as the client IP
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For "";
+        # the relay pings every 25 s; this only cuts sockets that stopped answering
+        proxy_read_timeout 90s;
+        proxy_send_timeout 90s;
+        proxy_buffering off;
+        proxy_request_buffering off;
+    }
+
+    location / { return 404; }
+}

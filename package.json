@@ -8,16 +8,18 @@
   "workspaces": [
     "protocol",
     "hub",
-    "node"
+    "node",
+    "relay"
   ],
   "scripts": {
-    "test": "node --test 'protocol/test/*.test.ts' 'hub/test/*.test.ts' 'node/test/*.test.ts' 'scripts/test/*.test.ts'",
+    "test": "node --test 'protocol/test/*.test.ts' 'hub/test/*.test.ts' 'node/test/*.test.ts' 'relay/test/*.test.ts' 'scripts/test/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "import-check": "node scripts/import-check.ts",
     "protocol-check": "node scripts/protocol-check.ts"
   },
   "devDependencies": {
     "@types/node": "24.19.4",
-    "typescript": "7.0.2"
+    "typescript": "7.0.2",
+    "@types/ws": "8.18.2"
   }
 }

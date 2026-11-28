@@ -1,7 +1,7 @@
 // The hub process (03 「启动顺序」): config → db → config repo seed + default jobs → agent-home seed → secrets + redact
 // → proxy → inbox.recover → hub.sock (local node) → channels, timers, Sentinel, sources, triage → outbox, dispatcher →
-// api (read-only /api/v1 + event pump, W2b) → hub-admin.sock → "hub up" → notices through the admin outlet. Shutdown is
-// the reverse. push comes in W3.
+// api (read-only /api/v1 + event pump, W2b) → hub-admin.sock → the relay link (only when console.yaml relay.enabled)
+// → "hub up" → notices through the admin outlet. Shutdown is the reverse. push comes in W3.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -47,6 +47,14 @@ import { proxyComplete } from "./triage/complete.ts";
 import { runBackup } from "./backup.ts";
 import { nodeCheck } from "./check.ts";
 import { createApi, type Api } from "./api/index.ts";
+import { useCrypto } from "../../protocol/noise/crypto.ts";
+import { nodeAead, nodeDh } from "../../protocol/noise/node-crypto.ts";
+import { loadOrCreateHubKey, type HubKey } from "./link/keys.ts";
+import { LinkService } from "./link/service.ts";
+import { RelayLink } from "./link/relay-link.ts";
+import { authorize } from "./link/roles.ts";
+import { secret } from "./secrets.ts";
+import { consoleConf } from "./config/load.ts";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -62,6 +70,7 @@ export const VERSION = (JSON.parse(readFileSync(join(APP, "hub", "package.json")
 export interface Hub {
   h: Home; db: Db; admin: Server; startedAt: number;
   proxy: import("node:http").Server; outbox: Outbox; node: NodeLink; dispatcher: Dispatcher; runner: Runner; api: Api;
+  hubKey: HubKey; link: LinkService;
   close(): Promise<void>;
 }
 
@@ -114,24 +123,36 @@ async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: 
   };
 }
 
-export function statusOf(hub: Pick<Hub, "db" | "startedAt">): StatusRes {
+export function statusOf(hub: Pick<Hub, "db" | "startedAt" | "hubKey" | "link">): StatusRes {
   return StatusRes.parse({
     version: VERSION, hub_sha: revision().sha, protocol: { current: PROTOCOL.current, min: PROTOCOL.min },
-    hub_key_fingerprint: null,   // W2 (06): the hub's static Noise key
+    hub_key_fingerprint: hub.hubKey.fingerprint, hub_pk: hub.hubKey.publicB64u,
     started_at: hub.startedAt, db_version: hub.db.userVersion(),
+    relay: { enabled: consoleConf().relay.enabled, connected: hub.link.relay?.connected ?? false },
   });
 }
 
-/** hub-admin.sock: the CLI is the client device `cli` (03 link); everything goes through the one api dispatcher. */
-export function router(hub: Pick<Hub, "api">): Handler {
+/**
+ * hub-admin.sock: the CLI is the client device `cli` (03 link). Reads go through the one api dispatcher. The device
+ * writes (sbot pair, devices rm; 06) are served here first, after the same role check: W2b keeps /api/v1 writes for
+ * W3's client_ops, so until then they exist on this socket only, not on relay channels ※.
+ */
+export function router(hub: Pick<Hub, "api" | "link">): Handler {
+  const cli = { device_id: "cli", role: "client" } as const;
   return async (req: Req) => {
-    const out = await hub.api.dispatch(req, { device_id: "cli", role: "client" });
+    if (authorize(cli, req).ok) {
+      const w = await hub.link.route(req, cli);
+      if (w) return w;
+    }
+    const out = await hub.api.dispatch(req, cli);
     return { status: out.status, body: out.body };
   };
 }
 
 export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
   const startedAt = Date.now();
+  // 02 ※: hub and nodes use node:crypto (OpenSSL) for the Noise primitives
+  useCrypto({ aead: nodeAead, dh: nodeDh });
   useConfigDir(h.config);
   // the config repo exists before it is read, so a fresh home starts with the seeded files
   const seeded = await ensureConfigRepo(h.config);
@@ -141,6 +162,10 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
   try {
     await addDefaultJobs(db, h.config);
     const rep = await ensureAgentHome(db, h.agentHome, undefined, revision().sha);
+    // 06: the hub key exists from the first start (status shows it, pairing needs it); made before the secrets are
+    // read so redact() learns it like every other file in keys/
+    const hubKey = loadOrCreateHubKey(h.keys);
+    const link = new LinkService(db, hubKey);
     // secrets go into memory once; from here on every log line, run item, event and card is redacted
     loadSecrets(h.secrets, h.keys);
     refreshKnown();
@@ -154,11 +179,14 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => proxy.close() });
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
-    const api = createApi({ db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt }) });
+    // the one role check (link/roles.ts) at the dispatcher's entry, for every transport
+    const api = createApi({ db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt, hubKey, link }), authorize });
     const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
       onItem: (run, lane, e) => api.pump.onItem(run, lane, e),
       onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined),
-      stream: (c) => channel(c.turn.channel)?.stream?.(c) });
+      stream: (c) => channel(c.turn.channel)?.stream?.(c), command: link.command });
+    // 06 删设备 step 4: stop a run the removed device started, if it is still its lane's run
+    link.stopRun = (run, lane) => { if (dispatcher.activeRun(lane) === run) dispatcher.stopLane(lane); };
     // before anything can take new rows: what the last process left half done (§底1.2)
     dispatcher.recover();
     await node.listen(h.node);
@@ -178,8 +206,9 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => api.stop() });
 
     const hub: Hub = {
-      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api,
+      h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api, hubKey, link,
       async close() {
+        await link.relay?.close();
         clearInterval(sweeper);
         api.stop();
         await dispatcher.stop();
@@ -195,6 +224,7 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
       },
     };
     hub.admin = await startAdminSocket(h.run, router(hub));
+    startRelayLink(hub);
     log("main", "hub up", { db_version: db.userVersion(), seeded_config: seeded.length });
     const seedText = seedNotice(rep);
     if (seedText) await notify.admin(seedText);
@@ -204,6 +234,26 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     db.close();
     throw e;
   }
+}
+
+/**
+ * 06 「开关」: the link to the relay is off unless console.yaml relay.enabled (turning it on is a widening, config/
+ * widening.ts). Read at boot ※: flipping it takes effect on the next start. RELAY_TOKEN stays in secrets.ts memory.
+ */
+function startRelayLink(hub: Hub) {
+  const r = consoleConf().relay;
+  if (!r.enabled) return;
+  const token = secret("RELAY_TOKEN");
+  if (!r.url || !token) { log("link", "relay.enabled but relay.url or RELAY_TOKEN is missing; not connecting"); return; }
+  const relay = new RelayLink({
+    db: hub.db, hubKey: hub.hubKey, url: r.url, token,
+    // a channel's `req` frames: straight to the api dispatcher (it authorizes); the session is the stream's conn
+    handle: (req, caller, conn) => hub.api.dispatch(req, { ...caller, conn }),
+    closed: (conn) => hub.api.closeConn(conn),
+    onPaired: hub.link.onPaired, onNewIp: hub.link.onNewIp,
+  });
+  hub.link.relay = relay;
+  relay.start();
 }
 
 if (import.meta.main) {

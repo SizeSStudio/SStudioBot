@@ -18,7 +18,7 @@ import {
 } from "../../../protocol/api/read.ts";
 import type { Db, Row } from "../db/db.ts";
 import { log } from "../log.ts";
-import { authorizeStandIn, type Authorize, type Caller } from "./authz.ts";
+import { authorize, type Authorize, type Caller } from "./authz.ts";
 import { Pump, type Conn, type PumpOpts } from "./pump.ts";
 import { approvalView, deviceView, headSeq, runView, taskView, threadView, timeline } from "./views.ts";
 
@@ -34,7 +34,7 @@ export interface ApiDeps {
   hubSha: () => string;
   status?: () => StatusRes;
   pump?: PumpOpts;
-  /** swap for W2a's function when it lands; nothing else changes */
+  /** default: link/roles.ts (main.ts passes it explicitly) */
   authorize?: Authorize;
 }
 
@@ -57,7 +57,7 @@ export class Api {
 
   constructor(d: ApiDeps) {
     this.#d = d; this.db = d.db; this.blobs = d.blobs;
-    this.#authorize = d.authorize ?? authorizeStandIn;
+    this.#authorize = d.authorize ?? authorize;
     this.pump = new Pump(d.db, d.blobs, d.pump);
     const r = (method: Req["method"], path: string, fn: Handler) => ({ method, re: new RegExp(`^${path}$`), fn });
     this.#routes = [

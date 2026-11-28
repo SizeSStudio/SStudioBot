@@ -5,7 +5,8 @@
 ## 中继（`relay/`）
 
 - Node + `ws` 8.23，独立进程。默认和主在同一台 VPS 上，经机器上已有的 nginx 共用 443：nginx 终结 TLS（现有证书），把 WS 升级转给 `127.0.0.1:<端口>`。域名是实例配置，不进仓库。DNS 只解析、不经 CDN 代理 ※（理由：少一家看元数据，WS 长连接不被 CDN 掐）。
-- P1 先看 Paseo 的 `relay/`（Apache-2.0）能不能照搬；能就保留版权头、改成下面的信封；不能就自己写（几百行）。
+- P1 看过 Paseo 的 `relay/`：不照搬，自己写（08 P1）。W2a 落地：`relay/src/`，`ws` 锁 8.23.1，`npm ci --ignore-scripts`，只 import `protocol/envelope.ts`。默认听 `127.0.0.1:7840` ※；`X-Real-IP` 只在 TCP 对端是回环时认（nginx 覆盖写），否则用对端地址。
+- 部署件在 `deploy/relay/`：unit（`LogNamespace=sbot-relay`，journald 留 14 天）、`install.sh`（只装中继本身，不碰 nginx）、`nginx-relay.conf.example`（域名占位）。公网入口由我手动开。
 - 端点：
   - `GET /v1/hub`：主注册，一条 WS 承载所有会话（多路复用）。
   - `GET /v1/peer?hub=<主公钥 base64url>`：客户端、节点，一个会话一条 WS。
@@ -23,6 +24,24 @@
 ### 注册、防抢注册、防洪泛
 
 - 中继的 `relay.yaml`（实例配置，在服务器上）列允许注册的主：`[{ hub_pk, token_hash }]`。主用 `secrets.env` 里的 `RELAY_TOKEN` 注册，两者对上才收。同一把公钥再次注册（主重启）新的顶掉旧的。没对上回 401，按 IP 限速。
+  - 注册请求头 ※：`Authorization: Bearer <RELAY_TOKEN>`、`X-Sbot-Hub: <hub_pk>`；中继比 `sha256(token)`，常数时间。`token_hash` 是 sha256 hex。`hub_pk` 从 `sbot status` 抄（公钥，不是秘密）。
+  - `relay.yaml` 改了 `systemctl reload`（SIGHUP）：新表生效，被拿掉的主立刻断；坏文件留旧表、记一行。
+- 升级前就拒（HTTP，不进 WS）：封禁中 403、令牌桶空 429、注册不对 401、`hub=` 不是 43 位 base64url 400、别的路径 404。
+- 关闭码 ※：
+
+  | 码 | 谁发 | 意思 |
+  |---|---|---|
+  | 4404 | 中继 | 主不在线；主掉线、被顶掉时它的会话也收这个 |
+  | 4408 | 中继 | 10 秒内主没回第一段 |
+  | 4409 | 中继 → 旧主 | 同一把公钥新注册顶掉了它 |
+  | 4429 | 中继 | 设备那条积压超 2 MiB 持续 10 秒（直接断 socket，不等关闭握手） |
+  | 1002 / 1009 | 中继 | 文本消息、坏信封 / 超长 |
+  | 4401 `auth` | 主 | 认证、配对任何一步不过；中继按设备 IP 计失败 |
+  | 4400 `protocol` | 主 | 通道打开后解不开（重放、篡改、乱序）或帧不成形 |
+  | 4410 `removed` | 主 | 设备被删 |
+  | 4426 `version` | 主 | 客户端协议版本低于 `PROTOCOL.min` |
+
+  主发的 CLOSE 中继只放行 1000 和 4000–4999，`reason` 只放 `[a-z_]{1,20}`。
 - 设备连 `/v1/peer` 时主不在线：关闭码 4404，客户端显示「等主上线」，按 1、2、5、10、30 秒退避重连。
 - 中继自保的默认值（`relay.yaml` 可改；保护中继，不限制我）※：
   - 每个 IP 新连接每分钟 20 次（令牌桶）。
@@ -59,6 +78,9 @@
 3. 主查 `devices`：存在、没删、公钥验签过 → 这条通道认作这台设备、它的角色；更新 `last_seen`、`last_ip_masked`；IP 段对这台设备是新的就记 `device_audit`。
 4. 任何一步不过：发 `CLOSE { reason: "auth" }`，不说哪步错。
 
+- 从 OPEN 到认证完成限 10 秒 ※，超了按 `auth` 关。第一帧必须和握手里的 `purpose` 对上（`auth` 对 `auth`、`pair` 对 `pair`），角色要和 `devices.role` 一致。
+- 已知设备签名不对记 `device_audit challenge_failed`；不认识的 id 不记（公网噪声）。
+
 一条通道只对应一台设备。没有 token、cookie、过期。
 
 ## 配对
@@ -66,6 +88,7 @@
 - 配对码：`{ v: 1, hub_pk, relay, secret: 32 字节, role, exp }` → `sstudiobot://pair#v1.<base64url(JSON)>`。二维码就是这个链接。`#` 后面的部分不发给任何服务器。
 - `device_invites`：存 `sha256(secret)`、`role`、`created_by`（`cli` / 设备 id / `channel:feishu`）、`expires`（10 分钟）、`used_at`。
 - 流程：新设备生成密钥 → 连 `/v1/peer?hub=` → Noise 握手（`purpose: "pair"`）→ `pair { secret, public_key, name, platform, sig }` → 主在一个事务里：常数时间比对 hash、没用过、没过期 → 标记用掉、写 `devices`、写 `device_audit` → 这条通道直接认作这台新设备。
+- 主先验 `pair.sig`（证明设备握着私钥、绑在这条通道），再碰邀请。每次都把所有未用未过期的邀请比一遍，不提前退出。失败记 `pair_failed`，不记 secret。见过的公钥（删了的也算）不能再配 ※：每次配对都是新密钥，旧密钥只可能是重放。
 - 拿码的三条路（§触6.7）：
   - `sbot pair [--node]`：经 `hub-admin.sock`（05），终端打二维码和链接。
   - 已配对客户端：`POST /api/v1/devices/invites { role }`。
@@ -82,13 +105,15 @@
   3. 它排队还没处理的输入标 `dropped`。
   4. 它发起、还在跑的 run 停掉（runs 上记着发起设备）。
   5. `push_token` 清空。
-- 通知（走 §触1.1 路由表）：新设备配上、删设备按**安全告警**发；从没见过的 IP 段按**通知**发 ※（手机换基站 IP 段常变，按安全告警会夜里吵）。
+- 通知（走 §触1.1 路由表）：新设备配上、删设备按**安全告警**发；从没见过的 IP 段按**通知**发 ※（手机换基站 IP 段常变，按安全告警会夜里吵）。W3 推送之前三种都走 `notify.admin` ※。
+- 通道里的 `req` 交给 W2b 的 `api.dispatch(req, { device_id, role, conn })`，入口的 `authorize` 是 `link/roles.ts` 的；通道关了调 `api.closeConn(conn)` 收掉它的流。设备的写（`PATCH|DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites`，核心在 `hub/src/link/service.ts`）W3 `client_ops` 之前只在 `hub-admin.sock` 上接，通道里发来是 W2b 的 404 或 405 ※；列表走 W2b 的 `GET /api/v1/devices`。`/pair`、`/devices` 只认飞书我自己私聊那条 lane（`feishu:dm:owner`），别处当普通文字。
 - 删了的设备再连：认证失败。要用就重新配对，是一台新设备。
 
 ## 角色
 
 - `client`：我能做的都能做；同一台设备发起的审批自己能批（§触6.10 D6）。
 - `node`：只能调 `/node/v1`；`/api/v1` 一律 403。这条在 API 分发处一处判断，不靠各路由自己记得；有测试覆盖「批审批、答看一眼、发消息、读 self」四条。
+- `authorize(role, path)`（`hub/src/link/roles.ts`）只认规范路径 ※：带 `.`、`..`、空段、`%`、`\` 的一律 403，免得以后哪个路由归一化后绕过。`hub-admin.sock` 是保留设备 `cli`（`client`），`device_id` 是 64 位 hex，永远不会是 `cli`。
 
 ## 开关
 
@@ -101,3 +126,6 @@ relay:
 mcp_open: false         # 反向开放 MCP（02）
 fcm: { enabled: false } # 07
 ```
+
+- `url` 必须以 `/v1/hub` 结尾 ※；配对码里的 `relay` 是把它换成 `/v1/peer` 得来的，客户端再加 `?hub=`。`ws://` 只许回环（同机中继、测试、冒烟）※。
+- 开关在启动时读 ※：改了下次启动生效。`enabled` 但缺 `url` 或 `RELAY_TOKEN` 就不连，记一行。没填 `url` 时出码会被拒（码里没有中继地址）；填了但没开，码照出，提示现在连不上。

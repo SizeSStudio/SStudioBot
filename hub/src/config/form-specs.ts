@@ -291,7 +291,7 @@ export const FORM_SPECS: Record<string, FormSpec> = {
     sections: [
       { title: "中继", fields: [group("relay", "中继", "配对过的设备经中继从外网连进来，内容端到端加密，中继看不到。", [
         bool("enabled", "用中继", "默认关。", { default: false, widen: { when: "on", note: "配对过的设备可以从外网连进来。" } }),
-        text("url", "地址", "wss:// 加主机名和路径。", { placeholder: "wss://relay.example.com/sbot", widen: { when: "change", note: "设备改从这个中继连进来。" } }),
+        text("url", "地址", "wss:// 加主机名和路径，以 /v1/hub 结尾。", { placeholder: "wss://relay.example.com/v1/hub", widen: { when: "change", note: "设备改从这个中继连进来。" } }),
       ])] },
       { title: "其他", fields: [
         bool("mcp_open", "MCP 入口", "让别的 agent 经 MCP 调它。默认关。", { default: false, widen: { when: "on", note: "别的 agent 可以经 MCP 调它。" } }),

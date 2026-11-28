@@ -118,7 +118,8 @@ export const SCHEMAS: Record<string, z.ZodType> = {
   "repos.yaml": z.record(z.string(), z.object({ url: z.string().min(1), branch: z.string().optional() }).passthrough()).nullable(),
   // 06 「开关」: every switch here opens something to the outside, so all default off and turning one on is a widening
   "console.yaml": z.object({
-    relay: z.object({ enabled: z.boolean().optional(), url: z.string().regex(/^wss:\/\/[^\s/]+\/\S*$/, "wss://主机名/路径").optional() }).passthrough().optional(),
+    // wss:// to a host; plain ws:// only to loopback (a relay on the same machine, tests and smoke) ※
+    relay: z.object({ enabled: z.boolean().optional(), url: z.string().regex(/^(wss:\/\/[^\s/]+|ws:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?)\/\S*\/hub$/, "wss://主机名/…/v1/hub").optional() }).passthrough().optional(),
     mcp_open: z.boolean().optional(),
     fcm: z.object({ enabled: z.boolean().optional() }).passthrough().optional(),
   }).passthrough(),

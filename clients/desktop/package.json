@@ -1,0 +1,19 @@
+{
+  "name": "@sbot-clients/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "productName": "SStudioBot",
+  "main": "main.ts",
+  "type": "module",
+  "scripts": {
+    "install-electron": "node ../node_modules/electron/install.js",
+    "start": "electron .",
+    "selftest": "electron . --selftest"
+  },
+  "devDependencies": {
+    "@noble/curves": "2.4.0",
+    "@types/node": "24.19.4",
+    "electron": "45.5.0",
+    "typescript": "7.0.2"
+  }
+}

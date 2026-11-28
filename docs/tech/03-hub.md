@@ -4,7 +4,7 @@
 
 ## 启动顺序
 
-`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；W1e 在 outbox 开始投递之前起渠道、timers、Sentinel、sources、分拣（`main.ts` `startChannelSide`），都叫醒同一个派发（`kickInbox`）；关的时候倒过来。push、`api.pump` 等 W2。
+`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；W1e 在 outbox 开始投递之前起渠道、timers、Sentinel、sources、分拣（`main.ts` `startChannelSide`），都叫醒同一个派发（`kickInbox`）；关的时候倒过来。W2b 在派发之后起 `api.pump`；push 等 W2。
 
 关停：停收新输入 → 等跑着的 run 到下一个安全点（最多 30 秒）→ 没跑完的按 §底1.2 的重启规则处理 → 关通道 → 关库。
 
@@ -225,6 +225,9 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 - 写请求：`client_op_id` 去重和业务写入同一事务（02）。
 - **pump**：每 100 ms 读 `change_log` 里 `seq > 上次`，同批同实体合并，发送时用和 GET 同一个视图函数取最新内容，按连接过滤（`node` 不收客户端流；`personal` 只发 `client`）。心跳带最新 `seq`。慢连接：持久事件停读、之后补；delta 直接丢、缓过来发 snapshot（§触6.4）。
 - 视图函数是 bootstrap、GET、事件三处共用的唯一取数处。
+- W2b 落地（`hub/src/api/`）：入口 `Api.dispatch(req, { device_id, role, conn? })`，进来先调一次 `authorize(caller, req)`（`authz.ts`），W2a 之前用同规则的替身，换成真的是 `createApi({ authorize })` 一行；不过就 403，`node` 在 `/api/v1` 下全 403。路径里的 `?a=b` 并进 `query`（CLI 用）。错方法 405，没有的路由 404（写路由 W3 才有）。`conn` 是 link 给的 `{ send(frame), writable() }`，没有 `conn` 的调用方（CLI、测试）开不了流。列表和 bootstrap 都在一个事务里读，带当时的 `seq`。
+- pump 落地：每条连接一个游标；心跳的 `seq` 是这条连接补到的位置。回复正文的 delta 由派发的 `onItem` 喂进来（`main.ts`），键 `<run>:a<n>`；工具输出 `toolText(run, item, text)`（W4 节点流式时接）。游标落后到被清理（04 §10.4）或 `after` 比最新还新 → `reset` 并关掉这条流。
+- `threads` 行 ※：进输入时（`inbox.ingest` 同一事务）和 run 结束时由 `touchThread` 建或更新 `last_item_at`。`console:main`、`feishu:dm:owner` 是 `personal`，`feishu:wb:*`、`console:t:th_*`、`task:t*` 是 `work`，别的 lane（triage、draft、outlet……）没有。时间线按 `(ts, 来源次序, id)` 排，游标对客户端不透明；inbox、approvals、tasks 按 lane 还没索引 ※（04 §13 的量级扫一遍是毫秒）。
 
 ## link
 

@@ -3,6 +3,7 @@
 // 0700 and the socket 0600, both owned by the hub's account, so only that account can connect. A connection counts as
 // the `client` device `cli` (audit records `cli`).
 import { createConnection, createServer, type Server, type Socket } from "node:net";
+import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { parseFrame, encodeFrame, type Req, type Res } from "../../protocol/frames.ts";
@@ -13,7 +14,7 @@ export { FRAME_MAX, encodeLen, FrameReader } from "../../protocol/lenframe.ts";
 import { encodeLen, FrameReader } from "../../protocol/lenframe.ts";
 export const adminSocketPath = (runDir: string) => (process.platform === "win32" ? "\\\\.\\pipe\\sbot-hub-admin" : join(runDir, "hub-admin.sock"));
 
-export type Handler = (req: Req, who: { device: "cli" }) => Promise<{ status: number; body?: unknown }>;
+export type Handler = (req: Req, who: { device: "cli" }) => Promise<{ status: number; body?: unknown; seq?: number }>;
 
 /** The run dir must be ours and closed to everyone else before a socket goes in it. */
 export function ensureRunDir(runDir: string) {
@@ -56,7 +57,7 @@ function serve(sock: Socket, handle: Handler) {
       if (!f || f.t !== "req") continue;                              // unknown or not for us: ignored (02)
       const req = f;
       handle(req, { device: "cli" }).then(
-        (out) => reply({ t: "res", id: req.id, status: out.status, body: out.body }),
+        (out) => reply({ t: "res", id: req.id, status: out.status, body: out.body, ...(out.seq != null ? { seq: out.seq } : {}) }),
         (e) => {
           log("admin", "handler failed", { path: req.path, err: String((e as Error)?.message ?? e).slice(0, 200) });
           reply({ t: "res", id: req.id, status: 500, body: { error: "internal error" } });
@@ -66,14 +67,17 @@ function serve(sock: Socket, handle: Handler) {
   sock.on("error", () => sock.destroy());
 }
 
-/** One request over the admin socket (the CLI). Rejects when no hub is listening. */
+/**
+ * One request over the admin socket (the CLI). Rejects when no hub is listening. A write gets a client_op_id of its
+ * own (02: every write carries one); the CLI doesn't retry, so a fresh one each call.
+ */
 export function adminRequest(runDir: string, method: Req["method"], path: string, body?: unknown): Promise<Res> {
   return new Promise((resolve, reject) => {
     const sock = createConnection(adminSocketPath(runDir));
     const r = new FrameReader();
     sock.once("error", (e) => reject(Object.assign(new Error(`hub 没在运行，或连不上 hub-admin.sock（${(e as NodeJS.ErrnoException).code ?? e.message}）`), { cause: e })));
     sock.on("connect", () => {
-      const req: Req = { t: "req", id: 1, method, path, ...(body === undefined ? {} : { body }) };
+      const req: Req = { t: "req", id: 1, method, path, ...(body === undefined ? {} : { body }), ...(method === "GET" ? {} : { client_op_id: `cli-${randomUUID()}` }) };
       sock.write(encodeLen(encodeFrame(req)));
     });
     sock.on("data", (chunk) => {

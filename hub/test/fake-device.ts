@@ -54,13 +54,25 @@ export class Channel {
   sendFrame(f: Frame) { for (const p of this.t.seal(new TextEncoder().encode(encodeFrame(f)))) this.raw(p); }
   raw(p: Uint8Array) { const b = Buffer.from(p); this.wire.push(b); this.ws.send(b); }
 
-  async req(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, ms = 5000): Promise<{ status: number; body?: any }> {
+  async req(
+    method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+    path: string,
+    body?: unknown,
+    opts: number | { ms?: number; client_op_id?: string; query?: Record<string, string> } = 5000,
+  ): Promise<{ status: number; body?: any; seq?: number }> {
+    const o = typeof opts === "number" ? { ms: opts } : opts;
+    const ms = o.ms ?? 5000;
     const id = this.#nextId++;
-    this.sendFrame({ t: "req", id, method, path, ...(body === undefined ? {} : { body }) } as Frame);
+    this.sendFrame({
+      t: "req", id, method, path,
+      ...(body === undefined ? {} : { body }),
+      ...(o.query ? { query: o.query } : {}),
+      ...(o.client_op_id ? { client_op_id: o.client_op_id } : {}),
+    } as Frame);
     const end = Date.now() + ms;
     for (;;) {
       const r = this.frames.find((f) => f.t === "res" && f.id === id);
-      if (r && r.t === "res") return { status: r.status, body: r.body };
+      if (r && r.t === "res") return { status: r.status, body: r.body, ...(r.seq != null ? { seq: r.seq } : {}) };
       if (this.closedAt) throw new Error(`channel closed before res ${id}`);
       if (Date.now() > end) throw new Error(`no res ${id}`);
       await new Promise<void>((res) => { this.#waiters.push(res); setTimeout(res, 50); });

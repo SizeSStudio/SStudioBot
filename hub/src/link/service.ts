@@ -1,10 +1,9 @@
 // The link module's surface for the rest of the hub (docs/tech/03 「link」): invites, the device list, removal with
-// its follow-ups, security notices, and the ways in that share them — the device write routes (the CLI over
-// hub-admin.sock; on channels with W3's client_ops), and Feishu /pair, /devices in my own DM. Listing is W2b's
+// its follow-ups, security notices, and the ways in that share them — the device write routes (api/writes.ts, inside
+// client_ops; the CLI and paired clients alike since W3) and Feishu /pair, /devices in my own DM. Listing is W2b's
 // GET /api/v1/devices.
 import type { Db } from "../db/db.ts";
-import type { Req } from "../../../protocol/frames.ts";
-import { DeviceRename, InviteReq, type InviteRes } from "../../../protocol/api/devices.ts";
+import type { InviteRes } from "../../../protocol/api/devices.ts";
 import { consoleConf } from "../config/load.ts";
 import { OWNER_DM_LANE } from "../channels/feishu/state.ts";
 import { localStamp } from "../time.ts";
@@ -14,8 +13,7 @@ import type { HubKey } from "./keys.ts";
 import type { RelayLink } from "./relay-link.ts";
 import type { Paired, Role } from "./pairing.ts";
 import { createInvite } from "./pairing.ts";
-import { actorOf, listDevices, removeDevice, renameDevice, resolveDevice, short, type Actor } from "./devices.ts";
-import type { Caller } from "../api/authz.ts";
+import { listDevices, removeDevice, resolveDevice, short, type Actor } from "./devices.ts";
 
 export class LinkError extends Error {}
 
@@ -25,8 +23,6 @@ export function peerUrlOf(hubUrl: string): string {
   if (u === hubUrl) throw new LinkError("console.yaml 的 relay.url 要以 /v1/hub 结尾");
   return u;
 }
-
-type Res = { status: number; body?: unknown };
 
 export class LinkService {
   readonly db: Db;
@@ -72,33 +68,8 @@ export class LinkService {
     void notify.admin(`设备「${d?.name ?? "?"}」（${short(id)}）从没见过的 IP 段连上了：${ipMasked}`);
   };
 
-  /**
-   * The device write routes: POST /api/v1/devices/invites, PATCH|DELETE /api/v1/devices/:id. undefined = not one of
-   * them. The caller has passed authorize() already (main.ts router).
-   */
-  async route(req: Req, who: Caller): Promise<Res | undefined> {
-    const p = req.path;
-    if (p === "/api/v1/devices/invites" && req.method === "POST") {
-      const b = InviteReq.safeParse(req.body);
-      if (!b.success) return { status: 400, body: { error: "role 要是 client 或 node" } };
-      try { return { status: 200, body: this.invite(b.data.role, actorOf(who.device_id)) }; }
-      catch (e) { if (e instanceof LinkError) return { status: 409, body: { error: e.message } }; throw e; }
-    }
-    const m = /^\/api\/v1\/devices\/([^/]+)$/.exec(p);
-    if (!m || (req.method !== "DELETE" && req.method !== "PATCH")) return undefined;
-    const found = resolveDevice(this.db, m[1]!);
-    if ("error" in found) return { status: 404, body: { error: found.error } };
-    if (req.method === "DELETE") {
-      const r = this.remove(found.id, actorOf(who.device_id));
-      return r ? { status: 200, body: { id: found.id, ...r } } : { status: 404, body: { error: "没有这台设备" } };
-    }
-    if (req.method === "PATCH") {
-      const b = DeviceRename.safeParse(req.body);
-      if (!b.success) return { status: 400, body: { error: "name 要 1–100 个字" } };
-      return renameDevice(this.db, found.id, b.data.name, actorOf(who.device_id)) ? { status: 200, body: { id: found.id } } : { status: 404, body: { error: "没有这台设备" } };
-    }
-    return undefined;
-  }
+  /** An invite error that is mine to fix (console.yaml), said as-is (api/writes.ts answers 409). */
+  refusal = (e: unknown): string | undefined => (e instanceof LinkError ? e.message : undefined);
 
   /**
    * Feishu /pair [node], /devices, /devices rm <id> — only in my own DM (the lane only my own p2p messages reach,

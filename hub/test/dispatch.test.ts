@@ -81,8 +81,9 @@ test("labels and columns per source; timer/approval/task/system runs can't read 
     return { output: "" };
   });
   const s = await setup(r);
-  ingest(s.db, mine("client:main", "我"));
-  ingest(s.db, { lane: "feishu:dm", kind: "user", source: "feishu", source_msg_id: "om_a", payload: { text: "我也是", owner: true }, turn: { channel: "feishu", surface: "feishu:dm" } });
+  ingest(s.db, mine("console:main", "我"));
+  ingest(s.db, { lane: "feishu:dm:owner", kind: "user", source: "feishu", source_msg_id: "om_a", payload: { text: "我也是", owner: true }, turn: { channel: "feishu", surface: "feishu:dm" } });
+  ingest(s.db, { lane: "feishu:wb:th_shared", kind: "user", source: "feishu", source_msg_id: "om_wb", payload: { text: "工作台里我发的", owner: true }, turn: { channel: "feishu", surface: "feishu:workbench" } });
   ingest(s.db, { lane: "feishu:chat:oc_fake", kind: "user", source: "feishu", source_msg_id: "om_b", payload: { text: "别人", sender_name: "阿乙" }, turn: { channel: "feishu", surface: "feishu:chat" } });
   ingest(s.db, { lane: "job:morning", kind: "timer", source: "timer", source_msg_id: "t1", payload: { text: "早报", job: "morning" } });
   ingest(s.db, { lane: "sys:approval", kind: "approval", source: "approval", source_msg_id: "1:approve", payload: { text: "批了" } });
@@ -90,14 +91,18 @@ test("labels and columns per source; timer/approval/task/system runs can't read 
   ingest(s.db, { lane: "sys:system", kind: "system", source: "system", source_msg_id: "sys1", payload: { text: "节点上线" } });
   s.d.start(50);
   await s.d.idle();
-  assert.equal(seen["client:main"]!.src, "owner@client");
-  assert.equal(seen["feishu:dm"]!.src, "owner@feishu:dm");
+  assert.equal(seen["console:main"]!.src, "owner@client");
+  assert.equal(seen["feishu:dm:owner"]!.src, "owner@feishu:dm");
+  assert.equal(seen["feishu:wb:th_shared"]!.src, "owner@feishu:workbench");
   assert.equal(seen["feishu:chat:oc_fake"]!.src, "other@feishu:chat");
   assert.equal(seen["job:morning"]!.src, "job@morning");
   assert.equal(seen["sys:approval"]!.src, "system@approval");
   assert.equal(seen["sys:task"]!.src, "system@task");
   assert.equal(seen["sys:system"]!.src, "system@system");
-  for (const l of ["client:main", "feishu:dm"]) { assert.equal(seen[l]!.col, "typed"); assert.match(seen[l]!.self, /早起/); assert.ok(seen[l]!.tools.includes("bash")); }
+  for (const l of ["console:main", "feishu:dm:owner"]) { assert.equal(seen[l]!.col, "typed"); assert.match(seen[l]!.self, /早起/); assert.ok(seen[l]!.tools.includes("bash")); }
+  // §读5.1: workbench is a shared place even when I typed there — whole self/ files are refused
+  assert.equal(seen["feishu:wb:th_shared"]!.col, "typed");
+  assert.match(seen["feishu:wb:th_shared"]!.self, /^error: .*self_list/);
   for (const l of ["job:morning", "sys:approval", "sys:task", "sys:system"]) {
     assert.equal(seen[l]!.col, "system", l);
     assert.match(seen[l]!.self, /^error: .*self_list/, l);

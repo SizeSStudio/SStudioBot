@@ -231,6 +231,24 @@ export class Triage {
     return res;
   }
 
+  /**
+   * 改稿 for a triage card (approvals.requestRedraft): the same draft run again with my note as part of the reason;
+   * the new card has the same trigger message, so submitApproval lets it replace the old one. Nothing new (a failed
+   * run, 【不回复】): the old card stays and I'm told.
+   */
+  async redraft(approvalId: number) {
+    const a = one("SELECT status, draft, revise_notes, trigger_msg_id FROM approvals WHERE id=?", approvalId);
+    if (!a || a.status !== "pending" || !a.trigger_msg_id) return;
+    const r = one("SELECT * FROM messages WHERE id=?", a.trigger_msg_id) as Msg | undefined;
+    if (!r) { void notify.admin(`审批 #${approvalId} 改不了稿：原来那条消息找不到了。直接改字或拒掉吧。`); return; }
+    try {
+      await this.draft(r, `上一稿（审批 #${approvalId}）他看了，要你改：${fenced(String(a.revise_notes ?? ""))}\n上一稿：${fenced(String(a.draft ?? ""))}`);
+    } catch (e) {
+      log("triage", "redraft failed", { approval: approvalId, err: String((e as Error)?.message ?? e).slice(0, 200) });
+      void notify.admin(`审批 #${approvalId} 改稿没成（${String((e as Error)?.message ?? e).slice(0, 80)}），原来那张还在。`);
+    }
+  }
+
   /** The draft run (§读2.4): only this chat's context, others' tool scope, a fresh session; out only as an approval. */
   async draft(r: Msg, why: string) {
     const { runDraft, submitSend } = this.#d;

@@ -576,6 +576,7 @@ CREATE TABLE client_ops(
 CREATE INDEX client_ops_ts ON client_ops(ts);
 ```
 - 和业务写入同一个事务。`seq` 在事务内取 `SELECT seq FROM sqlite_sequence WHERE name='change_log'`。
+- `result_json` = `{status, body?, req}`：`req` 是这次请求（方法、路径、按键排序的 body）的 sha256 前 32 位，同键换了请求回 409（02，W3a）；配对码这类秘密不存原样，存的是重试该听到的那句。
 - ※ 留 30 天。理由：重试一般在几秒到几分钟内，手机关机几周后再补发也能认出来；节点那边晚到的写入本来就按 attempt 丢。
 - 发消息不走这张表，用 `inbox` 的 `UNIQUE(source, source_msg_id)`（§触6.4）。
 

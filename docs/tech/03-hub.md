@@ -97,6 +97,11 @@
 - **卡片模型和渠道无关**：`Card { title, lines[], question, options[{id, label, recommended?, cost?}], detail?: { kind: "cmd"|"path"|"args"|"diff", text, folded } }`。客户端直接画；飞书插件渲染成卡片 JSON，命令、路径、参数完整显示，长的折叠（§办3.3）。每路渲染结果记 `approvals.cards_json`，决定后每一路都改卡（飞书用回调 token 延迟更新，§底3.3）。
 - 过期：`approval_ttl_hours`（旧键，沿用；§底3.3 有 `expired`）。看一眼卡不过期（§办3.3：等的时候不设超时），只在节点或 agent 进程重启时作废。
 - 作废：observer 看到我在原处晚于 `trigger_msg_id` 回过话；触发消息被撤回；同一触发有了新草稿（`superseded`）。
+- W3a 落地（`approvals.ts`）：所有端的决定都走 `decide`，点了什么先经 `choose()` 换成批或拒（客户端的 `action`、飞书按钮的选项 id 同一张表）：`send`/`plan`/`proposal`/`rollback` 只认 approve、reject；`glance` 要 `option_id`，选项的 `kind` 以 `reject`/`deny` 开头算拒，没 `kind` 时 id 是 `reject`/`deny` 算拒，其余批；`ask` 可 `option_id` 或自由文字。拒绝原因分 `not_me` 403、`missing` 404、`bad` 400、`decided`/`stale` 409、`gone` 410（API 照它回，409/410 带卡现在的样子）。
+  - 卡上带 `draft_version`，飞书按钮的 value 是 `{k:"appr", id, o, v}`；草稿改过以后点旧卡（`v` 对不上）不生效，卡按新版本重画。W3 之前发出的卡没有 `v`，照旧收 ※。
+  - **自己改稿**（`editDraft`，`send`/`plan`）：打码后写进 `draft`、`draft_version + 1`、各路卡重画。批的时候 `final_text` 取这时的 `draft`，飞书发前 `approvedAsSent` 照旧逐项比：卡上看到的、批的、发出去的是同一份。
+  - **让它改稿**（`requestRedraft`，客户端 `redraft` 和飞书卡片话题里我的回复同一个函数）：意见记进 `revise_notes`，卡上多一行「在改稿」，卡保持 `pending`（新稿不来我还能批这张）。卡来自一个 lane → 往那个 lane 投一条 `approval` 输入（原稿 + 意见），下一轮重新提交；卡来自 triage → 提交后让 triage 用同一条触发消息再起草一次。新稿进来时 `submitApproval` 把同 lane、同 kind、同触发消息、带 `revise_notes` 的旧卡标 `superseded` ※。
+  - **暂缓**（`snoozeApproval`）：`tonight` 到 `gate.yaml push.snooze_tonight`（过了这个点就不给，400），`push_queue` 一行 `state=wait`、占额度；`morning`/`monday` 到早报的时间（`jobs.yaml` 里 `do: morning` 的 `at`，没有就 `push.night.to`），`state=night`、不占额度。晚于卡的 `send_by` 拒（400）。卡离开 `pending`（决定、过期、取代、作废）时它在 `push_queue` 的行跟着关：决定 → `done`，其余 → `void`。发不发、什么时候发是 W3b push 的事，这里只入队。
 
 ## outbox 和出口组（R3）
 
@@ -139,14 +144,15 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 ```
 
 - 接口在 `hub/src/channels/types.ts`（`TurnContext` 就是 `turn.ts` 那个，带 `channel`）；注册表 `channels/registry.ts`（`registerChannel`、`unregisterChannel`、`channel(id)`、`startChannels(host)`）。
-- 发往哪：`target` 三种形状都认——回复和审批存的 `{...turn}`（`chat`、`msg_id`、`thread`）、出口组的 `to`（`chat:admin`、`chat:workbench`、`chat:<oc_id>`、`dm`）、分拣的 `chat_id`/`message_id`/`in_thread`；`replace` = 改那张已发的卡（审批状态变了，`refreshCards`）。审批卡（`cardOf` 的 JSON）按钮带 `{k:"appr", id, o}`；发出后插件把 `{channel, chat, msg_id}` 记进 `approvals.cards_json`，状态一变按它逐张改，决定过的卡不再有按钮。
-- 卡片点击（`kind=card`）不进 run：派发交给 `channels/card-rows.ts`——`appr` → `approvals.decide`（operator 随点击带进 payload，`decide` 再对一遍 `people.yaml`；选项 `reject` 拒，其余批，非 approve/reject 的选项记成 `answer`），`group`/`review` → `feishu/actions.ts`。observer 看到我自己在某个群发了话 → `invalidateForOwnerMessage`（那里待批的稿作废）。
-- lane：我的私聊 `feishu:dm`（`/` 开头的是 `command`）；工作台 `feishu:wb:<root>`；管理群里我发的 `feishu:console`，只当命令；卡片点击 `card`（`source=feishu:card`，按 `event_id` 去重，payload 只有 `value`，不存回调 token）。别人的消息只 `record`，不进 inbox。
+- 发往哪：`target` 三种形状都认——回复和审批存的 `{...turn}`（`chat`、`msg_id`、`thread`）、出口组的 `to`（`chat:admin`、`chat:workbench`、`chat:<oc_id>`、`dm`）、分拣的 `chat_id`/`message_id`/`in_thread`；`replace` = 改那张已发的卡（审批状态变了，`refreshCards`）。审批卡（`cardOf` 的 JSON）按钮带 `{k:"appr", id, o, v}`（`v` = `draft_version`，W3a）；发出后插件把 `{channel, chat, msg_id}` 记进 `approvals.cards_json`，状态一变按它逐张改，决定过的卡不再有按钮。
+- 卡片点击（`kind=card`）不进 run：派发交给 `channels/card-rows.ts`——`appr` → `approvals.choose` + `decide`（operator 随点击带进 payload，`decide` 再对一遍 `people.yaml`；选项怎么算批或拒和客户端同一张表，见 approvals 的 W3a 落地；`glance`/`ask` 的选项记成 `answer`），`group`/`review` → `feishu/actions.ts`。observer 看到我自己在某个群发了话 → `invalidateForOwnerMessage`（那里待批的稿作废）。
+- lane：我的私聊 `feishu:dm`（`/` 开头的是 `command`）；工作台 `feishu:wb:<root>`（W3a：话题里的 `/stop /new /cancel /tasks /approvals /todo /help` 是 `command`，其余是对话）；管理群里我发的 `feishu:console`，只当命令；卡片点击 `card`（`source=feishu:card`，按 `event_id` 去重，payload 只有 `value`，不存回调 token）。别人的消息只 `record`，不进 inbox。
 - `channels.yaml` `feishu.mode: shadow`：不连长连接、不收卡片回调，`send()` 只记日志返回 `{ok:true, shadow:true}`，`stream()` 直接是 failed；user 身份的轮询照跑（测试 home 用，09）。没有 `FEISHU_APP_ID/SECRET` 时 bot 身份不起（`state()=no-bot`），默认关。
 - 密钥读取 `secrets.ts`（启动时 `loadSecrets` 读一次进内存）：`secret(name)` 只给插件和代理拿去连接，`secretValues()` 只给打码用；不进 env、日志、事件。
 
 - 插件跑在主上（飞书：用主自己的登录），或跑在节点上（以后微信在 Windows 节点）：节点上的插件经 `/node/v1/channel/*`（02）和主往返：收到的走 `ingest` 上来，主要发的走 `send` 下去；主侧是一个代理插件 ※。主只看 `caps`。
-- 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；消息按 `message_id`、卡片回调按 `event_id` 去重（04）；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /tasks /approvals /todo /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。
+- 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；消息按 `message_id`、卡片回调按 `event_id` 去重（04）；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /cancel /tasks /approvals /todo /help /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。
+- W3a 补齐的命令（§触6.9 并行 F，`channels/commands.ts`）：`/approvals` 列等批的、`/approvals <编号>` 把卡再发到这里（发出后记进 `cards_json`，别处决定也会改这张）；`/todo` 列等我回的、要我拍板的、要跟进的；`/tasks` 列没结束的任务；`/help`；`/cancel` 停这一轮并撤掉我排在后面的输入（别人的照旧轮到）。私聊、管理群、工作台话题都能用；管理群和工作台是共享的地方，私人的卡和消息只说「私人的一条」，不出标题和正文（§读5.1）。在审批卡的话题里回复 = 让它改稿（`cardReplies`，只认 payload 里我的 operator，`requestRedraft` 再对一遍）。
 - 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。W1e 用 SDK 1.77.0 实现了 `feishu/sdk.ts`；它自己的日志会把带 `app_secret` 的原始请求交出去（`hub/test/feishu-sdk.test.ts` 钉住了），所以一律传 `safeSdkLogger`（打码 + 只留状态码）。user 身份轮询、查已读、飞书邮箱和以我名义发（批准后）※ 仍走主机器上装的 lark-cli（`feishu/user.ts` 的 `Lark` 类型，测试里换假的）：SDK 的 user 令牌要自己做 OAuth 和刷新，W1 不值得；以后换只动这一个文件。以我名义只发纯文本；发之前对 `approvals` 行：`kind=send`、`status=approved`、`as_identity=user`、没过 `send_by`，正文正好等于 `final_text ?? draft`，chat 和回复的那条消息和 `target_json` 一致（三种 target 形状同一个解析），有一项不对就返回 `retry:false`、什么都不发。我在飞书里发的、点的进 inbox 时 payload 带 `owner: true`（W1d 的 `ownerTyped` 认它），别人的消息只 `record`，从不带。
 
 ## sources（SourcePlugin）
@@ -223,9 +229,15 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 
 - 一处分发：先按连接角色判（`node` 只能 `/node/v1`，`client` 只能 `/api/v1`），再进路由。没有按路由的权限表（设备和我同权，§触6.7）。
 - 写请求：`client_op_id` 去重和业务写入同一事务（02）。
+- W3a 落地：写路由在 `api/writes.ts`，每个都包在 `api/ops.ts` 的 `withOp` 里（查 `client_ops` → 业务写入 → 记结果和 seq，一个事务；同键换了请求 409）；发消息用 inbox 的键（`device:<id>` + `client_op_id`），不进 `client_ops`。
+  - thread：`POST /api/v1/threads` 建 `console:t:<id>`，带 `matter_id` 是主线（kind `matter`，标题默认用事的；事是 `personal` 的，thread 一律 `personal`，`work` 的事可以收窄成 `personal`）；没给 `domain` 的一般 thread 是 `work` ※。`PATCH` 改名、置顶、收起，域不改。`console:main` 启动时保证有（`personal`）。
+  - 发消息：飞书镜像 thread 409（D9），任务 thread 409 到 W4；收起的 thread 我写了就回到列表；单独一行的 `/stop` `/new` `/cancel` 当命令；同时写一行 `messages`（`console:<device>:<op>`，`domain` 跟 thread），撤回时删掉。回 `queued`、`ahead`（这条前面排着几条）。
+  - 撤回只收我打的、还在 `received` 的；停这一轮回 `stopped`（真停了才是 true，run 行变 aborted 走流）。
+  - 审批四条路由调 `approvals.ts` 的 `decide`、`editDraft`、`requestRedraft`、`snoozeApproval`，和飞书按钮、卡片话题回复是同一组函数；谁先提交谁赢，后到的 409 拿到赢的那个结果。
+- **共享的地方**（§读5.1，`turn.ts` `seesPersonal`/`privacyCol`）：客户端（`console:*`）和我的飞书私聊能整份看私人的东西；工作台、管理群是群，就算是我亲手发的那一轮，读 `self/`、身体、时间线也按 system 列的规矩（不整份，只能 `self_list` 看条目），提示词里不放 `self/practice.md`，并提醒只提一两句 ※。`messages.domain` 写入时就定：私聊和 `personal` thread 是 `personal`，群和工作台是 `work`；以后的搜索按它滤，飞书的 lane 查不到 `personal`。主线 thread 的每一轮带上它的事的摘要、子事、最近事件（`dispatch.ts` `matterContext`）；事是 `personal` 的，在共享的地方不带。
 - **pump**：每 100 ms 读 `change_log` 里 `seq > 上次`，同批同实体合并，发送时用和 GET 同一个视图函数取最新内容，按连接过滤（`node` 不收客户端流；`personal` 只发 `client`）。心跳带最新 `seq`。慢连接：持久事件停读、之后补；delta 直接丢、缓过来发 snapshot（§触6.4）。
 - 视图函数是 bootstrap、GET、事件三处共用的唯一取数处。
-- W2b 落地（`hub/src/api/`）：入口 `Api.dispatch(req, { device_id, role, conn? })`，进来先调一次 `authorize(caller, req)`（`authz.ts`），W2a 起是 `link/roles.ts` 的（只认规范路径，`..`、`//`、`%2e` 之类在入口就 403），`main.ts` 经 `createApi({ authorize })` 传进来；不过就 403，`node` 在 `/api/v1` 下全 403。路径里的 `?a=b` 并进 `query`（CLI 用）。错方法 405，没有的路由 404（写路由 W3 才有）。`conn` 是 link 给的 `{ send(frame), writable() }`，没有 `conn` 的调用方（CLI、测试）开不了流。列表和 bootstrap 都在一个事务里读，带当时的 `seq`。
+- W2b 落地（`hub/src/api/`）：入口 `Api.dispatch(req, { device_id, role, conn? })`，进来先调一次 `authorize(caller, req)`（`authz.ts`），W2a 起是 `link/roles.ts` 的（只认规范路径，`..`、`//`、`%2e` 之类在入口就 403），`main.ts` 经 `createApi({ authorize })` 传进来；不过就 403，`node` 在 `/api/v1` 下全 403。路径里的 `?a=b` 并进 `query`（CLI 用）。错方法 405，没有的路由 404。`conn` 是 link 给的 `{ send(frame), writable() }`，没有 `conn` 的调用方（CLI、测试）开不了流。列表和 bootstrap 都在一个事务里读，带当时的 `seq`。
 - pump 落地：每条连接一个游标；心跳的 `seq` 是这条连接补到的位置。回复正文的 delta 由派发的 `onItem` 喂进来（`main.ts`），键 `<run>:a<n>`；工具输出 `toolText(run, item, text)`（W4 节点流式时接）。游标落后到被清理（04 §10.4）或 `after` 比最新还新 → `reset` 并关掉这条流。
 - `threads` 行 ※：进输入时（`inbox.ingest` 同一事务）和 run 结束时由 `touchThread` 建或更新 `last_item_at`。`console:main`、`feishu:dm:owner` 是 `personal`，`feishu:wb:*`、`console:t:th_*`、`task:t*` 是 `work`，别的 lane（triage、draft、outlet……）没有。时间线按 `(ts, 来源次序, id)` 排，游标对客户端不透明；inbox、approvals、tasks 按 lane 还没索引 ※（04 §13 的量级扫一遍是毫秒）。
 
@@ -235,7 +247,7 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
   - `hub.sock`：本机节点，在单独的 `$SBOT_HOME/node/`（0750，属组是节点账号的组，组名或 gid 取 `SBOT_NODE_GROUP`，没设就跟主同组），socket 0660 ※。不放 `run/`：`run/` 是 0700，节点账号进不去，里面的 socket 权限再开也连不上。要节点账号够得着，`$SBOT_HOME` 本身要给那个组 `x`（属组设成它、0710），主的账号要在那个组里（改目录属组要求）；部署时设，主启动时查到进不去会记日志。连上就是 `role: node`，设备 id 固定 `local`，不配对 ※（同机、靠文件权限，veto 3）。
   - `hub-admin.sock`：在 `$SBOT_HOME/run/`（0700），`sbot` CLI，0600、只有主的账号能连；连上等同一台 `client` 设备 `cli`，审计里记 `cli`。
 - 中继：`relay.enabled` 时主连 `wss://…/v1/hub`，按 06 注册，断了按 1、2、5、10、30 秒退避重连。一条 WS 上按 sid 一个会话一个 Noise 响应方（`hub/src/link/session.ts`，不绑传输，以后直连复用）；中继不可信，坏信封、不认识的 sid 直接丢。
-- 主密钥在 `link/keys.ts`，在读 `secrets.env` 之前生成或读入（`keys/` 下的文件打码器都认）。通道里的请求进 `api.dispatch`（`authorize` 在它入口，函数是 `link/roles.ts` 的，`api/authz.ts` 转出），通道关了调 `api.closeConn`。`hub-admin.sock` 走 `main.ts` 的 `router`：先过同一个 `authorize`（调用方 `cli`、角色 `client`），设备的写由 `link/service.ts` 接，其余交给 `api.dispatch`。
+- 主密钥在 `link/keys.ts`，在读 `secrets.env` 之前生成或读入（`keys/` 下的文件打码器都认）。通道里的请求进 `api.dispatch`（`authorize` 在它入口，函数是 `link/roles.ts` 的，`api/authz.ts` 转出），通道关了调 `api.closeConn`。`hub-admin.sock` 走 `main.ts` 的 `router`：整个交给 `api.dispatch`（调用方 `cli`、角色 `client`，同一个 `authorize`）。W3a 起设备的写（`POST /api/v1/devices/invites`、`PATCH/DELETE /api/v1/devices/:id`）是 `api/writes.ts` 的写路由，CLI 和配对过的客户端走同一条；`adminRequest` 给每个写请求一个新的 `client_op_id`（CLI 不重试）。
 - 删设备：06。
 
 ## tasks 和 nodes（§办3）

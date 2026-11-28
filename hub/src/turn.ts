@@ -16,6 +16,17 @@ export interface TurnContext {
 
 export type Col = "typed" | "system" | "others";
 
+/**
+ * §读5.1: where self/, body records, the timeline and personal threads may be shown whole — the client (console:*)
+ * and my own Feishu DM. Every other place, even one where I type (the workbench, the admin chat), is shared: there
+ * a turn I typed gets what a system turn gets (item level, no whole files) and nothing personal is listed ※.
+ * (feishu:dm:owner is channels/feishu/state.ts OWNER_DM_LANE; spelled out so this file needs no imports.)
+ */
+export const seesPersonal = (lane: string): boolean => lane.startsWith("console:") || lane === "feishu:dm:owner";
+
+/** The column the self/ guard and the prompt judge by: typed in a shared place counts as system there. */
+export const privacyCol = (col: Col, lane: string): Col => (col === "typed" && !seesPersonal(lane) ? "system" : col);
+
 /** §底3.1: owner@ → typed; job@ / system@ → system; everything else (others' conversations) → others. */
 export function colOf(src: string): Col {
   if (src.startsWith("owner@")) return "typed";

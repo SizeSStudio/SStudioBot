@@ -11,10 +11,12 @@
 //     text has to pass the commitment check first
 //   - triage's draft runs (runDraft) come through here too, outside the inbox: read-only tools, out only as text
 import { createHash, randomBytes } from "node:crypto";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { isAbsolute, relative, resolve } from "node:path";
 import type { Db, Row } from "./db/db.ts";
 import type { Home } from "./home.ts";
 import { measureConf, tierConf, TIERS, type Tier } from "./config/load.ts";
-import { colOf, ownerTyped, payloadOf, sourceLabel, turnOf, type TurnContext } from "./turn.ts";
+import { colOf, ownerTyped, payloadOf, seesPersonal, sourceLabel, turnOf, type TurnContext } from "./turn.ts";
 import { setKick } from "./inbox.ts";
 import { issueToken, revokeRun } from "./proxy.ts";
 import { classifyUpstream, nextAttempt, retryDeadline, type UpstreamFailure } from "./retry.ts";
@@ -23,9 +25,11 @@ import { queueReply, replyGated } from "./reply.ts";
 import type { CommitChecker } from "./commit-check.ts";
 import { itemStart } from "./items.ts";
 import { touchThread } from "./api/threads.ts";
+import { mainlineOf } from "./api/views.ts";
 import { promptFiles, systemPrompt } from "./runner/prompt.ts";
 import { submitApproval, invalidateForOwnerMessage } from "./approvals.ts";
 import { putBlob } from "./blobs.ts";
+import { localStamp } from "./time.ts";
 import { redact } from "./tools/redact.ts";
 import type { StreamHandle } from "./channels/types.ts";
 import type { DraftJob } from "./triage/triage.ts";
@@ -41,6 +45,66 @@ const KIND_LABEL: Record<string, string> = { timer: "（定时器）", approval:
 const newRunId = () => `r_${Date.now().toString(36)}_${randomBytes(3).toString("hex")}`;
 const hhmm = (ms: number) => new Date(ms).toLocaleString("sv-SE", { timeZone: TZ }).slice(11, 16);
 const isScheduled = (r: Row) => SCHEDULED.has(String(r.kind)) || r.source === "job";
+
+const MATTER_SUMMARY_MAX = 2_000;
+
+/**
+ * §触6.5: a `matter` thread brings its mainline's summary, children and recent events on every turn. Walks merged_into
+ * and parent_id on read so regrouping takes effect immediately without migrating the thread.
+ */
+export function matterContext(db: Db, agentHome: string, lane: string): string | undefined {
+  const th = db.one<{ kind: string; matter_id: number | null }>("SELECT kind, matter_id FROM threads WHERE lane = ?", lane);
+  if (!th || th.kind !== "matter" || th.matter_id == null) return undefined;
+  let live = Number(th.matter_id);
+  const seen = new Set<number>([live]);
+  for (let i = 0; i < 20; i++) {
+    const r = db.one<{ merged_into: number | null }>("SELECT merged_into FROM matters WHERE id = ?", live);
+    if (!r || r.merged_into == null || seen.has(Number(r.merged_into))) break;
+    live = Number(r.merged_into);
+    seen.add(live);
+  }
+  const root = mainlineOf(db, live);
+  if (root == null) return undefined;
+  const m = db.one<{ id: number; title: string | null; domain: string | null; status: string; close_condition: string | null; file_path: string | null }>(
+    "SELECT id, title, domain, status, close_condition, file_path FROM matters WHERE id = ?", root);
+  if (!m) return undefined;
+  if (m.domain === "personal" && !seesPersonal(lane)) return undefined;
+
+  const lines: string[] = [`# 这条对话的主线：#${m.id} ${m.title ?? "（无标题）"}（${m.status}）`];
+  if (m.close_condition) lines.push(`- 收的条件：${m.close_condition}`);
+  if (live !== root) {
+    const sub = db.one<{ id: number; title: string | null; status: string }>("SELECT id, title, status FROM matters WHERE id = ?", live);
+    if (sub) lines.push(`- 当前绑定子事：#${sub.id} ${sub.title ?? "（无标题）"}（${sub.status}）`);
+  }
+  const rel = m.file_path ?? `matters/${m.id}.md`;
+  const f = resolve(agentHome, rel);
+  const inside = relative(agentHome, f);
+  if (!inside.startsWith("..") && !isAbsolute(inside) && existsSync(f) && statSync(f).isFile()) {
+    const body = readFileSync(f, "utf8").trim();
+    if (body) {
+      const shown = body.slice(0, MATTER_SUMMARY_MAX);
+      lines.push(`\n## 主线摘要（${rel}）\n${shown}${body.length > MATTER_SUMMARY_MAX ? `\n（已截断，共 ${body.length} 字，全文用 memory_read。）` : ""}`);
+    }
+  }
+  const kids = db.all<{ id: number; title: string | null; status: string }>(
+    "SELECT id, title, status FROM matters WHERE parent_id = ? AND status != 'merged' ORDER BY id LIMIT 20", root);
+  if (kids.length) {
+    lines.push("\n## 子事");
+    for (const k of kids) lines.push(`- #${k.id} ${k.title ?? "（无标题）"}（${k.status}）`);
+  }
+  const fam = [...new Set([root, live, ...kids.map((k) => Number(k.id))])];
+  const evs = db.all<{ ts: number; kind: string; level: string; state: string; summary: string; actor: string | null; place: string | null }>(
+    `SELECT ts, kind, level, state, summary, actor, place FROM events WHERE matter_id IN (${fam.map(() => "?").join(",")}) ORDER BY ts DESC, id DESC LIMIT 10`,
+    ...fam);
+  if (evs.length) {
+    lines.push("\n## 最近事件");
+    for (const e of evs) {
+      const who = [e.actor, e.place].filter(Boolean).join(" @ ");
+      lines.push(`- [${localStamp(Number(e.ts)).slice(5)}] [${e.kind}/${e.state}] ${e.summary}${who ? `（${who}）` : ""}`);
+    }
+  }
+  return redact(lines.join("\n"));
+}
 
 /** The error fingerprint (Y8): role | lane class | error class | message without numbers and ids. */
 export function errFingerprint(role: string, lane: string, error: string): string {
@@ -78,6 +142,12 @@ export interface DispatchDeps {
    * name, argument and lane; returns the reply text, or undefined when it isn't one of its commands.
    */
   command?: (name: string, arg: string, lane: string) => string | undefined;
+  /**
+   * A line I wrote in the topic of a message the hub sent (payload.root_id; the admin chat's command lane): an
+   * approval card's topic means 改稿 (approvals.requestRedraft). Returns the reply, or undefined when that message
+   * isn't a card — then the line is a command or text as usual.
+   */
+  cardReply?: (r: Row) => string | undefined;
 }
 
 export class Dispatcher {
@@ -196,6 +266,16 @@ export class Dispatcher {
     const { db } = this.d;
     // commands first: /stop must reach a running run
     for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'command' ORDER BY id")) this.#command(r);
+    // a reply in an approval card's topic (even in DM or workbench when re-sent via /approvals <id>) is a redraft
+    if (this.d.cardReply) {
+      for (const r of db.all("SELECT * FROM inbox WHERE status = 'received' AND kind = 'user' AND json_extract(payload_json, '$.root_id') IS NOT NULL ORDER BY id")) {
+        const answer = this.d.cardReply(r);
+        if (answer !== undefined) {
+          db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
+          queueReply({ db, run_id: "", lane: String(r.lane), turn: replyTurn([r]) }, answer, false);
+        }
+      }
+    }
     // a message taken back while its run is going: same as stop (03 撤回); its cards are moot
     for (const r of db.all("SELECT * FROM inbox WHERE status = 'processing' AND json_extract(payload_json, '$.withdrawn') = 1")) {
       if (this.stopLane(String(r.lane))) log("dispatch", "withdrawn input stops its run", { lane: r.lane });
@@ -235,6 +315,18 @@ export class Dispatcher {
       if (!stopped) say("现在没有在跑的。");
       return;
     }
+    if (text === "/cancel") {
+      // 取消 (§触6.9 并行 F): stop the run and take back what I queued behind it; others' messages still get their turn
+      const dropped = db.tx(() => {
+        db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
+        const rows = db.all("SELECT * FROM inbox WHERE lane = ? AND status = 'received' AND kind = 'user' AND id != ?", lane, Number(r.id)).filter(ownerTyped);
+        for (const x of rows) db.run("UPDATE inbox SET status = 'dropped' WHERE id = ?", Number(x.id));
+        return rows.length;
+      });
+      const stopped = this.stopLane(lane);
+      say(stopped || dropped ? `${stopped ? "停了" : "没有在跑的"}${dropped ? `，排着的 ${dropped} 条也撤了` : ""}。` : "现在没有在跑的，也没有排着的。");
+      return;
+    }
     if (text === "/new") {
       if (this.#active.has(lane)) return;   // after the current run, so the next message lands in the new session
       db.tx(() => {
@@ -245,7 +337,9 @@ export class Dispatcher {
       return;
     }
     const p = payloadOf(r);
-    const answer = typeof p.cmd === "string" ? this.d.command?.(p.cmd, String(p.arg ?? ""), lane) : undefined;
+    const answer = typeof p.root_id === "string" && p.root_id && this.d.cardReply ? this.d.cardReply(r)
+      ?? (typeof p.cmd === "string" ? this.d.command?.(p.cmd, String(p.arg ?? ""), lane) : undefined)
+      : typeof p.cmd === "string" ? this.d.command?.(p.cmd, String(p.arg ?? ""), lane) : undefined;
     if (answer !== undefined) {
       db.run("UPDATE inbox SET status = 'done' WHERE id = ?", Number(r.id));
       say(answer);
@@ -314,7 +408,7 @@ export class Dispatcher {
     try {
       res = await runner.run({
         lane, role: p.role, tier: p.tier, session_ref: p.session_ref,
-        system: systemPrompt({ files: promptFiles(h.agentHome, col), turn, src: p.src, col }),
+        system: systemPrompt({ files: promptFiles(h.agentHome, col, lane), turn, src: p.src, col, lane, matter: matterContext(db, h.agentHome, lane) }),
         input: turnText(p.rows), tools: toolsFor(col), ctx, token, signal: a.ac.signal,
         onItem: (e) => {
           if (e.k === "message") itemStart(db, h.blobs, { lane, run_id: p.run_id, kind: "assistant", body: { text: e.text }, status: "done" });

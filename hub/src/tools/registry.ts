@@ -5,7 +5,7 @@
 import type { z } from "zod";
 import type { Db } from "../db/db.ts";
 import type { Home } from "../home.ts";
-import type { Col, TurnContext } from "../turn.ts";
+import { privacyCol, type Col, type TurnContext } from "../turn.ts";
 import type { ExecRes } from "../../../protocol/node/hello.ts";
 import type { CommitChecker } from "../commit-check.ts";
 import { submitApproval, type ApprovalSpec } from "../approvals.ts";
@@ -81,12 +81,14 @@ export async function callTool(def: ToolDef, rawArgs: unknown, ctx: ToolCtx): Pr
   // 3 guards: where it goes, never what it writes
   let t: ReturnType<NonNullable<ToolDef["touches"]>>;
   try { t = def.touches?.(args, ctx) ?? {}; } catch (e) { return refuse(String((e as Error)?.message ?? e).slice(0, 300)); }
+  // a turn I typed in a shared place (workbench, admin chat) reads self/ like a system turn does (§读5.1, turn.ts)
+  const pc = privacyCol(ctx.col, ctx.lane), shared = pc !== ctx.col;
   for (const p of t.read ?? []) {
-    const why = selfGuard(p, ctx.col, h.agentHome) ?? commandGuard(p, { sbotHome: h.root });
+    const why = selfGuard(p, pc, h.agentHome, shared) ?? commandGuard(p, { sbotHome: h.root });
     if (why) return refuse(why);
   }
   for (const p of t.write ?? []) {
-    const why = selfGuard(p, ctx.col, h.agentHome) ?? commandGuard(p, { sbotHome: h.root });
+    const why = selfGuard(p, pc, h.agentHome, shared) ?? commandGuard(p, { sbotHome: h.root });
     if (why) return refuse(why);
   }
   if (t.cmd) { const why = commandGuard(t.cmd, { sbotHome: h.root }); if (why) return refuse(why); }

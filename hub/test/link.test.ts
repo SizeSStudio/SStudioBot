@@ -294,16 +294,42 @@ test("a channel carries W2b's stream: events come over the relay; closing the ch
   await until(() => hub.api.pump.streams === before, 2000, "stream dropped with the channel");
 });
 
-test("device writes aren't served over a channel until W3: a paired client can't invite, rename or remove", async () => {
-  const { key, ch } = await paired("client", "想越权的手机");
-  const id8 = key.id.slice(0, 8);
+test("W3a device writes over a paired client channel: require client_op_id, idempotent, invite retry redacts secret; node 403", async () => {
+  const { key: k1, ch } = await paired("client", "管设备的手机");
+  const { key: k2, ch: victim } = await paired("client", "要改名再删的手机");
+  const { ch: nodeCh } = await paired("node", "不能调写接口的节点");
+  const id8 = k2.id.slice(0, 8);
+  // missing client_op_id → 400
+  assert.equal((await ch.req("POST", "/api/v1/devices/invites", { role: "client" })).status, 400);
+  // node → 403 even with a valid client_op_id
   for (const [m, p, body] of [["POST", "/api/v1/devices/invites", { role: "client" }], ["PATCH", `/api/v1/devices/${id8}`, { name: "x" }], ["DELETE", `/api/v1/devices/${id8}`, undefined]] as const) {
-    const r = await ch.req(m, p, body);
-    assert.ok(r.status === 404 || r.status === 405, `${m} ${p}: ${r.status}`);
+    assert.equal((await nodeCh.req(m, p, body, { client_op_id: `op-node-${m.toLowerCase()}-1` })).status, 403, `${m} ${p}`);
   }
-  assert.equal(hub.db.one<{ n: number }>("SELECT COUNT(*) AS n FROM devices WHERE id = ?", key.id)!.n, 1);
-  assert.equal(hub.link.online(key.id), true);
-  ch.close();
+  // invite from paired client works; retry with same client_op_id never replays the pairing secret (409)
+  const inv1 = await ch.req("POST", "/api/v1/devices/invites", { role: "client" }, { client_op_id: "op-client-inv-1" });
+  assert.equal(inv1.status, 200);
+  assert.match(inv1.body.link, /^sstudiobot:\/\/pair#v1\./);
+  const inv2 = await ch.req("POST", "/api/v1/devices/invites", { role: "client" }, { client_op_id: "op-client-inv-1" });
+  assert.equal(inv2.status, 409);
+  assert.ok(!JSON.stringify(inv2.body).includes(inv1.body.link), "invite retry never stores or echoes the pairing code");
+  // rename + idempotent retry
+  const rn1 = await ch.req("PATCH", `/api/v1/devices/${id8}`, { name: "客户端改的名" }, { client_op_id: "op-client-ren-1" });
+  assert.equal(rn1.status, 200);
+  assert.ok(typeof rn1.seq === "number" && rn1.seq > 0);
+  names.push("客户端改的名");
+  const rn2 = await ch.req("PATCH", `/api/v1/devices/${id8}`, { name: "客户端改的名" }, { client_op_id: "op-client-ren-1" });
+  assert.deepEqual(rn2, rn1, "retry returns the stored answer and seq");
+  const rn3 = await ch.req("PATCH", `/api/v1/devices/${id8}`, { name: "不应再生效" }, { client_op_id: "op-client-ren-1" });
+  assert.equal(rn3.status, 409, "the same op id with another body is not a retry");
+  assert.equal(hub.db.one<{ name: string }>("SELECT name FROM devices WHERE id = ?", k2.id)!.name, "客户端改的名");
+  // remove + idempotent retry
+  const rm1 = await ch.req("DELETE", `/api/v1/devices/${id8}`, undefined, { client_op_id: "op-client-rm-1" });
+  assert.equal(rm1.status, 200);
+  assert.equal((await victim.closed).code, 4410);
+  assert.equal(hub.db.one<{ by: string }>("SELECT removed_by AS by FROM devices WHERE id = ?", k2.id)!.by, `device:${k1.id}`);
+  const rm2 = await ch.req("DELETE", `/api/v1/devices/${id8}`, undefined, { client_op_id: "op-client-rm-1" });
+  assert.deepEqual(rm2, rm1, "remove retry returns stored 200 instead of 404");
+  ch.close(); nodeCh.close();
 });
 
 test("Feishu /pair and /devices: only in my own DM", async () => {

@@ -3,9 +3,10 @@
 // what follows (send → one outbox row with the approved text; plan → an `approval` event back in the lane;
 // glance/ask → answer_json, which tasks (W4) carries back to the session).
 import type { Db, Row } from "./db/db.ts";
-import { gateConf, peopleConf } from "./config/load.ts";
+import { gateConf, jobsConf, peopleConf } from "./config/load.ts";
 import { enqueue, toOutlet } from "./outbox.ts";
 import { ingest } from "./inbox.ts";
+import { localStamp, wallTime } from "./time.ts";
 import { redact, redactDeep } from "./tools/redact.ts";
 import { log } from "./log.ts";
 
@@ -14,6 +15,8 @@ export type ApprovalKind = "send" | "plan" | "glance" | "ask" | "proposal" | "ro
 /** Channel-neutral card (03): clients draw it, channel plugins render it their way. */
 export interface Card {
   approval_id: number; kind: ApprovalKind; title: string; lines: string[]; question: string;
+  /** what a click must match (decide's optimistic lock); channels carry it back with the click */
+  draft_version: number;
   options: { id: string; label: string; recommended?: boolean; cost?: string }[];
   detail?: { kind: "cmd" | "path" | "args" | "diff"; text: string; folded: boolean };
   status?: string;
@@ -57,9 +60,10 @@ export function cardOf(a: Row): Card {
   if (a.draft) lines.push(String(a.draft));
   const checks = a.checks_json ? (JSON.parse(String(a.checks_json)) as { hits?: string[] }) : undefined;
   if (checks?.hits?.length) lines.push(`⚠️ 承诺检测：${checks.hits.join("；")}`);
+  if (a.revise_notes && a.status === "pending") lines.push(`✏️ 在改稿：${String(a.revise_notes)}`);
   const detailText = req ? String(req.command ?? req.path ?? JSON.stringify(req, null, 1)) : undefined;
   return redactDeep({
-    approval_id: Number(a.id), kind, title: String(a.title ?? ""), lines,
+    approval_id: Number(a.id), kind, title: String(a.title ?? ""), lines, draft_version: Number(a.draft_version ?? 1),
     question: kind === "send" ? "原样发出去吗？" : kind === "ask" ? "怎么答？" : "可以吗？",
     options: opts.map((o) => ({ id: o.id, label: o.label, ...("recommended" in o ? { recommended: (o as { recommended?: boolean }).recommended } : {}) })),
     ...(detailText ? { detail: { kind: req?.command ? "cmd" : req?.path ? "path" : "args", text: detailText, folded: detailText.length > 400 } as Card["detail"] } : {}),
@@ -87,6 +91,14 @@ export function submitApproval(db: Db, s: ApprovalSpec): number {
     ).lastInsertRowid);
     const a = db.one("SELECT * FROM approvals WHERE id = ?", id)!;
     toOutlet(db, "admin", JSON.stringify(cardOf(a)), { kind: "card", lane: s.origin_lane, run_id: s.run_id, idem: `approval:${id}:card`, cardsOnly: true, noClient: true });
+    // 改稿 (requestRedraft): the new draft from the same place replaces the card that asked for it ※ — same lane,
+    // kind and trigger message, so a triage card for another chat never replaces it
+    if (s.origin_lane) {
+      const old = db.all<{ id: number }>(
+        `SELECT id FROM approvals WHERE status = 'pending' AND revise_notes IS NOT NULL AND id != ? AND kind = ? AND origin_lane = ?
+           AND COALESCE(trigger_msg_id, '') = ?`, id, s.kind, s.origin_lane, s.trigger?.msg_id ?? "");
+      for (const o of old) supersede(db, o.id, id);
+    }
     return id;
   });
   log("approvals", "submitted", { id, kind: s.kind });
@@ -122,26 +134,81 @@ export interface Decision {
   decision: "approve" | "reject"; by: Decider; draft_version?: number; final_text?: string; note?: string;
   answer?: { option_id?: string; text?: string };
 }
-export type DecideResult = { ok: true; status: string; outbox_id?: number } | { ok: false; error: string };
+/**
+ * Why a write on a card didn't happen, for the API's status codes (02): not_me 403, missing 404, bad 400,
+ * decided / stale 409 (another end got there first, or the draft moved), gone 410 (expired, superseded, invalidated).
+ */
+export type Refusal = "not_me" | "missing" | "bad" | "decided" | "stale" | "gone";
+export type Refused = { ok: false; code: Refusal; error: string };
+export type DecideResult = { ok: true; status: string; outbox_id?: number } | Refused;
+const GONE = new Set(["expired", "superseded", "invalidated"]);
+const no = (code: Refusal, error: string): Refused => ({ ok: false, code, error });
+
+/** A card that can still be acted on, or why not (inside the caller's tx). Expires it if its time is up. */
+function pendingCard(db: Db, id: number, now = Date.now()): Row | Refused {
+  const a = db.one("SELECT * FROM approvals WHERE id = ?", id);
+  if (!a) return no("missing", `没有审批 #${id}`);
+  if (a.status !== "pending") return no(GONE.has(String(a.status)) ? "gone" : "decided", `这张卡已经是 ${a.status}`);   // first decision wins
+  if (a.expires_at != null && Number(a.expires_at) < now) {
+    expire(db, a, now);
+    return no("gone", "已过期");
+  }
+  return a;
+}
+const refused = (x: Row | Refused): x is Refused => x.ok === false && typeof x.code === "string";
+
+/** Close any open push_queue row for this approval when it leaves `pending` (04 §2 push_queue). */
+function closePush(db: Db, id: number, state: "done" | "void", now: number) {
+  db.run("UPDATE push_queue SET state = ?, closed_at = ? WHERE ref = ? AND state IN ('wait','night','counted','sent')",
+    state, now, `approval:${id}`);
+}
+
+/** The options a card offers: the agent's (glance, ask) or the kind's defaults. */
+export function optionsOf(a: Row): { id: string; label: string; kind?: string }[] {
+  if (a.options_json) { try { return JSON.parse(String(a.options_json)); } catch { return []; } }
+  return OPTIONS[String(a.kind)] ?? OPTIONS.plan!;
+}
+
+/**
+ * One mapping from what was clicked or sent to a decision, for every end (client decide, Feishu buttons, …) ※:
+ *   send | plan | proposal | rollback — approve | reject (an option id `approve` / `reject` means the same)
+ *   glance — an option id; the option's `kind` says which way (ACP: allow_* / reject_*); no kind: `reject` / `deny`
+ *            reject, anything else approves
+ *   ask    — an option id, or a free text answer
+ */
+export function choose(a: Row, x: { action?: "approve" | "reject" | "answer"; option_id?: string; text?: string }): { decision: "approve" | "reject"; answer?: Decision["answer"] } | Refused {
+  const kind = String(a.kind);
+  if (kind === "glance" || kind === "ask") {
+    if (x.action && x.action !== "answer") return no("bad", "看一眼、问我的卡要 action answer 加 option_id");
+    if (kind === "ask" && x.text && !x.option_id) return { decision: "approve", answer: { text: x.text } };
+    const opt = optionsOf(a).find((o) => o.id === x.option_id);
+    if (!opt) return no("bad", `这张卡没有选项 ${x.option_id ?? "（没给）"}`);
+    const k = String(opt.kind ?? "");
+    const rejects = k ? /^(reject|deny)/.test(k) : opt.id === "reject" || opt.id === "deny";
+    return { decision: rejects ? "reject" : "approve", answer: { option_id: opt.id } };
+  }
+  const d = x.action === "answer" ? x.option_id : x.action ?? x.option_id;
+  if (d !== "approve" && d !== "reject") return no("bad", "这种卡只有 approve 或 reject");
+  return { decision: d };
+}
 
 export function decide(db: Db, id: number, d: Decision): DecideResult {
   if (!isMe(db, d.by)) {
     log("approvals", "decision refused: not the owner", { id, by: d.by.kind });
-    return { ok: false, error: "只有本人能决定这张卡" };
+    return no("not_me", "只有本人能决定这张卡");
   }
   const res = db.tx((): DecideResult => {
-    const a = db.one("SELECT * FROM approvals WHERE id = ?", id);
-    if (!a) return { ok: false, error: `没有审批 #${id}` };
-    if (a.status !== "pending") return { ok: false, error: `这张卡已经是 ${a.status}` };   // first decision wins
-    if (a.expires_at != null && Number(a.expires_at) < Date.now()) {
-      expire(db, a, Date.now());
-      return { ok: false, error: "已过期" };
-    }
-    if (d.draft_version != null && d.draft_version !== Number(a.draft_version)) return { ok: false, error: "草稿改过了，按最新的再决定" };
+    const a = pendingCard(db, id);
+    if (refused(a)) return a;
+    if (d.draft_version != null && d.draft_version !== Number(a.draft_version)) return no("stale", "草稿改过了，按最新的再决定");
+    const now = Date.now();
     const status = d.decision === "approve" ? "approved" : "rejected";
     const final = d.decision === "approve" ? redact(d.final_text ?? (a.draft as string | null) ?? "") : null;
+    const note = d.note ? redact(d.note) : null;
+    const answer = d.answer ? (d.answer.text ? { ...d.answer, text: redact(d.answer.text) } : d.answer) : null;
     db.run("UPDATE approvals SET status = ?, decided_by = ?, decided_at = ?, decide_note = ?, final_text = ?, answer_json = ? WHERE id = ?",
-      status, byText(d.by), Date.now(), d.note ?? null, final, d.answer ? JSON.stringify(d.answer) : null, id);
+      status, byText(d.by), now, note, final, answer ? JSON.stringify(answer) : null, id);
+    closePush(db, id, "done", now);
     let outbox_id: number | undefined;
     if (a.kind === "send" && status === "approved") {
       // exactly what was approved, once (approval_id is UNIQUE), by the approval's own send_by
@@ -154,24 +221,166 @@ export function decide(db: Db, id: number, d: Decision): DecideResult {
     if ((a.kind === "plan" || a.kind === "proposal" || a.kind === "rollback") && a.origin_lane) {
       ingest(db, {
         lane: String(a.origin_lane), kind: "approval", source: "approval", source_msg_id: `${id}:${d.decision}`,
-        payload: { text: `（审批结果）#${id}「${a.title}」${status === "approved" ? "批了" : "没批"}${d.note ? `：${d.note}` : ""}`, approval_id: id, decision: d.decision },
+        payload: { text: `（审批结果）#${id}「${a.title}」${status === "approved" ? "批了" : "没批"}${note ? `：${note}` : ""}`, approval_id: id, decision: d.decision },
       });
     }
-    refreshCards(db, a, status);
+    refreshCards(db, db.one("SELECT * FROM approvals WHERE id = ?", id)!, status);
     return { ok: true, status, ...(outbox_id ? { outbox_id } : {}) };
   });
   if (res.ok) log("approvals", "decided", { id, status: res.status });
   return res;
 }
 
-/** Re-render every card that went out (cards_json, filled by the plugins) with the new state ※. */
+/**
+ * Re-render every card that went out (cards_json, filled by the plugins) with the new state ※. A still-pending card
+ * is re-rendered when its draft changes (new text, new draft_version on the buttons) or a redraft is asked for.
+ */
 function refreshCards(db: Db, a: Row, status: string) {
   const cards = a.cards_json ? (JSON.parse(String(a.cards_json)) as { channel: string; chat?: string; msg_id?: string }[]) : [];
   const card = cardOf({ ...a, status });
+  const step = status === "pending" ? `:v${a.draft_version}:${a.revise_notes ? String(a.revise_notes).length : 0}` : "";
   for (const c of cards) {
     if (!c.msg_id) continue;
-    enqueue(db, { channel: c.channel, kind: "card", target: { chat: c.chat, replace: c.msg_id }, payload: JSON.stringify(card), lane: (a.origin_lane as string | null) ?? null, idem_key: `approval:${a.id}:card:${status}:${c.msg_id}` });
+    enqueue(db, { channel: c.channel, kind: "card", target: { chat: c.chat, replace: c.msg_id }, payload: JSON.stringify(card), lane: (a.origin_lane as string | null) ?? null, idem_key: `approval:${a.id}:card:${status}${step}:${c.msg_id}` });
   }
+}
+
+const EDITABLE = new Set(["send", "plan"]);
+
+/**
+ * I rewrite the draft myself (PUT /api/v1/approvals/:id/draft). draft_version + 1, so a click on a card that still
+ * shows the old text is refused (stale) and the cards are re-rendered with the new text. Approving afterwards sends
+ * exactly this text (decide copies the draft into final_text; the Feishu send checks it again, approvedAsSent).
+ */
+export function editDraft(db: Db, id: number, e: { text: string; draft_version: number; by: Decider }): { ok: true } | Refused {
+  if (!isMe(db, e.by)) return no("not_me", "只有本人能改这张卡");
+  return db.tx(() => {
+    const a = pendingCard(db, id);
+    if (refused(a)) return a;
+    if (!EDITABLE.has(String(a.kind))) return no("bad", "这种卡没有可改的稿");
+    if (e.draft_version !== Number(a.draft_version)) return no("stale", "草稿改过了，按最新的再改");
+    db.run("UPDATE approvals SET draft = ?, draft_version = draft_version + 1 WHERE id = ?", redact(e.text), id);
+    refreshCards(db, db.one("SELECT * FROM approvals WHERE id = ?", id)!, "pending");
+    log("approvals", "draft edited", { id });
+    return { ok: true };
+  });
+}
+
+/**
+ * 「改一下」(POST …/redraft, or a reply in the card's Feishu topic): the note goes to whoever drafted it; the card
+ * stays pending until the new draft arrives and replaces it (submitApproval supersedes it), so if the redraft never
+ * comes I can still decide on this one. `via`: lane = an input in origin_lane (the next round there redrafts);
+ * triage = the caller asks triage to draft again (it has no lane to talk to). `draft_version` is checked when given.
+ */
+export function requestRedraft(db: Db, id: number, r: { note: string; draft_version?: number; by: Decider; triage?: boolean }): { ok: true; via: "lane" | "triage" } | Refused {
+  if (!isMe(db, r.by)) return no("not_me", "只有本人能让它改稿");
+  return db.tx(() => {
+    const a = pendingCard(db, id);
+    if (refused(a)) return a;
+    if (!EDITABLE.has(String(a.kind))) return no("bad", "这种卡没有可改的稿");
+    if (r.draft_version != null && r.draft_version !== Number(a.draft_version)) return no("stale", "草稿改过了，按最新的再说");
+    const lane = (a.origin_lane as string | null) ?? "";
+    const via = lane === "triage" ? "triage" : "lane";
+    if (via === "triage" ? !r.triage : !lane || lane.startsWith("draft:")) return no("bad", "这张卡没有能改稿的地方，直接改字吧");
+    const note = redact(r.note).slice(0, 4000);
+    const notes = [a.revise_notes, note].filter(Boolean).join("；");
+    db.run("UPDATE approvals SET revise_notes = ? WHERE id = ?", notes, id);
+    if (via === "lane") {
+      ingest(db, {
+        lane, kind: "approval", source: "approval", source_msg_id: `${id}:redraft:${a.draft_version}:${notes.length}`,
+        payload: {
+          text: `（改稿）审批 #${id}「${a.title}」我要你改：${note}\n原稿：\n${a.draft ?? ""}\n按这个改完，用原来的工具重新提交（新卡会替掉这张）。`,
+          approval_id: id, redraft: true,
+        },
+      });
+    }
+    refreshCards(db, db.one("SELECT * FROM approvals WHERE id = ?", id)!, "pending");
+    log("approvals", "redraft asked", { id, via });
+    return { ok: true, via };
+  });
+}
+
+/** The approval whose card is this sent message (a reply in its Feishu topic), if any. */
+export function approvalOfCard(db: Db, channel: string, msgId: string): number | undefined {
+  const r = db.one<{ id: number }>(
+    `SELECT a.id FROM approvals a, json_each(COALESCE(a.cards_json, '[]')) c
+      WHERE json_extract(c.value, '$.channel') = ? AND json_extract(c.value, '$.msg_id') = ? ORDER BY a.id DESC LIMIT 1`, channel, msgId);
+  return r?.id;
+}
+
+function parseHHMM(s: string | undefined, fallback: [number, number]): [number, number] {
+  const m = typeof s === "string" ? /^(\d{1,2}):(\d{2})$/.exec(s.trim()) : null;
+  return m ? [Number(m[1]), Number(m[2])] : fallback;
+}
+
+function approvalDomain(db: Db, a: Row): "work" | "personal" {
+  if (a.matter_id != null) {
+    const m = db.one<{ domain: string | null }>("SELECT domain FROM matters WHERE id = ?", Number(a.matter_id));
+    if (m?.domain === "personal") return "personal";
+  }
+  const lane = typeof a.origin_lane === "string" ? a.origin_lane : "";
+  if (lane === "console:main" || lane === "feishu:dm:owner") return "personal";
+  if (lane) {
+    const t = db.one<{ domain: string }>("SELECT domain FROM threads WHERE lane = ?", lane);
+    if (t?.domain === "personal") return "personal";
+  }
+  return "work";
+}
+
+export type SnoozeUntil = "tonight" | "morning" | "monday";
+
+/**
+ * 暂缓 (POST /api/v1/approvals/:id/snooze, §触1.1, 04 §2 push_queue):
+ *   tonight — today at gate.yaml push.snooze_tonight (refused once past that time; state `wait`, quota 1)
+ *   morning — tomorrow at the morning job's time (fallback push.night.to; state `night`, quota 0)
+ *   monday  — next Monday at the morning time (state `night`, quota 0)
+ * Refused (400) if later than the card's send_by (`expires_at`). Emits `approval` explicitly in the same tx so other
+ * devices fold the card away (04 §2).
+ */
+export function snoozeApproval(
+  db: Db, id: number, s: { until: SnoozeUntil; by: Decider; now?: number },
+): { ok: true; until_ts: number } | Refused {
+  if (!isMe(db, s.by)) return no("not_me", "只有本人能暂缓这张卡");
+  const now = s.now ?? Date.now();
+  return db.tx(() => {
+    const a = pendingCard(db, id, now);
+    if (refused(a)) return a;
+    const stamp = localStamp(now);
+    const y = Number(stamp.slice(0, 4)), mo = Number(stamp.slice(5, 7)), d = Number(stamp.slice(8, 10));
+    const push = gateConf().push;
+    const morningJob = Object.values(jobsConf()).find((j) => j.do === "morning");
+    const [mh, mmi] = parseHHMM(morningJob?.at ?? push.night.to, [8, 0]);
+    let until_ts: number;
+    if (s.until === "tonight") {
+      const [th, tmi] = parseHHMM(push.snooze_tonight, [20, 0]);
+      until_ts = wallTime(y, mo, d, th, tmi);
+      if (until_ts <= now) return no("bad", "已经过了今晚提醒的时间，选明早或下周一吧");
+    } else if (s.until === "morning") {
+      until_ts = wallTime(y, mo, d + 1, mh, mmi);
+    } else {
+      const wd = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+      const delta = ((8 - wd) % 7) || 7;
+      until_ts = wallTime(y, mo, d + delta, mh, mmi);
+    }
+    if (a.expires_at != null && until_ts > Number(a.expires_at)) {
+      return no("bad", "暂缓的时间晚于这张卡的过期时间");
+    }
+    const cat = String(a.kind) === "ask" ? "ask" : "approval";
+    const state = s.until === "tonight" ? "wait" : "night";
+    const quota = s.until === "tonight" ? 1 : 0;
+    db.run(
+      `INSERT INTO push_queue(cat, ref, lane, domain, urgent, quota, text, state, not_before, deadline, snooze, expires_at, enq_at)
+       VALUES (?,?,?,?,0,?,?,?,?,NULL,?,?,?)
+       ON CONFLICT(cat, ref) DO UPDATE SET
+         state = excluded.state, quota = excluded.quota, not_before = excluded.not_before,
+         deadline = NULL, snooze = excluded.snooze, expires_at = excluded.expires_at, closed_at = NULL`,
+      cat, `approval:${id}`, (a.origin_lane as string | null) ?? null, approvalDomain(db, a), quota,
+      String(a.title ?? ""), state, until_ts, s.until, a.expires_at != null ? Number(a.expires_at) : null, now,
+    );
+    db.emit("approval", id);
+    log("approvals", "snoozed", { id, until: s.until, until_ts });
+    return { ok: true, until_ts };
+  });
 }
 
 /**
@@ -180,6 +389,7 @@ function refreshCards(db: Db, a: Row, status: string) {
  */
 function expire(db: Db, a: Row, now: number) {
   db.run("UPDATE approvals SET status = 'expired', decided_by = 'code:expired', decided_at = ? WHERE id = ? AND status = 'pending'", now, Number(a.id));
+  closePush(db, Number(a.id), "void", now);
   refreshCards(db, a, "expired");
   const ctx = a.context_json ? (JSON.parse(String(a.context_json)) as { hold?: boolean }) : {};
   if (a.kind === "send" && ctx.hold && a.channel) {
@@ -205,7 +415,9 @@ export function supersede(db: Db, oldId: number, newId: number) {
   db.tx(() => {
     const a = db.one("SELECT * FROM approvals WHERE id = ? AND status = 'pending'", oldId);
     if (!a) return;
-    db.run("UPDATE approvals SET status = 'superseded', superseded_by = ?, decided_by = 'code:superseded', decided_at = ? WHERE id = ?", newId, Date.now(), oldId);
+    const now = Date.now();
+    db.run("UPDATE approvals SET status = 'superseded', superseded_by = ?, decided_by = 'code:superseded', decided_at = ? WHERE id = ?", newId, now, oldId);
+    closePush(db, oldId, "void", now);
     refreshCards(db, a, "superseded");
   });
 }
@@ -219,8 +431,10 @@ export function invalidateForOwnerMessage(db: Db, o: { chat?: string; after_ts?:
     const rows = o.trigger_msg_id
       ? db.all("SELECT * FROM approvals WHERE status = 'pending' AND trigger_msg_id = ?", o.trigger_msg_id)
       : db.all("SELECT * FROM approvals WHERE status = 'pending' AND trigger_chat = ? AND COALESCE(trigger_ts, 0) < ?", o.chat ?? "", o.after_ts ?? Date.now());
+    const now = Date.now();
     for (const a of rows) {
-      db.run("UPDATE approvals SET status = 'invalidated', decided_by = 'owner_message', decided_at = ? WHERE id = ?", Date.now(), Number(a.id));
+      db.run("UPDATE approvals SET status = 'invalidated', decided_by = 'owner_message', decided_at = ? WHERE id = ?", now, Number(a.id));
+      closePush(db, Number(a.id), "void", now);
       refreshCards(db, a, "invalidated");
     }
     return rows.length;

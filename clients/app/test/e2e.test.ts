@@ -1,7 +1,7 @@
 // End to end with nothing faked on the wire: the connection state machine and the store, over Node's WebSocket, through
 // W2a's relay and the hub's RelayLink / Session to W2b's /api/v1 dispatcher and pump (scripts/clients-e2e-hub.ts, a
 // child process since clients/ may not import hub/ or relay/). Pair with a code → bootstrap → live ev/delta → the
-// network drops and it fills in by seq (nothing missing, nothing twice) → hub offline 4404 waits → removed 4410 stops.
+// network drops and it fills in by seq (nothing missing, nothing twice) → hub offline 4404 waits → W3a writes over the wire → removed 4410 stops.
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
@@ -196,13 +196,13 @@ test("hub offline: 4404 → waiting_hub, backing off 1, 2, 5 …; it comes back 
   await until("live after the hub is back", () => conn.state.s === "live", 15_000);
 });
 
-test("requests on the live connection: paging, a 404, and device writes are not on the relay path in W2", async () => {
+test("requests on the live connection: paging, a 404, and a write without client_op_id is refused", async () => {
   const th = store.threadByLane(LANE)!;
   const r = await conn.request("GET", `/api/v1/threads/${th.data.id}/items`, { query: { limit: "2" } });
   assert.equal(r.status, 200);
   assert.equal((await conn.request("GET", "/api/v1/nope")).status, 404);
-  // invites / rename / remove live on hub-admin.sock until W3: the client must not depend on them
-  assert.equal((await conn.request("POST", "/api/v1/devices/invites", { body: { role: "client" } })).status, 404);
+  // W3a: device writes are on the relay path too, but every write needs its client_op_id (02)
+  assert.equal((await conn.request("PATCH", `/api/v1/devices/${saved!.device_id}`, { body: { name: "e2e 桌面" } })).status, 400);
 });
 
 test("W3 over the real wire: chunked blob pull for HTML and client_op_id write rollback on unmerged W3 routes", async () => {
@@ -230,20 +230,19 @@ test("W3 over the real wire: chunked blob pull for HTML and client_op_id write r
   assert.deepEqual(opened, { ok: true });
   assert.equal(pulledLen, blob.size);
 
-  // 2) Writes + client_op_id over real Noise/relay to main's W2b hub (W3a/W3b routes aren't merged yet → 404):
-  // req carrying client_op_id parses cleanly on the hub and optimistic overlay rolls back cleanly in place
+  // 2) Writes + client_op_id over real Noise/relay to the W3a hub: the optimistic title shows at once and the hub's
+  // row (seq) settles it; a route that isn't there yet (presence is W3b) rolls back in place
   const th = store.threadByLane(LANE)!;
-  const origTitle = th.data.title;
   const w = new Writes({ conn, store });
   const act = makeActions(w, store, () => saved?.device_id ?? null);
   const p = act.patchThread(th.data.id, { title: "乐观改名" });
   assert.equal(store.get("thread", th.data.id)?.data.title, "乐观改名");
   const r = await p;
-  assert.equal(r.ok, false);
-  if (!r.ok) assert.equal(r.status, 404);
-  assert.equal(store.get("thread", th.data.id)?.data.title, origTitle, "rolled back after 404");
-  assert.equal((await act.presence({ foreground: true, viewing: `thread:${th.data.id}` })).ok, false);
-  assert.equal(conn.state.s, "live", "connection stays healthy after 404 writes");
+  assert.equal(r.ok, true, `patch: ${JSON.stringify(r)}`);
+  await until("the hub's row settles it", () => store.base("thread", th.data.id)?.data.title === "乐观改名");
+  const pr = await act.presence({ foreground: true, viewing: `thread:${th.data.id}` });
+  if (!pr.ok) assert.equal(pr.status, 404, "presence comes with W3b");
+  assert.equal(conn.state.s, "live", "connection stays healthy after writes");
   w.clear();
 });
 

@@ -35,11 +35,33 @@ export function blobRef(blobs: string, ref: unknown, preview?: string): BlobRef 
   return { ref: `blob:${m[1]}`, size, preview };
 }
 
-export const threadView = (r: Row): Thread => ({
-  id: String(r.id), lane: String(r.lane), kind: String(r.kind), domain: String(r.domain), title: str(r.title),
-  matter_id: int(r.matter_id), task_id: str(r.task_id), status: String(r.status), pinned: Number(r.pinned) === 1,
-  created_at: Number(r.created_at), last_item_at: int(r.last_item_at),
-});
+/** The root mainline id of a matter, walking merged_into and parent_id on read (§触6.5). */
+export function mainlineOf(db: Db, matterId: number | null): number | null {
+  if (matterId == null) return null;
+  let id = matterId;
+  let last: number | null = null;
+  const seen = new Set<number>([matterId]);
+  for (let i = 0; i < 20; i++) {
+    const m: { id: number; parent_id: number | null; merged_into: number | null } | undefined = db.one(
+      "SELECT id, parent_id, merged_into FROM matters WHERE id = ?", id);
+    if (!m) break;
+    last = Number(m.id);
+    const next: number | null = m.merged_into != null ? Number(m.merged_into) : m.parent_id != null ? Number(m.parent_id) : null;
+    if (next == null || seen.has(next)) break;
+    seen.add(next);
+    id = next;
+  }
+  return last;
+}
+
+export const threadView = (db: Db, r: Row): Thread => {
+  const matterId = int(r.matter_id);
+  return {
+    id: String(r.id), lane: String(r.lane), kind: String(r.kind), domain: String(r.domain), title: str(r.title),
+    matter_id: matterId, task_id: str(r.task_id), status: String(r.status), pinned: Number(r.pinned) === 1,
+    created_at: Number(r.created_at), last_item_at: int(r.last_item_at), mainline_id: mainlineOf(db, matterId),
+  };
+};
 
 export function inputView(r: Row): Input {
   const p = (json(r.payload_json) ?? {}) as Record<string, unknown>;
@@ -83,7 +105,13 @@ export function itemView(db: Db, blobs: string, r: Row): Item {
 }
 
 export function approvalView(db: Db, blobs: string, r: Row): Approval {
-  const out = db.one<Row>("SELECT status, error, ts FROM outbox WHERE approval_id = ?", Number(r.id));
+  const id = Number(r.id);
+  const out = db.one<Row>("SELECT status, error, ts FROM outbox WHERE approval_id = ?", id);
+  const sn = r.status === "pending"
+    ? db.one<{ snooze: string | null; not_before: number | null }>(
+        "SELECT snooze, not_before FROM push_queue WHERE ref = ? AND snooze IS NOT NULL AND state IN ('wait','night','counted') ORDER BY id DESC LIMIT 1",
+        `approval:${id}`)
+    : undefined;
   const request = json(r.request_json);
   const reqPreview = r.request_ref ? JSON.stringify(request ?? "").slice(0, PREVIEW) : undefined;
   return {
@@ -96,6 +124,8 @@ export function approvalView(db: Db, blobs: string, r: Row): Approval {
     final_text: str(r.final_text), result: str(r.result), matter_id: int(r.matter_id),
     delivery: out ? { status: String(out.status), error: red(out.error), ts: int(out.ts) } : null,
     ts: Number(r.ts),
+    snooze: sn?.snooze ?? null,
+    snooze_until: sn ? int(sn.not_before) : null,
   };
 }
 
@@ -110,6 +140,7 @@ export const deviceView = (r: Row): Device => ({
   id: String(r.id), name: String(r.name), platform: str(r.platform), role: String(r.role), version: str(r.version),
   created_at: Number(r.created_at), last_seen: int(r.last_seen), last_ip_masked: str(r.last_ip_masked),
   removed_at: int(r.removed_at), removed_by: str(r.removed_by),
+  push: typeof r.push_token === "string" && r.push_token.length > 0,
 });
 
 export const readView = (r: Row): Read => ({ ref: String(r.ref), upto_ts: int(r.upto_ts), read_at: Number(r.read_at), via: String(r.via) });
@@ -159,7 +190,7 @@ export const isEntity = (e: string): e is EntityName => Object.hasOwn(SOURCE, e)
 
 export function fromRow<E extends EntityName>(db: Db, blobs: string, entity: E, r: Row): EntityData[E] {
   switch (entity) {
-    case "thread": return threadView(r) as EntityData[E];
+    case "thread": return threadView(db, r) as EntityData[E];
     case "input": return inputView(r) as EntityData[E];
     case "run": return runView(r) as EntityData[E];
     case "item": return itemView(db, blobs, r) as EntityData[E];

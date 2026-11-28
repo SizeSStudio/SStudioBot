@@ -72,8 +72,13 @@ export const ROUTES: readonly string[] = [
   "POST /api/v1/bootstrap", "POST /api/v1/stream", "POST /api/v1/stream/expand", "POST /api/v1/stream/collapse",
   "GET /api/v1/threads", "GET /api/v1/threads/:id/items", "GET /api/v1/approvals", "GET /api/v1/devices",
   "GET /api/v1/blobs/:sha",
-  // W2a: device writes (hub-admin.sock until W3 client_ops)
+  // W2a: device writes (W3a: exposed over paired clients via client_ops too)
   "PATCH /api/v1/devices/:id", "DELETE /api/v1/devices/:id", "POST /api/v1/devices/invites",
+  // W3a: writes (threads, messages/inputs, run stop, approvals)
+  "POST /api/v1/threads", "PATCH /api/v1/threads/:id", "POST /api/v1/threads/:id/messages",
+  "DELETE /api/v1/inputs/:id", "POST /api/v1/runs/:id/stop",
+  "POST /api/v1/approvals/:id/decide", "PUT /api/v1/approvals/:id/draft",
+  "POST /api/v1/approvals/:id/redraft", "POST /api/v1/approvals/:id/snooze",
   "POST /node/v1/hello",
   "POST /node/v1/exec", "POST /node/v1/fs/read", "POST /node/v1/fs/write",
 ];

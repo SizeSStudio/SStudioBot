@@ -182,7 +182,7 @@ threads/:id/items { before }      → 翻历史
 
 **写操作**
 
-- 每个写请求带 `client_op_id`，`client_ops(device_id, client_op_id, result_json, ts)` 和业务写入同事务，重试不会做两次；清理规则见 `docs/tech/02-protocol.md`（30 天）。节点来的写入（工具调用结果这类）同样复用 `client_ops`，键是 `task_id:attempt:tool_call_id`。发消息直接用 `inbox` 现有的唯一键 `(source, source_msg_id)`，`source_msg_id` 取设备 ID 加 `client_op_id`。
+- 每个写请求带 `client_op_id`，`client_ops(device_id, client_op_id, result_json, ts)` 和业务写入同事务，重试不会做两次；清理规则见 `docs/tech/02-protocol.md`（30 天）。节点来的写入（工具调用结果这类）同样复用 `client_ops`，键是 `task_id:attempt:tool_call_id`。发消息直接用 `inbox` 现有的唯一键 `(source, source_msg_id)`，`source_msg_id` 取设备 ID 加 `client_op_id`。同一个 `client_op_id` 换了内容不算重试，回 409、什么都不做；重试拿到的结果和第一次一样（同 status、内容、seq）。
 - 响应带这次写入对应的 `seq`。客户端先显示一层乐观状态，流追到这个 `seq` 再去掉，不闪；失败就撤掉并提示。
 
 | 类型 | 例子 | 怎么显示 |

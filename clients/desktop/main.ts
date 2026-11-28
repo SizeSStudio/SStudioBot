@@ -1,129 +1,176 @@
-// Electron 主进程：自定义协议 + CSP 响应头 + 窄 bridge + 设备密钥（07 Electron）。
-// 探针模式：SBOT_PROBE=<步骤>，见 probe.ts。
-import { app, BrowserWindow, ipcMain, Notification, protocol, safeStorage, session, shell } from 'electron'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+// Electron main (07 Electron): the sbot-app:// protocol with CSP as a response header, a hardened window, a narrow
+// bridge, the device key (keys.ts) and the pairing file. The renderer runs the connection itself (Noise, frames);
+// main only holds the key, signs, and decides which relay the CSP lets it reach.
+//
+//   --selftest  load /selftest (the P11 ③ evil samples) on a throwaway profile, count every request that isn't
+//               sbot-app:// and every CSP violation, exit 0 only if both are zero (the CI `clients` job runs this).
+import { app, BrowserWindow, ipcMain, protocol, safeStorage, session, shell, type WebContents } from 'electron'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { buildCsp, makeHandler, ORIGIN, SCHEME, type Served } from './protocol.ts'
-import { backendOf, canHoldKeys, DeviceKeys } from './keys.ts'
-import { parsePairLink } from '../app/src/device/pairLink.ts'
+import { parsePairCode, PAIR_LINK_PREFIX, type PairCode } from '../../protocol/link.ts'
 import { classifyLink } from '../app/src/render/links.ts'
+import { backendOf, BackendRefused, canHoldKeys, DeviceKeys } from './keys.ts'
+import { buildCsp, makeHandler, ORIGIN, SCHEME } from './protocol.ts'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const WEB = process.env.SBOT_WEB_DIR ?? path.join(here, 'web')
-const T_MAIN = Date.now()
+const WEB = path.join(here, 'web')
+const SELFTEST = process.argv.includes('--selftest')
 
 protocol.registerSchemesAsPrivileged([{ scheme: SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true } }])
-if (process.env.SBOT_USER_DATA) app.setPath('userData', process.env.SBOT_USER_DATA)
+if (SELFTEST) app.setPath('userData', mkdtempSync(path.join(os.tmpdir(), 'sbot-selftest-')))
 
-// 探针：强制后端（模拟 Linux 无钥匙环时的 basic_text）
-const backend = () => process.env.SBOT_FAKE_BACKEND ?? backendOf(safeStorage, process.platform)
-let keys: DeviceKeys | null = null
-const getKeys = () => (keys ??= new DeviceKeys(path.join(app.getPath('userData'), 'device.key'), safeStorage, backend()))
-
-type Pairing = { hub_pk: string; relay: string; role: string }
+// ── pairing ───────────────────────────────────────────────────────────────────────────────────────────────────
+// What stays on disk: hub key, relay, device id, role (07: no secrets). The code's secret is single-use and only kept
+// in memory until the hub took it.
+type Pairing = { hub_pk: string; relay: string; device_id: string; role: 'client' | 'node' }
 const pairingFile = () => path.join(app.getPath('userData'), 'pairing.json')
-const readPairing = (): Pairing | null => { try { return JSON.parse(readFileSync(pairingFile(), 'utf8')) as Pairing } catch { return null } }
-
-export const state = {
-  served: [] as Served[],
-  external: [] as { url: string; type: string }[],
-  unsafeInlineStyle: process.env.SBOT_CSP_INLINE_STYLE !== '0',
-  win: null as BrowserWindow | null,
-  tMain: T_MAIN,
+function readPairing(): Pairing | null {
+  try {
+    const p = JSON.parse(readFileSync(pairingFile(), 'utf8')) as Pairing
+    return typeof p.hub_pk === 'string' && typeof p.relay === 'string' && typeof p.device_id === 'string' ? p : null
+  } catch { return null }
 }
+let pending: PairCode | null = null
+let incomingLink: string | null = null
 
-// 探针：SBOT_NO_CSP=1 去掉 CSP，单测渲染器本身会不会发请求（P11 ③）
-const csp = () => process.env.SBOT_NO_CSP === '1' ? '' : buildCsp({ relayHost: readPairing() ? new URL(readPairing()!.relay).hostname : null, unsafeInlineStyle: state.unsafeInlineStyle })
-
-function cleanHtmlTemp() {
-  const dir = path.join(os.tmpdir(), 'sbot-html')
-  if (!existsSync(dir)) return
-  for (const f of readdirSync(dir)) {
-    const p = path.join(dir, f)
-    if (Date.now() - statSync(p).mtimeMs > 24 * 3600 * 1000) rmSync(p, { force: true })
-  }
+// connect-src gets exactly the relay of the pairing (or of the code being paired); the bundle holds no address
+const relayHost = (): string | null => {
+  const r = pending?.relay ?? readPairing()?.relay
+  return r ? new URL(r).host : null
 }
+const csp = () => buildCsp({ relayHost: relayHost(), unsafeInlineStyle: true })
 
-function createWindow() {
-  const win = new BrowserWindow({
-    width: 1100, height: 800, show: true, backgroundColor: '#ffffff',
+let keys: DeviceKeys | null = null
+let backend = 'unknown'
+const getKeys = () => (keys ??= new DeviceKeys(path.join(app.getPath('userData'), 'device.key'), safeStorage, backend))
+
+// ── window ────────────────────────────────────────────────────────────────────────────────────────────────────
+let win: BrowserWindow | null = null
+function createWindow(): BrowserWindow {
+  const w = new BrowserWindow({
+    width: 1100, height: 800, show: !SELFTEST,
     webPreferences: { contextIsolation: true, sandbox: true, nodeIntegration: false, webSecurity: true, preload: path.join(here, 'preload.cjs') },
   })
-  win.webContents.on('will-navigate', (e, url) => { if (!url.startsWith(ORIGIN + '/')) e.preventDefault() })
-  win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-  state.win = win
-  return win
+  w.webContents.on('will-navigate', (e) => e.preventDefault()) // in-app routes are history API, never a navigation
+  w.webContents.setWindowOpenHandler(() => ({ action: 'deny' })) // links go through bridge.link.open
+  w.webContents.on('will-attach-webview', (e) => e.preventDefault())
+  win = w
+  return w
 }
 
-function handleDeepLink(url: string) {
-  if (!url.startsWith('sstudiobot://')) return
-  state.win?.webContents.send('pair.link', url)
+/** Only calls from our own page count (a frame or a navigation elsewhere can't use the bridge). */
+const fromApp = (sender: WebContents, frameUrl: string | undefined) => sender === win?.webContents && (frameUrl ?? '').startsWith(ORIGIN + '/')
+
+function onDeepLink(url: string | undefined) {
+  if (!url?.startsWith(PAIR_LINK_PREFIX)) return
+  incomingLink = url
+  win?.webContents.send('pair.link')
+  if (win) { if (win.isMinimized()) win.restore(); win.focus() }
 }
 
-app.on('open-url', (e, url) => { e.preventDefault(); handleDeepLink(url) })
-if (!process.env.SBOT_PROBE && !app.requestSingleInstanceLock()) app.quit()
-app.on('second-instance', (_e, argv) => { const u = argv.find(a => a.startsWith('sstudiobot://')); if (u) handleDeepLink(u) })
+if (!SELFTEST && !app.requestSingleInstanceLock()) app.quit()
+app.on('open-url', (e, url) => { e.preventDefault(); onDeepLink(url) }) // macOS
+app.on('second-instance', (_e, argv) => onDeepLink(argv.find((a) => a.startsWith(PAIR_LINK_PREFIX)))) // Windows, Linux
+onDeepLink(process.argv.find((a) => a.startsWith(PAIR_LINK_PREFIX)))
 
-app.whenReady().then(async () => {
-  cleanHtmlTemp()
-  const ses = session.defaultSession
-  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false))
-  ses.setPermissionCheckHandler(() => false)
-  // 记下所有不是包内的请求（P11 ③）
-  ses.webRequest.onBeforeRequest((d, cb) => {
-    if (!d.url.startsWith(ORIGIN + '/') && !d.url.startsWith('devtools:')) state.external.push({ url: d.url.slice(0, 200), type: d.resourceType })
-    cb({})
-  })
-  protocol.handle(SCHEME, makeHandler(WEB, csp, s => state.served.push(s)))
-  if (process.env.SBOT_REGISTER_SCHEME === '1') app.setAsDefaultProtocolClient('sstudiobot')
+app.on('web-contents-created', (_e, wc) => {
+  wc.on('will-navigate', (e) => e.preventDefault())
+  wc.setWindowOpenHandler(() => ({ action: 'deny' }))
+})
 
-  ipcMain.handle('device.backend', () => backend())
-  ipcMain.handle('device.publicKey', () => getKeys().publicKey())
-  ipcMain.handle('device.sign', (_e, h: string, c: string) => {
-    if (!/^[0-9a-f]{64}$/i.test(h) || !/^[0-9a-f]{64}$/i.test(c)) throw new Error('bad input')
-    return getKeys().sign(h, c)
+// ── the bridge's other end ────────────────────────────────────────────────────────────────────────────────────
+function handle<A extends unknown[], R>(channel: string, fn: (...args: A) => R | Promise<R>) {
+  ipcMain.handle(channel, (e, ...args) => {
+    if (!fromApp(e.sender, e.senderFrame?.url)) throw new Error('not from the app')
+    return fn(...(args as A))
   })
-  ipcMain.handle('pair.accept', (_e, link: string) => {
-    const b = backend()
-    if (!canHoldKeys(b)) return { ok: false, error: `safeStorage 后端是 ${b}：设备私钥会以明文落盘，拒绝配对。装好钥匙环（gnome-keyring / kwallet）后再试。` }
-    const p = parsePairLink(link)
+}
+
+function registerBridge() {
+  handle('device.publicKey', () => getKeys().publicKey())
+  handle('device.sign', (h: unknown, c: unknown, purpose: unknown) => getKeys().sign(String(h), String(c), purpose as 'auth'))
+
+  handle('pair.accept', async (link: unknown) => {
+    if (!canHoldKeys(backend)) return { ok: false, error: new BackendRefused(backend).message }
+    const p = parsePairCode(String(link))
     if (!p.ok) return { ok: false, error: p.error }
-    getKeys().ensure()
-    writeFileSync(pairingFile(), JSON.stringify({ hub_pk: p.info.hub_pk, relay: p.info.relay, role: p.info.role }), { mode: 0o600 })
-    // 重载让 CSP 的 connect-src 带上中继
-    setTimeout(() => state.win?.webContents.reload(), 50)
-    return { ok: true, deviceId: getKeys().deviceId().slice(0, 8) }
+    await getKeys().ensure()
+    pending = p.code
+    incomingLink = null
+    setTimeout(() => win?.webContents.reload(), 50) // so the CSP's connect-src has this relay
+    return { ok: true }
   })
-  ipcMain.handle('link.open', async (_e, url: string) => {
-    const v = classifyLink(url)
+  handle('pair.pending', () => {
+    if (pending && pending.exp <= Date.now()) pending = null
+    return pending
+  })
+  handle('pair.cancel', () => { pending = null })
+  handle('pair.save', async (raw: unknown) => {
+    const p = raw as Pairing
+    // only the pairing of the code being paired, with this device's own id
+    if (!pending || p?.hub_pk !== pending.hub_pk || p.relay !== pending.relay || p.role !== pending.role) throw new Error('no such pairing')
+    if (p.device_id !== (await getKeys().deviceId())) throw new Error('not this device')
+    const out: Pairing = { hub_pk: p.hub_pk, relay: p.relay, device_id: p.device_id, role: p.role }
+    await writeFile(pairingFile(), JSON.stringify(out), { mode: 0o600 })
+    pending = null
+  })
+  handle('pair.current', () => readPairing())
+  handle('pair.forget', () => { rmSync(pairingFile(), { force: true }); setTimeout(() => win?.webContents.reload(), 50) })
+  handle('pair.takeLink', () => { const l = incomingLink; incomingLink = null; return l })
+
+  handle('link.open', async (url: unknown) => {
+    const v = classifyLink(String(url)) // the renderer checked already; check again here, where it counts
     if (!v.ok) return false
-    if (process.env.SBOT_PROBE) { state.external.push({ url: 'shell.openExternal:' + v.url.slice(0, 80), type: 'shell' }); return true }
+    if (SELFTEST) return true
     await shell.openExternal(v.url)
     return true
   })
-  ipcMain.handle('html.open', async (_e, sha: string, html: string) => {
-    if (!/^[A-Za-z0-9_-]{1,80}$/.test(sha)) throw new Error('bad sha')
-    const dir = path.join(os.tmpdir(), 'sbot-html')
-    mkdirSync(dir, { recursive: true })
-    const file = path.join(dir, `${sha}.html`)
-    writeFileSync(file, html) // 正式版从 blob 拉，这里由页面给样本
-    if (process.env.SBOT_OPEN_BROWSER !== '0') { const err = await shell.openPath(file); if (err) return 'error: ' + err }
-    return file
-  })
-  ipcMain.on('notify', (_e, title: string, body: string) => {
-    if (state.win?.isFocused()) return
-    new Notification({ title, body }).show()
-  })
+}
 
-  const win = createWindow()
-  if (process.env.SBOT_PROBE) {
-    const { runProbe } = await import('./probe.ts')
-    await runProbe(win, state, { getKeys, backend, csp })
-  } else {
-    await win.loadURL(ORIGIN + '/')
+// ── start ─────────────────────────────────────────────────────────────────────────────────────────────────────
+app.whenReady().then(async () => {
+  backend = await backendOf(safeStorage, process.platform)
+  const ses = session.defaultSession
+  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false)) // no camera, mic, notifications prompts, geolocation …
+  ses.setPermissionCheckHandler(() => false)
+  const external: string[] = []
+  ses.webRequest.onBeforeRequest((d, cb) => {
+    const own = d.url.startsWith(ORIGIN + '/') || d.url.startsWith('devtools:')
+    if (!own) external.push(`${d.resourceType} ${d.url.slice(0, 120)}`)
+    // a connection only to the paired relay; everything else is dropped here as well as by the CSP
+    const relay = relayHost()
+    cb({ cancel: !own && !(relay && d.resourceType === 'webSocket' && new URL(d.url).host === relay) })
+  })
+  protocol.handle(SCHEME, makeHandler(WEB, csp))
+  registerBridge()
+  if (!SELFTEST && !app.isDefaultProtocolClient('sstudiobot')) app.setAsDefaultProtocolClient('sstudiobot')
+
+  const w = createWindow()
+  if (!SELFTEST) { await w.loadURL(ORIGIN + '/'); return }
+
+  const cspErrors: string[] = []
+  w.webContents.on('console-message', (e) => { if (/Content Security Policy|Refused to/i.test(e.message)) cspErrors.push(e.message.slice(0, 200)) })
+  let code = 1
+  try {
+    await w.loadURL(ORIGIN + '/selftest')
+    const t0 = Date.now()
+    let done = false
+    while (!done && Date.now() - t0 < 20_000) {
+      done = await w.webContents.executeJavaScript(`!!document.querySelector('[data-testid="selftest-done"]')`)
+      if (!done) await new Promise((r) => setTimeout(r, 200))
+    }
+    await new Promise((r) => setTimeout(r, 1000)) // late requests (fonts, lazy images) would show up now
+    const rendered = done ? await w.webContents.executeJavaScript(`document.querySelectorAll('[data-testid="selftest-sample"]').length`) : 0
+    console.log(JSON.stringify({ selftest: done ? 'rendered' : 'timeout', samples: rendered, backend, external, cspErrors }))
+    code = done && rendered > 0 && external.length === 0 && cspErrors.length === 0 ? 0 : 1
+  } catch (e) {
+    console.error('selftest:', e instanceof Error ? e.message : String(e))
   }
+  rmSync(app.getPath('userData'), { recursive: true, force: true })
+  app.exit(code)
 })
 
 app.on('window-all-closed', () => app.quit())

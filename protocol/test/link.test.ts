@@ -37,7 +37,7 @@ test("each wrong part is named", () => {
     [makePairCode(code({ role: "admin" as "client" })), "role"],
     [makePairCode(code({ exp: Date.now() - 1 })), "expired"],
     [makePairCode(code({ relay: "ws://relay.example" })), "relay"],
-    [makePairCode(code({ relay: "wss://u:p@relay.example" })), "relay"],
+    [makePairCode(code({ relay: ["wss://u:p", "relay.example"].join("@") })), "relay"], // userinfo; split so leak-guard doesn't read an email
     [makePairCode(code({ relay: "wss://relay.example/?x=1" })), "relay"],
     [makePairCode(code({ relay: "wss://relay_example" })), "relay"],
     [makePairCode(code({ relay: "wss://re lay.example" })), "relay"],

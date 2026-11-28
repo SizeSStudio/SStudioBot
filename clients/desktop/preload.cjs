@@ -1,18 +1,25 @@
-// 沙箱里的 preload 只能是 CommonJS。窄 bridge：就这几个函数（07），私钥不过来。
+// A sandboxed preload has to be CommonJS. The whole bridge (07): the page can ask for the public key and a signature,
+// hand over a pairing code, keep its pairing, open a link. The private key never comes across.
 const { contextBridge, ipcRenderer } = require('electron')
 
 contextBridge.exposeInMainWorld('sbot', {
   device: {
     publicKey: () => ipcRenderer.invoke('device.publicKey'),
-    sign: (h, c) => ipcRenderer.invoke('device.sign', String(h), String(c)),
-    backend: () => ipcRenderer.invoke('device.backend'),
+    sign: (handshakeHash, challenge, purpose) => ipcRenderer.invoke('device.sign', String(handshakeHash), String(challenge), String(purpose)),
   },
   pair: {
-    accept: link => ipcRenderer.invoke('pair.accept', String(link)),
-    onLink: cb => { ipcRenderer.on('pair.link', (_e, link) => cb(String(link))) },
+    accept: (link) => ipcRenderer.invoke('pair.accept', String(link)),
+    pending: () => ipcRenderer.invoke('pair.pending'),
+    cancel: () => ipcRenderer.invoke('pair.cancel'),
+    save: (p) => ipcRenderer.invoke('pair.save', { hub_pk: String(p.hub_pk), relay: String(p.relay), device_id: String(p.device_id), role: String(p.role) }),
+    current: () => ipcRenderer.invoke('pair.current'),
+    forget: () => ipcRenderer.invoke('pair.forget'),
+    // a sstudiobot://pair link from the OS: main keeps it until the page takes it
+    onLink: (cb) => {
+      const take = () => ipcRenderer.invoke('pair.takeLink').then((l) => { if (l) cb(String(l)) })
+      ipcRenderer.on('pair.link', take)
+      void take()
+    },
   },
-  link: { open: url => ipcRenderer.invoke('link.open', String(url)) },
-  html: { open: (sha, html) => ipcRenderer.invoke('html.open', String(sha), String(html)) },
-  notify: (title, body, ref) => ipcRenderer.send('notify', String(title), String(body), String(ref)),
-  probe: { report: (name, data) => ipcRenderer.send('probe.report', String(name), JSON.stringify(data)) },
+  link: { open: (url) => ipcRenderer.invoke('link.open', String(url)) },
 })

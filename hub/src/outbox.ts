@@ -5,26 +5,13 @@ import type { Db, Row } from "./db/db.ts";
 import { channelsConf } from "./config/load.ts";
 import { redact } from "./tools/redact.ts";
 import { log } from "./log.ts";
+import { channel as channelOf } from "./channels/registry.ts";
+import type { OutboxRow, RegisteredChannel, SendResult } from "./channels/types.ts";
 
-export type SendResult = { ok: true; msg_id?: string } | { ok: false; error: string; retry?: boolean; unknown?: boolean };
-
-export interface OutboxRow {
-  id: number; approval_id: number | null; run_id: string | null; lane: string | null; channel: string; kind: "text" | "card";
-  card_id: string | null; as_identity: "bot" | "user"; target: Record<string, unknown>; payload: string; idem_key: string;
-  send_by: number | null; attempts: number;
-}
-
-export interface ChannelCaps { cards: boolean; streaming?: boolean; userIdentityRead?: boolean; mail?: boolean; commands?: boolean }
-
-/** The part of 03's ChannelPlugin the outbox uses. W1e's plugins satisfy it as they are. */
-export interface OutChannel { id: string; caps: ChannelCaps; send(o: OutboxRow): Promise<SendResult> }
-
-// ───────── channel registry ─────────
-
-const plugins = new Map<string, OutChannel>();
-export function registerChannel(p: OutChannel) { plugins.set(p.id, p); }
-export function unregisterChannel(id: string) { plugins.delete(id); }
-export const channelOf = (id: string): OutChannel | undefined => plugins.get(id);
+// One shape for rows and results, one registry (03 「channels」): both live with the channel contract.
+export type { ChannelCaps, OutboxRow, SendResult } from "./channels/types.ts";
+/** What the outbox needs from a plugin: id, caps, send(). */
+export type OutChannel = RegisteredChannel;
 
 /**
  * The built-in `client` outlet: clients read the row through their own views (`messages`, approvals), so delivering
@@ -94,7 +81,7 @@ export function toOutlet(db: Db, group: OutletGroup, payload: string, o: { kind?
   for (const e of entries) {
     const { channel, to } = parseOutlet(e);
     if (channel === "client" && o.noClient) continue;
-    const p = channel === "client" ? undefined : plugins.get(channel);
+    const p = channel === "client" ? undefined : channelOf(channel);
     if (channel !== "client" && !p) { log("outbox", "outlet has no channel running, skipped", { group, outlet: e }); continue; }
     if (o.cardsOnly && p && !p.caps.cards) continue;
     ids.push(enqueue(db, {
@@ -180,7 +167,7 @@ export class Outbox {
       log("outbox", "expired before sending", { id: row.id });
       return this.#settle(row, "expired");
     }
-    const ch = row.channel === "client" ? this.#client : plugins.get(row.channel);
+    const ch = row.channel === "client" ? this.#client : channelOf(row.channel);
     if (!ch) {
       db.run("UPDATE outbox SET status = 'unrouted', error = ? WHERE id = ?", `no channel plugin "${row.channel}"`, row.id);
       log("outbox", "no plugin for channel", { id: row.id, channel: row.channel });

@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { modelsConf } from "../config/load.ts";
-import { secret } from "../config/secrets.ts";
+import { secret } from "../secrets.ts";
 import { home, TZ } from "../home.ts";
 import { log } from "../log.ts";
 import type { Poll, SourceItem } from "./types.ts";

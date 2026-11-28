@@ -1,13 +1,14 @@
-// W1e smoke on a fresh home (hub/test/test-home.sh hub/test/smoke-w1e.ts <port>): boots the hub with Feishu in shadow
-// mode and checks the ledger side came up — shadow sends never leave, the inbox port dedupes, seeded jobs became
-// timers, Sentinel ticks, a command source fails clearly without a runner on Linux, a matter pauses and resurfaces.
+// W1e smoke on a fresh home (hub/test/test-home.sh hub/test/smoke-w1e.ts <port>): writes a channels.yaml with Feishu
+// in shadow mode and dummy credentials, boots the hub, and checks the channel side came up without connecting — the
+// log says so, shadow sends never leave, the channel host dedupes, seeded jobs became timers, Sentinel ticks, a command
+// source fails clearly without a runner on Linux, a matter pauses and resurfaces — then stops cleanly.
 // Fictional data only. Prints names and counts; exits non-zero on the first failure.
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { home } from "../src/home.ts";
 import { boot } from "../src/main.ts";
 import { channel } from "../src/channels/registry.ts";
-import { inboxPort } from "../src/channels/inbox-port.ts";
+import { channelHost } from "../src/channels/host.ts";
 import type { FeishuChannel } from "../src/channels/feishu/plugin.ts";
 import { Sentinel } from "../src/timers/sentinel.ts";
 import { pollSource } from "../src/sources/index.ts";
@@ -16,7 +17,6 @@ import { pauseMatter } from "../src/ledgers/matter-ops.ts";
 import { recordEvent } from "../src/ledgers/events.ts";
 import { setQuiet } from "../src/log.ts";
 
-setQuiet(true);
 let step = 0;
 function ok(cond: unknown, what: string): asserts cond {
   step++;
@@ -26,15 +26,26 @@ function ok(cond: unknown, what: string): asserts cond {
 
 const h = home();
 ok(!existsSync(h.db), `fresh home ${h.root}`);
+mkdirSync(h.config, { recursive: true });
+writeFileSync(join(h.config, "channels.yaml"), "feishu:\n  mode: shadow\n");
+// made-up credentials: shadow mode must not even try them
+writeFileSync(h.secrets, "FEISHU_APP_ID=cli_smokefake0001\nFEISHU_APP_SECRET=smoke-fake-secret-000000\n", { mode: 0o600 });
+// the hub logs JSON lines to stderr: keep them for the checks below instead of printing them
+const lines: string[] = [];
+setQuiet(false);   // test-home.sh sets SBOT_LOG=off; the lines are kept here, not printed
+process.stderr.write = ((chunk: string | Uint8Array) => { lines.push(String(chunk)); return true; }) as typeof process.stderr.write;
 const hub = await boot(h);
 const db = hub.db;
 
 const f = channel("feishu") as FeishuChannel | undefined;
 ok(f && f.state() === "shadow", "feishu plugin registered, shadow");
-const sent = await f.send({ id: 1, channel: "feishu", kind: "text", as_identity: "bot", target_json: JSON.stringify({ chat_id: "oc_smokefake0001" }), payload: "smoke" });
-ok(sent.shadow === true && sent.msg_id === null, "shadow send is only logged");
+ok(lines.some((l) => l.includes("shadow mode: no long connection")), "log says it isn't connecting");
+ok(!lines.some((l) => l.includes("smoke-fake-secret")), "the dummy secret is not in the log");
+const sent = await f.send({ id: 1, approval_id: null, run_id: null, lane: null, channel: "feishu", kind: "text", card_id: null, as_identity: "bot",
+  target: { chat_id: "oc_smokefake0001" }, payload: "smoke", idem_key: "smoke-1", send_by: null, attempts: 0 });
+ok(sent.ok && sent.shadow === true, "shadow send is only logged");
 
-const port = inboxPort(db);
+const port = channelHost(db);
 const item = { lane: "smoke", kind: "user" as const, source: "smoke", source_msg_id: "s1", payload: { text: "x" } };
 ok(port.ingest(item).fresh && !port.ingest(item).fresh, "inbox port dedupes on (source, source_msg_id)");
 
@@ -60,4 +71,5 @@ recordEvent({ source: "smoke", ref: "e1", ts: Date.now(), kind: "progress", leve
 ok(db.all(`SELECT id FROM matters WHERE ${RESURFACED}`).length === 1, "paused matter resurfaces on new activity");
 
 await hub.close();
-ok(true, "hub closed");
+ok(!channel("feishu"), "hub closed, channel unregistered");
+process.exit(0);

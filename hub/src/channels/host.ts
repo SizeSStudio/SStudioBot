@@ -1,7 +1,8 @@
-// The minimal ChannelHost (03 「inbox 和 run」): write `messages` + `inbox` in one tx and nothing else. W1d's inbox
-// module takes over (lanes, batching, dispatch) and passes its own kick(); the SQL here is what it has to keep:
-// INSERT OR IGNORE on UNIQUE(source, source_msg_id) is the dedupe (message_id for messages, event_id for card clicks).
+// The ChannelHost plugins write through (03 「inbox 和 run」): a `messages` row (what was said, for search and triage)
+// and the inbox row, in one transaction, and nothing else — a channel callback must answer within seconds. The inbox
+// row is W1d's ingest() (inbox.ts): its UNIQUE(source, source_msg_id) is the dedupe and it kicks the dispatcher.
 import type { Db } from "../db/db.ts";
+import { ingest, kickInbox } from "../inbox.ts";
 import type { ChannelHost, IngestItem, IngestResult, MessageRow } from "./types.ts";
 
 function writeMessage(db: Db, m: MessageRow): boolean {
@@ -11,22 +12,20 @@ function writeMessage(db: Db, m: MessageRow): boolean {
     m.raw ? JSON.stringify(m.raw) : null, m.domain ?? null, m.lane ?? null,
     // my own messages and the bot's are not triaged; everyone else's waits for triage (§读2.2)
     m.sender_kind === "other" ? "pending" : null);
-  return r.changes > 0;
+  return Number(r.changes) > 0;
 }
 
-export function inboxPort(db: Db, kick: () => void = () => {}): ChannelHost {
+export function channelHost(db: Db): ChannelHost {
   return {
     ingest(item: IngestItem): IngestResult {
       return db.tx(() => {
         if (item.message) writeMessage(db, item.message);
-        const r = db.run(`INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status, device_id, ts)
-          VALUES(?,?,?,?,?,?,?,?,?)`,
-          item.lane, item.kind, item.source, item.source_msg_id, item.turn ? JSON.stringify(item.turn) : null,
-          JSON.stringify(item.payload), "received", item.device_id ?? null, Date.now());
-        return r.changes ? { fresh: true, inboxId: Number(r.lastInsertRowid) } : { fresh: false };
+        const r = ingest(db, { lane: item.lane, kind: item.kind, source: item.source, source_msg_id: item.source_msg_id,
+          payload: item.payload, turn: item.turn, device_id: item.device_id });
+        return r.dup ? { fresh: false } : { fresh: true, inboxId: r.id };
       });
     },
     record: (m) => db.tx(() => writeMessage(db, m)),
-    kick,
+    kick: kickInbox,
   };
 }

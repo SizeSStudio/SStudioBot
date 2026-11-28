@@ -1,18 +1,11 @@
 // The channel plugin contract (03 「channels」, veto 4). A plugin receives (messages, card clicks, recalls) and hands
 // each one to ChannelHost.ingest, which only writes the inbox; it sends outbox rows with send(). The hub looks only at
-// caps. W1d's outbox finds plugins by name in registry.ts and calls send(); W1d's inbox replaces inbox-port.ts.
+// caps. The outbox (outbox.ts) finds plugins by name in registry.ts and calls send(); ChannelHost writes through inbox.ts.
 import type { SQLInputValue } from "node:sqlite";
 
-/** Where a reply goes (03 「inbox 和 run」). `chat`/`thread` are the channel's own ids. */
-export interface TurnContext {
-  lane: string;
-  surface: string;              // feishu:dm | feishu:group | feishu:workbench | console | …
-  chat?: string;
-  thread?: string;
-  msg_id?: string;              // the triggering message, when replies should quote it
-  src: string;                  // owner@<surface> | job@<name> | system@<kind> | other@<surface>
-  device_id?: string;
-}
+/** Where a reply goes: W1d's TurnContext (turn.ts), one definition. `channel` is the plugin id ("feishu", "client", …). */
+import type { TurnContext } from "../turn.ts";
+export type { TurnContext };
 
 /** A row for `messages` (04 §5), written in the same tx as the inbox row. Only columns a channel knows at ingest. */
 export interface MessageRow {
@@ -45,15 +38,19 @@ export interface ChannelHost {
   kick(): void;
 }
 
-/** outbox row as W1d's outbox hands it over (04 §3) */
+/** An outbox row as the outbox (outbox.ts) hands it to send(): target already parsed, idem_key always set (04 §3). */
 export interface OutboxRow {
-  id: number; approval_id?: number | null; run_id?: string | null; lane?: string | null;
-  channel: string; kind: "text" | "card"; card_id?: string | null; as_identity: "bot" | "user";
-  target_json: string; payload: string; idem_key?: string | null; attempts?: number;
+  id: number; approval_id: number | null; run_id: string | null; lane: string | null; channel: string; kind: "text" | "card";
+  card_id: string | null; as_identity: "bot" | "user"; target: Record<string, unknown>; payload: string; idem_key: string;
+  send_by: number | null; attempts: number;
 }
 
-/** msg_id null = the channel accepted it but gave no id. shadow = not sent at all (shadow mode logged it). */
-export interface SendResult { msg_id: string | null; shadow?: boolean }
+/**
+ * What send() answers; the outbox acts on it (outbox.ts): ok → sent; unknown → may have gone out, never retried
+ * (§底3.3); retry:false → failed for good; otherwise retried with backoff. A throw counts as a retryable failure.
+ * shadow = ok but nothing was sent (shadow mode only logged it).
+ */
+export type SendResult = { ok: true; msg_id?: string; shadow?: true } | { ok: false; error: string; retry?: boolean; unknown?: boolean };
 
 /** Channel-neutral card model (03 「approvals」); each plugin renders it its own way. */
 export interface CardOption { id: string; label: string; recommended?: boolean; cost?: string }
@@ -76,7 +73,7 @@ export interface StreamHandle {
   readonly failed: boolean;
 }
 
-export interface ChannelCaps { cards: boolean; streaming: boolean; userIdentityRead: boolean; mail: boolean; commands: boolean }
+export interface ChannelCaps { cards: boolean; streaming?: boolean; userIdentityRead?: boolean; mail?: boolean; commands?: boolean }
 
 export interface ChannelPlugin {
   readonly id: string;
@@ -88,6 +85,9 @@ export interface ChannelPlugin {
   stream?(ctx: { runId: string; lane: string; turn: TurnContext }): StreamHandle;
   stop(): Promise<void>;
 }
+
+/** What the registry holds: the outbox needs only id, caps and send(); a full plugin also starts and stops. */
+export type RegisteredChannel = Pick<ChannelPlugin, "id" | "caps" | "send"> & Partial<Omit<ChannelPlugin, "id" | "caps" | "send">>;
 
 /** values for the ambient run() helpers; kept here so plugins need not import node:sqlite types themselves */
 export type SqlArg = SQLInputValue;

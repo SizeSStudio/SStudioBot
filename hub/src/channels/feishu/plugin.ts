@@ -7,7 +7,7 @@
 //
 // Handlers only write the inbox (ChannelHost.ingest) and return: the SDK acks after the handler, inside Feishu's 3 s.
 import { channelsConf, peopleConf, sourcesConf, cached } from "../../config/load.ts";
-import { secret } from "../../config/secrets.ts";
+import { secret } from "../../secrets.ts";
 import { kvSet, one, run } from "../../db/ambient.ts";
 import { log } from "../../log.ts";
 import type { Card, ChannelHost, ChannelPlugin, OutboxRow, SendResult, StreamHandle, TurnContext } from "../types.ts";
@@ -40,9 +40,44 @@ function approvedAsSent(o: OutboxRow, chat: string | undefined, replyTo: string 
   if (o.payload !== (a.final_text ?? a.draft)) return no("text differs from what was approved");
   let t: Record<string, unknown> = {};
   try { t = JSON.parse(String(a.target_json ?? "{}")); } catch { return no("has an unreadable target"); }
-  const aChat = t.chat_id ?? t.chat, aReply = t.message_id ?? t.msg_id;
-  if (!chat || aChat !== chat) return no("is for another chat");
-  if ((aReply ?? null) !== (replyTo ?? null)) return no("replies to another message");
+  const at = targetOf(t);
+  if (!chat || at.chat !== chat) return no("is for another chat");
+  if ((at.replyTo ?? null) !== (replyTo ?? null)) return no("replies to another message");
+}
+
+/**
+ * Where a row goes. Targets come in three shapes: a TurnContext copy from replies and approvals (`chat`, `msg_id`,
+ * `thread`), an outlet (`to`: `chat:admin`, `chat:workbench`, `chat:<oc_id>`, `dm`), and triage's (`chat_id`,
+ * `message_id`, `in_thread`). `replace` = re-render that sent card.
+ */
+export function targetOf(t: Record<string, unknown>): { chat?: string; replyTo?: string; inThread: boolean; replace?: string } {
+  const str = (v: unknown) => (typeof v === "string" && v ? v : undefined);
+  let chat = str(t.chat_id) ?? str(t.chat);
+  const to = str(t.to);
+  if (!chat && to) {
+    const f = channelsConf().feishu;
+    chat = to === "dm" ? ownerDmChat() : to === "chat:admin" ? f.admin_chat : to === "chat:workbench" ? f.workbench_chat
+      : to.startsWith("chat:oc_") ? to.slice(5) : undefined;
+  }
+  return { chat, replyTo: str(t.msg_id) ?? str(t.message_id), inThread: !!(t.in_thread ?? str(t.thread_id) ?? str(t.thread)), replace: str(t.replace) };
+}
+
+const STATUS_LINE: Record<string, [string, NonNullable<Card["tone"]>]> = {
+  approved: ["已批", "green"], rejected: ["没批", "grey"], expired: ["过期了", "grey"], superseded: ["有新稿，这张作废", "grey"],
+  invalidated: ["你已经回过了，这张作废", "grey"], cancelled: ["撤了", "grey"],
+};
+
+/** An outbox card payload → a Feishu card. Approval cards (approvals.ts cardOf) click back as {k:"appr", id, o}. */
+function cardFor(payload: string): FeishuCard {
+  const c = JSON.parse(payload) as (Card & { approval_id?: number; status?: string }) | FeishuCard;
+  if (c && typeof c === "object" && "schema" in c) return c;
+  const x = c as Card & { approval_id?: number; status?: string };
+  const done = x.status && x.status !== "pending" ? STATUS_LINE[x.status] ?? [x.status, "grey" as const] : undefined;
+  return renderCard({
+    ...x, lines: x.lines ?? [], options: done ? [] : x.options ?? [], question: done ? undefined : x.question,
+    ...(done ? { lines: [...(x.lines ?? []), `**${done[0]}**`], tone: done[1] } : {}),
+    ...(x.approval_id != null && !done ? { value: { k: "appr", id: x.approval_id } } : {}),
+  });
 }
 /** commands answered by code, never by the model (§触6.6) */
 const COMMAND = /^\/(stop|new|tasks|approvals|todo|pair|devices|model|usage|job|improve|group|help)\b\s*([\s\S]*)$/i;
@@ -153,7 +188,8 @@ export class FeishuChannel implements ChannelPlugin {
     // the card update token is not stored: cards are updated with the bot's own identity (PATCH), so it is never needed
     const r = this.#host!.ingest({
       lane: CARD_LANE, kind: "card", source: "feishu:card", source_msg_id: e.eventId,
-      payload: { v: 1, value: v, msg: e.messageId, chat: e.chatId, ts: e.createTime ?? Date.now(), owner: true },   // checked above
+      // checked above; operator goes along so approvals.decide can check it against people.yaml itself
+      payload: { v: 1, value: v, msg: e.messageId, chat: e.chatId, ts: e.createTime ?? Date.now(), owner: true, operator: e.operatorId },
     });
     if (r.fresh) this.#host!.kick();
     return { toast: { type: "info", content: "收到" } };
@@ -188,7 +224,7 @@ export class FeishuChannel implements ChannelPlugin {
       return false;
     }
     if (lane === OWNER_DM_LANE && ownerDmChat() !== e.chatId) kvSet(OWNER_DM_KEY, e.chatId);
-    const turn: TurnContext = { lane, surface, chat: e.chatId, msg_id: e.messageId, thread: turnThread ?? e.threadId, src: `owner@${surface}` };
+    const turn: TurnContext = { channel: "feishu", lane, surface, chat: e.chatId, msg_id: e.messageId, thread: turnThread ?? e.threadId, src: `owner@${surface}` };
     const r = this.#host!.ingest({
       lane, kind, source: "feishu", source_msg_id: e.messageId, turn,
       // W1d's ownerTyped reads this flag: only a message whose sender is my Feishu id may carry it
@@ -239,30 +275,47 @@ export class FeishuChannel implements ChannelPlugin {
   render(c: Card): FeishuCard { return renderCard(c); }
 
   async send(o: OutboxRow): Promise<SendResult> {
-    const t = JSON.parse(o.target_json) as { chat_id?: string; chat?: string; msg_id?: string; message_id?: string; thread_id?: string; thread?: string; in_thread?: boolean };
-    const chat = t.chat_id ?? t.chat, replyTo = t.msg_id ?? t.message_id, inThread = !!(t.in_thread ?? (t.thread_id ?? t.thread));
+    const { chat, replyTo, inThread, replace } = targetOf(o.target);
     if (this.#mode === "shadow") {
       log("feishu", "shadow: not sent", { outbox: o.id, kind: o.kind, as: o.as_identity, chars: o.payload.length });
-      return { msg_id: null, shadow: true };
+      return { ok: true, shadow: true };
     }
     if (o.as_identity === "user") {
-      // 底线: anything in my name goes out only after its approval card was approved
-      if (o.approval_id == null) throw new Error("refusing to send as the user without an approval");
-      if (o.kind !== "text") throw new Error("only text can be sent as the user");
-      approvedAsSent(o, chat, replyTo);
-      return { msg_id: await sendAsUser(this.lark, { chat_id: chat, msg_id: replyTo, in_thread: inThread }, o.payload, o.idem_key ?? `sbot-ob-${o.id}`) };
+      // 底线: anything in my name goes out only after its approval card was approved; a refusal is final, nothing sent
+      try {
+        if (o.approval_id == null) throw new Error("refusing to send as the user without an approval");
+        if (o.kind !== "text") throw new Error("only text can be sent as the user");
+        approvedAsSent(o, chat, replyTo);
+      } catch (e) {
+        log("feishu", "send as the user refused", { outbox: o.id, err: String((e as Error).message).slice(0, 200) });
+        return { ok: false, error: String((e as Error).message), retry: false };
+      }
+      // a failure here is retried by the outbox; lark-cli gets the row's idempotency key, so a repeat is dropped
+      return { ok: true, msg_id: (await sendAsUser(this.lark, { chat_id: chat, msg_id: replyTo, in_thread: inThread }, o.payload, o.idem_key)) ?? undefined };
     }
-    let msg_type = "post", content: string;
-    if (o.kind === "card") {
-      const c = JSON.parse(o.payload);
-      msg_type = "interactive";
-      content = JSON.stringify(c && typeof c === "object" && "schema" in c ? c : renderCard(c as Card));
-    } else content = postContent(o.payload);
-    const uuid = (o.idem_key ?? `sbot-ob-${o.id}`).slice(0, 50);
+    if (o.kind === "card" && replace) {
+      await this.patchCard(replace, cardFor(o.payload));
+      return { ok: true, msg_id: replace };
+    }
+    if (!chat && !replyTo) return { ok: false, error: `no chat for target ${JSON.stringify(Object.keys(o.target))}`, retry: false };
+    const msg_type = o.kind === "card" ? "interactive" : "post";
+    const content = o.kind === "card" ? JSON.stringify(cardFor(o.payload)) : postContent(o.payload);
+    const uuid = o.idem_key.slice(0, 50);
     const d = replyTo
       ? await this.api("POST", `/open-apis/im/v1/messages/${replyTo}/reply`, { msg_type, content, reply_in_thread: inThread, uuid })
       : await this.api("POST", "/open-apis/im/v1/messages", { receive_id: chat, msg_type, content, uuid }, { receive_id_type: "chat_id" });
-    return { msg_id: d.message_id ?? null };
+    const msg_id: string | undefined = d.message_id ?? undefined;
+    if (o.kind === "card" && msg_id) this.#noteApprovalCard(o.payload, chat, msg_id);
+    return { ok: true, msg_id };
+  }
+
+  /** approvals.ts re-renders every card it sent (cards_json) when the state changes; we know where this one landed */
+  #noteApprovalCard(payload: string, chat: string | undefined, msg_id: string) {
+    let id: unknown;
+    try { id = (JSON.parse(payload) as { approval_id?: unknown }).approval_id; } catch { return; }
+    if (typeof id !== "number") return;
+    run(`UPDATE approvals SET cards_json = json_insert(COALESCE(cards_json, '[]'), '$[#]', json(?)) WHERE id = ?`,
+      JSON.stringify({ channel: "feishu", chat, msg_id }), id);
   }
 
   /** a bot card straight into a chat (the observer's switches in the admin chat); null in shadow mode */

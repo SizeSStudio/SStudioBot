@@ -4,7 +4,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeChannel, w1dHome } from "./w1d-helpers.ts";
 import { openDb, type Db } from "../src/db/db.ts";
-import { enqueue, Outbox, registerChannel, toOutlet, unregisterChannel, type SendResult } from "../src/outbox.ts";
+import { enqueue, Outbox, toOutlet } from "../src/outbox.ts";
+import { registerChannel, unregisterChannel } from "../src/channels/registry.ts";
+import type { SendResult } from "../src/channels/types.ts";
 
 async function setup(answer?: Parameters<typeof fakeChannel>[1], cards = true) {
   const h = await w1dHome("outbox");

@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { ambientHome } from "./helpers.ts";
 import { all, kvGet, kvSet, one, run } from "../src/db/ambient.ts";
 import { Scheduler, addFollowup, cancelFollowup, listFollowups, nextDue, OWNER_LANE, type CheckRunner } from "../src/timers/schedule.ts";
-import { classifyUpstream, nextAttempt, parseReset, retryDeadline } from "../src/timers/retry.ts";
+import { classifyUpstream, nextAttempt, parseReset, retryDeadline } from "../src/retry.ts";
 import { Sentinel } from "../src/timers/sentinel.ts";
 import { setAdminSink } from "../src/notify.ts";
 
@@ -61,7 +61,7 @@ test("check: no local node to run it → treated as broken, never run some other
 
 test("follow-ups and next due", async () => {
   await ambientHome("followups");
-  const id = addFollowup({ lane: "l", turn: { lane: "l", surface: "feishu:dm", src: "x", msg_id: "om_q" }, due: Date.now() - 1, note: "问报价", by: "owner" });
+  const id = addFollowup({ lane: "l", turn: { channel: "feishu", lane: "l", surface: "feishu:dm", src: "x", msg_id: "om_q" }, due: Date.now() - 1, note: "问报价", by: "owner" });
   assert.equal(listFollowups("l").length, 1);
   const s = new Scheduler();
   s.tick();

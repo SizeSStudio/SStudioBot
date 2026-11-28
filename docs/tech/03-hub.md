@@ -4,7 +4,7 @@
 
 ## 启动顺序
 
-`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；渠道、push、timers 等 W1e、W2 各就各位。
+`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；W1e 在 outbox 开始投递之前起渠道、timers、Sentinel、sources、分拣（`main.ts` `startChannelSide`），都叫醒同一个派发（`kickInbox`）；关的时候倒过来。push、`api.pump` 等 W2。
 
 关停：停收新输入 → 等跑着的 run 到下一个安全点（最多 30 秒）→ 没跑完的按 §底1.2 的重启规则处理 → 关通道 → 关库。
 
@@ -112,7 +112,7 @@
   ```
   `client` 指客户端的「等你 N」和时间线；推到哪还要过 `push` 的路由表。
 - 投递：`outbox` 行带 `channel`、`target_json`、`idem_key`；出口按渠道插件的 `send()`；`approval_id` 唯一，一个审批最多发一次；`send_by` 到了作废；结果不确定标 `unknown`，不重发（§底3.3）。
-- W1d：插件按 id 登记在 `outbox.ts`（`registerChannel`），W1e 的 ChannelPlugin 照这个接口接 ※。`client` 出口内建：投递就是写一行 `messages`。出口组里没在跑插件的出口跳过（记日志）；行写进去了但找不到插件的标 `unrouted` ※，不丢、不重试。同一个 `idem_key` 只写一行；失败按 10、20、40 秒退避，最多 4 次；重启时 `sending` 的回 `queued`，带原 `idem_key` 再发，由插件认重复。写一行就踢一下投递，不等 5 秒的轮询。
+- 插件按 id 登记在 `channels/registry.ts`（`registerChannel`，只这一处），outbox 按 `row.channel` 找它调 `send()`；登记只要 `id`、`caps`、`send`，`start`/`stop` 有就调。`client` 出口内建：投递就是写一行 `messages`。出口组里没在跑插件的出口跳过（记日志）；行写进去了但找不到插件的标 `unrouted` ※，不丢、不重试。同一个 `idem_key` 只写一行；失败按 10、20、40 秒退避，最多 4 次；重启时 `sending` 的回 `queued`，带原 `idem_key` 再发，由插件认重复。写一行就踢一下投递，不等 5 秒的轮询。
 
 ## channels（ChannelPlugin，veto 4）
 
@@ -126,22 +126,28 @@ interface ChannelPlugin {
   stream?(ctx: { runId; lane; turn: TurnContext }): StreamHandle;   // 流式卡片，插件自己先写 outbox 行（算副作用）
   stop(): Promise<void>;
 }
-interface ChannelHost {                         // W1e 的最小实现 channels/inbox-port.ts，W1d 的 inbox 接手
+interface ChannelHost {                         // channels/host.ts：messages 行 + inbox.ingest()，一个事务
   ingest(i: IngestItem): { fresh; inboxId? };   // 同步、一个事务：messages 行（有就写）+ inbox 行；UNIQUE(source, source_msg_id) 去重
   record(m: MessageRow): boolean;               // 只进分拣的（群、别人的私聊）：只写 messages，triage_status=pending
   kick(): void;                                 // 提交后叫醒派发
 }
-type SendResult = { msg_id: string | null; shadow?: true };   // shadow = 没发，只记了日志
+type SendResult =                              // outbox 照它处理：ok → sent；unknown → 不重发（§底3.3）；retry:false → 直接 failed；
+  | { ok: true; msg_id?: string; shadow?: true }   //   其余按退避重试；send() 抛错算可重试。shadow = 没发，只记了日志
+  | { ok: false; error: string; retry?: boolean; unknown?: boolean };
+interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "card"; card_id; as_identity: "bot" | "user";
+  target: Record<string, unknown>; payload; idem_key; send_by; attempts }   // target 已解析；idem_key 总有
 ```
 
-- 接口在 `hub/src/channels/types.ts`；注册表 `channels/registry.ts`（`registerChannel`、`channel(id)`、`startChannels(host)`），W1d 的 outbox 按名字找插件调 `send()`。
+- 接口在 `hub/src/channels/types.ts`（`TurnContext` 就是 `turn.ts` 那个，带 `channel`）；注册表 `channels/registry.ts`（`registerChannel`、`unregisterChannel`、`channel(id)`、`startChannels(host)`）。
+- 发往哪：`target` 三种形状都认——回复和审批存的 `{...turn}`（`chat`、`msg_id`、`thread`）、出口组的 `to`（`chat:admin`、`chat:workbench`、`chat:<oc_id>`、`dm`）、分拣的 `chat_id`/`message_id`/`in_thread`；`replace` = 改那张已发的卡（审批状态变了，`refreshCards`）。审批卡（`cardOf` 的 JSON）按钮带 `{k:"appr", id, o}`；发出后插件把 `{channel, chat, msg_id}` 记进 `approvals.cards_json`，状态一变按它逐张改，决定过的卡不再有按钮。
+- 卡片点击（`kind=card`）不进 run：派发交给 `channels/card-rows.ts`——`appr` → `approvals.decide`（operator 随点击带进 payload，`decide` 再对一遍 `people.yaml`；选项 `reject` 拒，其余批，非 approve/reject 的选项记成 `answer`），`group`/`review` → `feishu/actions.ts`。observer 看到我自己在某个群发了话 → `invalidateForOwnerMessage`（那里待批的稿作废）。
 - lane：我的私聊 `feishu:dm`（`/` 开头的是 `command`）；工作台 `feishu:wb:<root>`；管理群里我发的 `feishu:console`，只当命令；卡片点击 `card`（`source=feishu:card`，按 `event_id` 去重，payload 只有 `value`，不存回调 token）。别人的消息只 `record`，不进 inbox。
-- `channels.yaml` `feishu.mode: shadow`：不连长连接、不收卡片回调，`send()` 只记日志返回 `{msg_id:null, shadow:true}`，`stream()` 直接是 failed；user 身份的轮询照跑（测试 home 用，09）。没有 `FEISHU_APP_ID/SECRET` 时 bot 身份不起（`state()=no-bot`），默认关。
-- 密钥读取 `config/secrets.ts`：`secret(name)` 只给插件拿去连接，`secretValues()` 只给打码用；不进 env、日志、事件。
+- `channels.yaml` `feishu.mode: shadow`：不连长连接、不收卡片回调，`send()` 只记日志返回 `{ok:true, shadow:true}`，`stream()` 直接是 failed；user 身份的轮询照跑（测试 home 用，09）。没有 `FEISHU_APP_ID/SECRET` 时 bot 身份不起（`state()=no-bot`），默认关。
+- 密钥读取 `secrets.ts`（启动时 `loadSecrets` 读一次进内存）：`secret(name)` 只给插件和代理拿去连接，`secretValues()` 只给打码用；不进 env、日志、事件。
 
 - 插件跑在主上（飞书：用主自己的登录），或跑在节点上（以后微信在 Windows 节点）：节点上的插件经 `/node/v1/channel/*`（02）和主往返：收到的走 `ingest` 上来，主要发的走 `send` 下去；主侧是一个代理插件 ※。主只看 `caps`。
 - 飞书插件：长连接收事件，3 秒内确认；卡片回调校验 `operator_id` 是 owner；消息按 `message_id`、卡片回调按 `event_id` 去重（04）；user 身份轮询群（§读2.2）；CardKit 流式卡片；飞书邮箱（只读，回邮件走审批 D8）；确定性命令 `/stop /new /tasks /approvals /todo /pair /devices /model /usage /job /improve /group`（不经模型，§触6.6）。
-- 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。W1e 用 SDK 1.77.0 实现了 `feishu/sdk.ts`；它自己的日志会把带 `app_secret` 的原始请求交出去（`hub/test/feishu-sdk.test.ts` 钉住了），所以一律传 `safeSdkLogger`（打码 + 只留状态码）。user 身份轮询、查已读、飞书邮箱和以我名义发（批准后）※ 仍走主机器上装的 lark-cli（`feishu/user.ts` 的 `Lark` 类型，测试里换假的）：SDK 的 user 令牌要自己做 OAuth 和刷新，W1 不值得；以后换只动这一个文件。以我名义只发纯文本；发之前对 `approvals` 行：`kind=send`、`status=approved`、`as_identity=user`、没过 `send_by`，正文正好等于 `final_text ?? draft`，chat 和回复的那条消息和 `target_json` 一致，有一项不对就抛错、什么都不发。我在飞书里发的、点的进 inbox 时 payload 带 `owner: true`（W1d 的 `ownerTyped` 认它），别人的消息只 `record`，从不带。
+- 飞书后端（P9 暂定 ※，待测试应用实测确认，08）：bot 身份用官方 Node SDK 的低层 `WSClient` + `EventDispatcher`（不用 `LarkChannel`），CardKit 在进程内调。必须做到：订阅的每种类型都注册处理函数（没注册的照样确认后丢）；传自己的 `logger`（SDK 默认日志会带出 `app_secret` 和令牌）；设 `pingTimeout`、`handshakeTimeoutMs`，接 `onError`；重连后补漏消息（点击补不回来）；更新点过的卡先关流式。W1e 用 SDK 1.77.0 实现了 `feishu/sdk.ts`；它自己的日志会把带 `app_secret` 的原始请求交出去（`hub/test/feishu-sdk.test.ts` 钉住了），所以一律传 `safeSdkLogger`（打码 + 只留状态码）。user 身份轮询、查已读、飞书邮箱和以我名义发（批准后）※ 仍走主机器上装的 lark-cli（`feishu/user.ts` 的 `Lark` 类型，测试里换假的）：SDK 的 user 令牌要自己做 OAuth 和刷新，W1 不值得；以后换只动这一个文件。以我名义只发纯文本；发之前对 `approvals` 行：`kind=send`、`status=approved`、`as_identity=user`、没过 `send_by`，正文正好等于 `final_text ?? draft`，chat 和回复的那条消息和 `target_json` 一致（三种 target 形状同一个解析），有一项不对就返回 `retry:false`、什么都不发。我在飞书里发的、点的进 inbox 时 payload 带 `owner: true`（W1d 的 `ownerTyped` 认它），别人的消息只 `record`，从不带。
 
 ## sources（SourcePlugin）
 
@@ -152,7 +158,7 @@ type SendResult = { msg_id: string | null; shadow?: true };   // shadow = 没发
 - 进来的东西和群消息走同一条路：`messages` → 分拣 → 事件 → 挂到事。
 - 接口（`hub/src/sources/types.ts`）：`SourcePlugin { kind, zh, poll(s, state, since, cursor) → { items, cursor? } }`；`state` 是 `<root>/sources/<id>/` 目录加按源的 kv。kv `source.<id>.since` 记上次成功的开始时间（下次往前重叠 5 分钟），`source.<id>.cursor` 记插件给的游标；失败两个都不动。item 可带 `to_me`、`from_me`、`parties`（邮件的收发人，给排除名单用）、`raw_b64`（进 CAS，`raw_ref` 记在 `raw_json`）。只收 http(s) 链接。
 - command 插件运行器 ※：Mac、Windows 当主时 `localPluginRunner`（同一用户、最小 env、`HOME=` 插件状态目录）。Linux 上 `worker-exec` 还没有插件模式（`deploy/`，另开 PR），这期间不接运行器，command 源明确报「这台主上还没接插件运行器」，不退回以主的身份跑。插件要 `FEISHU_APP_*` 或模型的 `key_ref` 一律拒（主自己的密钥）。
-- 分拣（`hub/src/triage/`）：W1d 管的都经 `TriageDeps { complete?, runDraft?, submitSend?, notice?, readIds?, kick? }` 注入。没有 `complete` 就不启动（只靠规则会把消息一次判死），消息留 `pending`；缺 `runDraft` 或 `submitSend` 时 draft 降成 notify（「起草没接上」）。草稿只经 `submitSend`（`as_identity: "user"` 的 send 审批）出去。notice 在 push 接上前走 `notify.admin`。
+- 分拣（`hub/src/triage/`）：W1d 管的都经 `TriageDeps { complete?, runDraft?, submitSend?, notice?, readIds?, kick? }` 注入。主上接了 `complete`（`triage/complete.ts`：跟承诺检测一样，每次调用发一个 light 档令牌、`finally` 里吊销，上游密钥不出代理；令牌的 `run_id` 是 `triage:…` 标签）、`submitSend`（W1d 的 `submitApproval`）、`readIds`、`kick`；`runDraft` 还没接 ※，所以 draft 眼下都降成 notify。没有 `complete` 就不启动（只靠规则会把消息一次判死），消息留 `pending`；缺 `runDraft` 或 `submitSend` 时 draft 降成 notify（「起草没接上」）。草稿只经 `submitSend`（`as_identity: "user"` 的 send 审批）出去。notice 在 push 接上前走 `notify.admin`。
 
 ## memory
 

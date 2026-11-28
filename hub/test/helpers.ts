@@ -26,12 +26,14 @@ export async function ambientHome(tag: string, config: Record<string, string> = 
   const { useConfigDir } = await import("../src/config/load.ts");
   const { openDb } = await import("../src/db/db.ts");
   const { setDb } = await import("../src/db/ambient.ts");
+  const { loadSecrets } = await import("../src/secrets.ts");
   const h = tempHome(tag);
   process.env.SBOT_HOME = h.root;
   delete process.env.SBOT_SECRETS;
   useConfigDir(h.config);
   for (const [f, t] of Object.entries(config)) writeFileSync(join(h.config, f), t);
-  if (secrets !== undefined) writeFileSync(join(h.root, "secrets.env"), secrets, { mode: 0o600 });
+  if (secrets !== undefined) writeFileSync(h.secrets, secrets, { mode: 0o600 });
+  loadSecrets(h.secrets, h.keys);   // as boot does; also clears the previous test's values
   mkdirSync(join(h.agentHome, "matters"), { recursive: true });
   const db = openDb(h.db);
   setDb(db);

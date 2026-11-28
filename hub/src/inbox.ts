@@ -21,6 +21,8 @@ export interface Ingest {
 let kick: () => void = () => {};
 /** The dispatcher registers itself here (dispatch.ts). */
 export function setKick(fn: () => void) { kick = fn; }
+/** Wake the dispatcher now (timers, Sentinel, triage after they wrote rows); ingest() already does this itself. */
+export function kickInbox() { try { kick(); } catch { /* the dispatcher's tick picks it up anyway */ } }
 
 /**
  * One input. The same (source, source_msg_id) is written once: channels redeliver, the second call is a no-op and says

@@ -9,13 +9,14 @@
 //   exit 0 + empty stdout → nothing to do, `skipped_by_check`, no model; exit 0 + output → stdout goes into the run;
 //   any other exit → the run happens anyway with the exit code and the first 2 KB of stderr, plus an ops alert ※.
 import { jobsConf, type JobSpec } from "../config/load.ts";
-import { all, kvGet, kvSet, one, run, tx } from "../db/ambient.ts";
+import { all, db, kvGet, kvSet, one, run, tx } from "../db/ambient.ts";
+import { ingest } from "../inbox.ts";
 import { log } from "../log.ts";
 import * as notify from "../notify.ts";
 import { localStamp, parseLocal } from "../time.ts";
-import type { TurnContext } from "../channels/types.ts";
+import type { TurnContext } from "../turn.ts";
 import { OWNER_DM_KEY, OWNER_DM_LANE } from "../channels/feishu/state.ts";
-import { classifyUpstream, failureText, nextAttempt, retryDeadline } from "./retry.ts";
+import { classifyUpstream, failureText, nextAttempt, retryDeadline } from "../retry.ts";
 
 const TICK_MS = 30_000;
 const GRACE_MS = 15 * 60_000;
@@ -39,7 +40,7 @@ export function nextDue(j: JobSpec, after = Date.now()): number | undefined {
 /** where my scheduled things land: the bot DM, once Feishu has told us its chat id */
 export function ownerTurn(src: string): TurnContext | undefined {
   const dm = kvGet(OWNER_DM_KEY);
-  return dm ? { lane: OWNER_LANE, surface: "feishu:dm", chat: dm, src } : undefined;
+  return dm ? { channel: "feishu", lane: OWNER_LANE, surface: "feishu:dm", chat: dm, src } : undefined;
 }
 
 export function addFollowup(o: { lane: string; turn: TurnContext; due: number; note: string; matterId?: number; by: "owner" | "agent"; runId?: string }) {
@@ -137,14 +138,13 @@ export class Scheduler {
   #fireOneOff(t: Record<string, any>, now: number) {
     tx(() => {
       if (t.kind === "task") {
-        run(`INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, payload_json, status, ts) VALUES(?,?,?,?,?,?,?)`,
-          t.lane ?? `task:${t.task_id}`, "task", "timer", `${t.id}:${t.due_at}`, JSON.stringify({ ...JSON.parse(t.payload_json ?? "{}"), task_id: t.task_id, ts: now }), "received", now);
+        ingest(db(), { lane: t.lane ?? `task:${t.task_id}`, kind: "task", source: "timer", source_msg_id: `${t.id}:${t.due_at}`,
+          payload: { ...JSON.parse(t.payload_json ?? "{}"), task_id: t.task_id, ts: now }, ts: now });
       } else {
         const late = now - t.due_at > 10 * 60_000 ? `（本该 ${localStamp(t.due_at).slice(5)} 提醒，主当时不在线，晚了）` : "";
-        run(`INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status, ts) VALUES(?,?,?,?,?,?,?,?)`,
-          t.lane, "timer", "timer", `${t.id}:${t.due_at}`, t.turn_json,
-          JSON.stringify({ text: `【到点了：follow-up #${t.id}，${localStamp(t.ts).slice(5)} 设的${late}】${t.note}${t.matter_id ? `（事 #${t.matter_id}）` : ""}`, ts: now, quota: true }),
-          "received", now);
+        ingest(db(), { lane: t.lane, kind: "timer", source: "timer", source_msg_id: `${t.id}:${t.due_at}`,
+          turn: t.turn_json ? JSON.parse(t.turn_json) : undefined,
+          payload: { text: `【到点了：follow-up #${t.id}，${localStamp(t.ts).slice(5)} 设的${late}】${t.note}${t.matter_id ? `（事 #${t.matter_id}）` : ""}`, ts: now, quota: true }, ts: now });
       }
       run("UPDATE timers SET status='done', fired_at=? WHERE id=?", now, t.id);
     });
@@ -185,9 +185,8 @@ export class Scheduler {
     if (!text) return "nothing to say";
     if (!turn) return "skipped (owner DM unknown)";
     const opened = this.#hook("opened", () => this.#o.hooks?.opened?.(name, j, key));
-    run(`INSERT OR IGNORE INTO inbox(lane, kind, source, source_msg_id, turn_ctx_json, payload_json, status, ts) VALUES(?,?,?,?,?,?,?,?)`,
-      j.lane ?? OWNER_LANE, "timer", "job", key, JSON.stringify({ ...turn, lane: j.lane ?? OWNER_LANE }),
-      JSON.stringify({ text, ts: now, job: name, quota, ...extra, ...opened }), "received", now);
+    ingest(db(), { lane: j.lane ?? OWNER_LANE, kind: "timer", source: "job", source_msg_id: key, turn: { ...turn, lane: j.lane ?? OWNER_LANE },
+      payload: { text, ts: now, job: name, quota, ...extra, ...opened }, ts: now });
     return "fired";
   }
 

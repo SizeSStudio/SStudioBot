@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { fakeChannel, OWNER_FEISHU, w1dHome } from "./w1d-helpers.ts";
 import { openDb } from "../src/db/db.ts";
-import { registerChannel, unregisterChannel } from "../src/outbox.ts";
+import { registerChannel, unregisterChannel } from "../src/channels/registry.ts";
 import { decide, invalidateForOwnerMessage, submitApproval, supersede, sweepApprovals } from "../src/approvals.ts";
 
 async function setup() {

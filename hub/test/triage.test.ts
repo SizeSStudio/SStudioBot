@@ -106,3 +106,38 @@ test("a draft that says 【不回复】 becomes a notice; escalate lands in my D
   assert.notEqual(msg(s).a, "escalate");
   assert.equal(all("SELECT 1 FROM inbox").length, 1, "anyone can write a ticket: it reaches me, never the agent");
 });
+
+test("triage's model call: one light request through the proxy per call, the token revoked after, the upstream key never seen", async () => {
+  const { fakeLlm, FAKE_KEY } = await import("./fake-llm.ts");
+  const { w1dHome } = await import("./w1d-helpers.ts");
+  const { openDb } = await import("../src/db/db.ts");
+  const { startProxy } = await import("../src/proxy.ts");
+  const { proxyComplete, jsonOf } = await import("../src/triage/complete.ts");
+  let answer = '```json\n{"items":[{"i":0,"action":"notify","why":"问我"}],"events":[]}\n```';
+  const llm = await fakeLlm(() => ({ text: answer }));
+  const h = await w1dHome("triage-proxy", { port: llm.port });
+  const db = openDb(h.db);
+  const proxy = await startProxy(db, h.blobs, 0);
+  try {
+    const complete = proxyComplete(db, `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`);
+    const out = await complete({ tier: "light", system: "分拣", user: "一条消息", maxTokens: 900, json: true, requester: "triage" });
+    assert.deepEqual(out, { items: [{ i: 0, action: "notify", why: "问我" }], events: [] });
+    const req = llm.seen[0]!;
+    assert.equal(req.body.model, "claude-fake-light");
+    assert.equal(req.body.system, "分拣");
+    assert.equal(req.body.max_tokens, 900);
+    assert.equal(req.headers["x-api-key"], FAKE_KEY, "the proxy put the upstream key on; we never had it");
+    answer = "没有 JSON";
+    await assert.rejects(complete({ tier: "light", system: "s", user: "u", maxTokens: 100, json: true, requester: "check" }), /JSON/);
+    const toks = db.all<{ status: string; requester_id: string; run_id: string }>("SELECT status, requester_id, run_id FROM run_tokens");
+    assert.equal(toks.length, 2, "a token per call");
+    assert.ok(toks.every((t) => t.status === "revoked" && t.run_id.startsWith("triage:")));
+    assert.deepEqual(toks.map((t) => t.requester_id).sort(), ["check", "triage"]);
+    assert.deepEqual(jsonOf('好的：[{"i":0}] 完'), [{ i: 0 }]);
+  } finally {
+    await new Promise<void>((r) => proxy.close(() => r()));
+    proxy.closeAllConnections?.();
+    db.close();
+    await llm.close();
+  }
+});

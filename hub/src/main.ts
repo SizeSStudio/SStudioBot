@@ -1,6 +1,6 @@
 // The hub process (03 「启动顺序」): config → db → config repo seed + default jobs → agent-home seed → secrets + redact
-// → inbox.recover → hub.sock (local node) → [channels start: W1e] → proxy, outbox, dispatcher → hub-admin.sock →
-// "hub up" → notices through the admin outlet. push, timers and api.pump take their places in W1e/W2.
+// → proxy → inbox.recover → hub.sock (local node) → channels, timers, Sentinel, sources, triage → outbox, dispatcher →
+// hub-admin.sock → "hub up" → notices through the admin outlet. Shutdown is the reverse. push and api.pump come in W2.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,7 +28,21 @@ import { PiRunner } from "./runner/pi.ts";
 import type { Runner } from "./runner/types.ts";
 import { registerBuiltinTools } from "./tools/builtin.ts";
 import { allTools } from "./tools/registry.ts";
-import { sweepApprovals } from "./approvals.ts";
+import { invalidateForOwnerMessage, submitApproval, sweepApprovals } from "./approvals.ts";
+import { kickInbox } from "./inbox.ts";
+import { setDb } from "./db/ambient.ts";
+import { channel, registerChannel, startChannels, stopChannels, unregisterChannel } from "./channels/registry.ts";
+import { channelHost } from "./channels/host.ts";
+import { cardRows } from "./channels/card-rows.ts";
+import { FeishuChannel, feishuConfigured } from "./channels/feishu/plugin.ts";
+import { observerHooks } from "./channels/feishu/observer.ts";
+import { userIdentityReady } from "./channels/feishu/user.ts";
+import { Scheduler } from "./timers/schedule.ts";
+import { Sentinel } from "./timers/sentinel.ts";
+import { Sources, configureSources } from "./sources/index.ts";
+import { localPluginRunner } from "./sources/command.ts";
+import { Triage, readByMe, type SendApproval } from "./triage/triage.ts";
+import { proxyComplete } from "./triage/complete.ts";
 
 const APP = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
@@ -51,6 +65,41 @@ export interface BootOpts {
   /** tests inject a runner; the hub itself always uses pi */
   runner?: (proxyBase: string) => Runner;
   proxyPort?: number;
+}
+
+/** A triage draft (triage.ts) filed as W1d's send approval: the only way it leaves, and only as me after I approve. */
+const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, {
+  kind: "send", title: a.title, draft: a.draft, run_id: a.run_id, requester: a.requester, channel: a.channel, as_identity: a.as_identity,
+  target: a.target, context: a.context, origin_lane: "triage",
+  checks: { hits: Array.isArray((a.checks as { hits?: unknown })?.hits) ? ((a.checks as { hits: unknown[] }).hits.filter((x) => typeof x === "string") as string[]) : ["承诺检测结果读不出"] },
+  trigger: { chat: a.trigger_chat, msg_id: a.trigger_msg_id, ts: a.trigger_ts },
+});
+
+/**
+ * The channel side (03 「channels」「timers 和 Sentinel」): Feishu when channels.yaml has it, then timers, Sentinel,
+ * sources and triage. Every wake-up goes to the dispatcher (kickInbox). Returns the stop, in reverse order.
+ */
+async function startChannelSide(db: Db, proxyBase: string): Promise<() => Promise<void>> {
+  const ours = feishuConfigured() && !channel("feishu");
+  if (ours) registerChannel(new FeishuChannel());
+  const feishu = () => channel("feishu") as FeishuChannel | undefined;
+  // a message I sent myself in a chat voids the pending drafts there (§触2.4, 03 作废)
+  observerHooks.ownerMessage = (chat, ts) => { invalidateForOwnerMessage(db, { chat, after_ts: ts }); };
+  await startChannels(channelHost(db));
+  const f = feishu();
+  // a command plugin runs as its own user on Linux (worker-exec plugin mode, not built yet) — never as the hub ※
+  configureSources({ lark: f?.lark, runner: process.platform === "linux" ? undefined : localPluginRunner });
+  const scheduler = new Scheduler({ onFire: kickInbox });
+  const sentinel = new Sentinel({ userReady: f ? () => userIdentityReady(f.lark) : undefined });
+  const sources = new Sources();
+  const triage = new Triage({ complete: proxyComplete(db, proxyBase), submitSend: sendApproval(db), readIds: f ? readByMe(f.lark) : undefined, kick: kickInbox });
+  scheduler.start(); sentinel.start(); sources.start(); triage.start();
+  return async () => {
+    triage.stop(); sources.stop(); sentinel.stop(); scheduler.stop();
+    await stopChannels();
+    observerHooks.ownerMessage = () => {};
+    if (ours) unregisterChannel("feishu");
+  };
 }
 
 export function statusOf(hub: Pick<Hub, "db" | "startedAt">): StatusRes {
@@ -92,12 +141,17 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => proxy.close() });
     const proxyBase = `http://127.0.0.1:${(proxy.address() as { port: number }).port}/llm`;
     const runner = o.runner ? o.runner(proxyBase) : new PiRunner(h.pi, proxyBase);
-    const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase) });
+    const dispatcher = new Dispatcher({ db, h, runner, node, commitCheck: proxyCommitChecker(db, proxyBase),
+      onCard: cardRows(db, () => channel("feishu") as FeishuChannel | undefined) });
     // before anything can take new rows: what the last process left half done (§底1.2)
     dispatcher.recover();
     await node.listen(h.node);
     opened.push(node);
-    // W1e: channels start here, before the outbox drains
+    // channels before the outbox drains: a row for a channel that isn't registered yet would be marked unrouted
+    setDb(db);   // the ported ledger/timer modules use the ambient db (db/ambient.ts)
+    opened.push({ close: () => setDb(undefined) });
+    const stopSide = await startChannelSide(db, proxyBase);
+    opened.push({ close: stopSide });
     outbox.start();
     opened.push({ close: () => outbox.stop() });
     sweepApprovals(db);
@@ -112,6 +166,8 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
         await dispatcher.stop();
         outbox.stop();
         await outbox.idle();
+        await stopSide();
+        setDb(undefined);
         await node.close();
         await new Promise<void>((res) => proxy.close(() => res()));
         proxy.closeAllConnections?.();

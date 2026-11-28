@@ -322,7 +322,7 @@ pending ──批准──► approved ──► 发件箱：sending ──► s
   - **残余风险**：有 sudo，核心守卫就只是软边界，挡不住有意为之。被注入的指令可以读 `secrets.env`、登录 `ssh_hosts` 里的机器、在 tailnet 里横向移动。所以碰到不可信内容先问我，我说进沙箱就用 sandbox（§办3.3）；主换到单独账号也挡不住有 sudo 的它。
 - **sandbox worker 的网络**分两层（P0 已验证，`deploy/worker/netfilter.sh` + `probes/worker-isolation.ts`）：
   - **iptables，按 owner 匹配 `sbot-w`**（链 `SBOT_W`，只插 OUTPUT 第一条，不碰 ufw 和 docker 的链；`sbot-netfilter.service` 开机加载）：
-    - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理）。
+    - 只放行 `127.0.0.1:7811`（LLM 代理）和 `127.0.0.1:7820-7829`（核心的出网代理；新主只用 7820–7828，7829 是冒烟测试主的端口 ※，链不用改）。
     - 其余一律拒绝：本机所有地址（`addrtype LOCAL`，包括公网 IP 和 `::1`）、tailnet、私网和 docker 网段、云元数据，**以及公网和 DNS**（2026-11-17 收紧，`SBOT_W_PUBLIC=allow` 可退回）。这一层管住的是 CLI 进程本身。
     - 为什么能关掉公网：CLI 进程本身不需要直连。模型调用走 LLM 代理；WebSearch 是服务端工具，也在代理后面；WebFetch 用 `settings.env.HTTPS_PROXY` 指到核心出网代理（sudo 会删掉 `HTTPS_PROXY` 环境变量，所以走 settings），同时 `skipWebFetchPreflight: true`。P0 实测：不关的话 WebFetch 由 CLI 直连目标网站，还会**另外直连 api.anthropic.com 做域名检查**（关了非必要流量也照样发），两条都绕过白名单。DNS 也关，因为向本机 DNS 发的查询本身就能外传数据。
     - 每个 worker run 固定传 `settings: { skipWebFetchPreflight: true, env: { HTTPS_PROXY: "http://127.0.0.1:<该 worker 的出网代理端口>", NO_PROXY: "127.0.0.1,localhost" } }`。

@@ -4,7 +4,7 @@
 
 ## 启动顺序
 
-`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。
+`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；渠道、push、timers 等 W1e、W2 各就各位。
 
 关停：停收新输入 → 等跑着的 run 到下一个安全点（最多 30 秒）→ 没跑完的按 §底1.2 的重启规则处理 → 关通道 → 关库。
 
@@ -47,8 +47,8 @@
 - 插话：run 进行中来了我的消息（`ownerTyped`），pi 能插就 `steer` 进去，这条标 `processing` 并挂到当前 run；插不进的排队。别的事件一律排队。
 - 停：`/stop`、客户端「停」→ pi `abort`；还没被读到的插话作废（标 `dropped`）。
 - 撤回：没处理的标 `dropped`；在处理的按停处理；是审批卡触发消息的，卡作废（§触2.4）。
-- 重启恢复：`processing` 且 `runs.side_effects = 0` 的回 `received`；有副作用的标 `interrupted`，在那条 lane 里问我要不要继续。副作用由工具层在执行有写效果的工具前 +1（进发件箱、提交审批、开任务、写记忆）。
-- **熔断**（Y8）：错误指纹 = `sha256(角色 | lane 类别 | 错误类名 | 规范化的错误信息（去掉数字和 id）)`。同一指纹连续 N 次（`self.yaml` `measure.breaker`，默认 3）就停下这个循环、发看一眼卡。同一条输入让进程连崩两次（启动时看 `kv` 里记的「正在处理的 inbox id」）就标 `failed`，告诉我。模型 5xx 归上游重试，不算；PR 的 CI 不归它管。
+- 重启恢复：`processing` 且 `runs.side_effects = 0` 的回 `received`；有副作用的标 `interrupted`，在那条 lane 里说一句「我刚才被重启了。上一轮做到一半，已经发出 N 条消息，不会重发。要我接着做，再说一声。」（N = 这个 run 进了 outbox、没失败没过期的文字行；这句本身不挂 run，不算谁的副作用）。`running` 的 run 标 `interrupted`，活着的令牌全部作废。副作用由工具层在执行有写效果的工具前 +1（进发件箱、提交审批、开任务、写记忆）。
+- **熔断**（Y8）：错误指纹 = `sha256(角色 | lane 类别 | 错误类名 | 规范化的错误信息（去掉数字和 id）)`。同一指纹连续 N 次（`self.yaml` `measure.breaker`，默认 3）就停下这个循环、发看一眼卡。同一条输入让进程连崩两次（W1d：`inbox.tries`，开 run 和插话时 +1，启动时还在 `processing` 且 `tries ≥ 2` 的 ※）就标 `failed`，告诉我。熔断后这条 lane 上不是我亲手发的输入直接标 `failed` ※，我发一条、跑通一次就解开。模型 5xx 归上游重试，不算；PR 的 CI 不归它管。
 - 来源标签（R1）：一批输入全是我亲手发的（`ownerTyped`：来自 `client` 设备，或渠道里 owner 的 ID 在主对话 lane 发的）标 `owner@<surface>`；定时 `job@<名字>`；审批、任务、系统转来的 `system@<类型>`。这个值进 `TurnContext.src`、journal 每行、`run_items`。dream 认「我说的」只看这个前缀，加上我所有主对话 lane 的行（不再按渠道串写正则）。
 - 回复跟着输入走：`TurnContext { lane, surface, chat, thread, msg_id, src, device_id? }`，`reply` 投回输入来源。
 
@@ -57,16 +57,17 @@
 - 一个接口，hub 里只有 pi 一个实现（节点适配器在节点程序里实现同一组能力，05）：
   ```ts
   interface Runner {
-    run(o: { lane: string; role: Role; tier: Tier; session_ref?: string; input: TurnInput; tools: ToolDef[];
-             ctx: TurnContext; onItem: (e: ItemEvent) => void; signal: AbortSignal }):
-      Promise<{ output: string; side_effects: number; usage: Usage; session_ref: string; stop: StopReason }>;
-    steer(lane: string, text: string): boolean;   // false = 插不进，调用方排队
+    run(o: { lane: string; role: Role; tier: Tier; session_ref?: string; system: string; input: string; tools: ToolDef[];
+             ctx: ToolCtx; token: string; onItem: (e: ItemEvent) => void; signal: AbortSignal }):
+      Promise<{ output: string; fullText: string; session_ref: string; stop: StopReason; error?: string; usage: Usage;
+                tools: string[]; undelivered: number[] }>;   // undelivered = 插进去但模型没读到的 inbox id
+    steer(lane: string, text: string, inbox_id: number): Promise<boolean>;   // false = 插不进，调用方排队 ※（pi 的 steer 是异步的）
   }
   ```
-- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`、`noTools: "builtin"` + `customTools`、`models.json` 的 `apiKey: "$SBOT_RUN_TOKEN"`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
+- pi 嵌入照 §办1.1：`DefaultResourceLoader` 全关自动发现、私有 `agentDir`（`$SBOT_HOME/pi/`）、`noTools: "builtin"` + `customTools`。`models.json` 不写 key：每个 run 自己一个 `ModelRuntime`，令牌放进内存里的 credential store（`setRuntimeApiKey("sbot", token)`）※——lane 并发跑，一个进程共用的 `$SBOT_RUN_TOKEN` 环境变量会串。工具 schema 给 pi 时用 zod 的输入形状（`io: "input"`）：pi 在执行前按它校验参数，输出形状里带默认值的字段算必填，靠默认值的调用会被 pi 挡掉、到不了 `callTool`。每条 lane 一个常驻 session，空闲 4 小时滚动（§触2.3），客户端 thread 不滚。
 - `onItem` 转发 pi 的 `message_update`、`tool_execution_start/end`，先打码再写 `run_items`、推 delta（§触6.4）；回调出错只记日志，不影响 run。
 - **提示词**（R7）：`promptFiles()` 加载 `AGENTS.md`、`SOUL.md`、`USER.md`、`MEMORY.md`，以及只在我亲手发的那一轮加载的 `VOICE.md`、`self/practice.md`（截短）和本月、本周前瞻要点（§附2.15、§附2.16）。拼装顺序在 `systemPrompt()` 一处定。超了各自上限截断并在提示里说「超了」，不静默。召回片段和「记忆改了」放 user 消息，不进 system。
-- **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。
+- **压缩**：`session_before_compact` 自己写摘要，保留发心、本月留意、未完的等你；摘要写 journal。W1d 先用 pi 自带的压缩 ※，自己的摘要随 memory（W1e）。
 - **换模型**（§办2.4）：发之前剥掉历史里旧模型的 thinking 块。最后一条 assistant 有 `tool_use` 还没结果时：等这轮工具结果回来再换（P10 定了，IC-11；立刻换并补「已取消」会让调用重跑、真结果丢掉）。跨家换时把历史里的调用 id 改成目标家的形状，W1 验（08 P10）。
 
 ## tools
@@ -108,6 +109,7 @@
   ```
   `client` 指客户端的「等你 N」和时间线；推到哪还要过 `push` 的路由表。
 - 投递：`outbox` 行带 `channel`、`target_json`、`idem_key`；出口按渠道插件的 `send()`；`approval_id` 唯一，一个审批最多发一次；`send_by` 到了作废；结果不确定标 `unknown`，不重发（§底3.3）。
+- W1d：插件按 id 登记在 `outbox.ts`（`registerChannel`），W1e 的 ChannelPlugin 照这个接口接 ※。`client` 出口内建：投递就是写一行 `messages`。出口组里没在跑插件的出口跳过（记日志）；行写进去了但找不到插件的标 `unrouted` ※，不丢、不重试。同一个 `idem_key` 只写一行；失败按 10、20、40 秒退避，最多 4 次；重启时 `sending` 的回 `queued`，带原 `idem_key` 再发，由插件认重复。写一行就踢一下投递，不等 5 秒的轮询。
 
 ## channels（ChannelPlugin，veto 4）
 
@@ -153,6 +155,7 @@ interface ChannelPlugin {
   - 退出 0 且有输出 → 有事，stdout 带进这次 run。
   - 其他退出码 → 脚本坏了：照常跑 run，把 stderr 前 2 KB 和退出码带进去，并记一条运维告警 ※（宁可多跑一次，不让坏脚本把任务静默吞掉）。
   - 不设时长和输出上限。
+  - check 命令和 `bash` 过同一个命令守卫 ※（命令是我写在 `jobs.yaml` 里的，但它在 bash 那儿跑）；被拒算「脚本坏了」。W1d 给出 `runCheck()`，到点调用是 timers（W1e）的事。
 - 上游错误重试照 §底4.3，照搬旧 `retry.ts` 的分类和退避表。
 - Sentinel 每 5 分钟，纯代码，告警经 `push`（`alert_security` / `alert_ops`）。
 
@@ -170,7 +173,8 @@ interface ChannelPlugin {
 ## proxy（§办2.2，R7）
 
 - 只给主进程里的 run（pi）用；远端节点不走代理、不拿令牌（D3）。
-- 令牌：每个 run 一个，绑 `{ run_id, tier, requester, device_id? }`，run 结束作废；不再有 30 分钟 TTL ※（run 不设时长，令牌跟着 run 走；只有主进程里的 run 拿得到，节点链路没有令牌，旧的「长跑 agent 中途 401」不会发生）。
+- 端口：`SBOT_PROXY_PORT`，没有就 `SBOT_PORT`，再没有 7811 ※（测试 home 用 `SBOT_PORT` 的 7829–7831）。
+- 令牌：每个 run 一个，绑 `{ run_id, tier, requester, device_id? }`，库里只存 sha256，run 结束作废；不再有 30 分钟 TTL ※（run 不设时长，令牌跟着 run 走；只有主进程里的 run 拿得到，节点链路没有令牌，旧的「长跑 agent 中途 401」不会发生）。
 - 状态码：令牌无效、过期 → 401；越档 → 403 `permission_error`；预算从不拒绝。
 - **预算只告警**（限5）。键：
   | 键 | 新含义 | 旧键 |
@@ -183,6 +187,11 @@ interface ChannelPlugin {
   `run_tokens.status` 去掉 `budget_exhausted`；旧代码里依赖它的分支（10 的 R7 节列了行号）在新主里没有对应物。
 - 记账：`usage` 每行带 `source`（`proxy` | `node`）和 `device_id`；节点 agent 自报的 token 和耗时记 `source = node`（§进2.2）。
 - 备用模型、按能力降级、上游系统提示计入，照 §办2.3、§办2.4。
+- 换模型：每次请求按 `sbot-<档>` 现读 `models.yaml`，lane 上一次用的模型记在 `sessions.model`；不一样就剥掉 assistant 的 thinking 块。工具调用 id 一律改成目标家的形状（Claude `toolu_`，GPT `call_`），`tool_use` 和 `tool_result` 同一张映射，成对不散。
+
+## egress（§底3.6）
+
+- 照旧 `egress.ts` 搬：`127.0.0.1` 上一个插件一个端口，只放 `CONNECT` 到白名单域名的 443，解析到非公网地址的拒绝。端口 7820–7828 ※（旧的到 7829，7829 现在是冒烟测试主的端口；`SBOT_W` 链照旧放到 7829，不用改）。W1d 只有模块和测试，插件起来时（W1e）才开。
 
 ## api
 

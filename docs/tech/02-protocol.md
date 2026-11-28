@@ -77,12 +77,14 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 | `POST /api/v1/bootstrap` | 快照 + 当时的 seq（一次同步读） | — |
 | `POST /api/v1/stream`、`/stream/expand`、`/stream/collapse` | 事件流 | — |
 | `GET /api/v1/threads`、`GET /api/v1/threads/:id/items?before=` | thread 列表、翻历史 | — |
-| `POST /api/v1/threads`、`PATCH /api/v1/threads/:id` | 开 thread、改名置顶 | 乐观 |
-| `POST /api/v1/threads/:id/messages` | 发消息（进 `inbox`） | 乐观 |
+| `POST /api/v1/threads`、`PATCH /api/v1/threads/:id` | 开 thread（一般；带 `matter_id` 是主线）、改名置顶收起 | 乐观 |
+| `POST /api/v1/threads/:id/messages` | 发消息（进 `inbox`；lane 忙就排队，回 `queued`、`ahead`） | 乐观 |
+| `DELETE /api/v1/inputs/:id` | 撤回还在排队的输入（W3 加） | 确认后才算 |
 | `POST /api/v1/runs/:id/stop` | 停这一轮 | 确认后才算 |
 | `GET /api/v1/approvals?status=` | 等你 | — |
 | `POST /api/v1/approvals/:id/decide { action, draft_version, option_id? }` | 批、拒、答看一眼、答问我 | 确认后才算 + 乐观锁 |
 | `PUT /api/v1/approvals/:id/draft { text, draft_version }` | 自己改稿 | 乐观锁 |
+| `POST /api/v1/approvals/:id/redraft { note, draft_version }` | 让它改稿（同飞书卡片话题里回复，W3 加 ※） | 确认后才算 + 乐观锁 |
 | `POST /api/v1/approvals/:id/snooze { until: tonight|morning|monday }` | 暂缓 | 乐观 |
 | `GET/POST /api/v1/tasks`、`POST /api/v1/tasks/:id/{steer,stop,cancel,move}` | 派活、插话、停、取消、换机器 | 确认后才算（插话乐观） |
 | `GET /api/v1/matters`、`GET /api/v1/events`、`PATCH /api/v1/events/:id` | 事和事件 | 乐观 |
@@ -97,10 +99,19 @@ type Pair   = { t: "pair"; secret: string; public_key: string; name: string; pla
 | `GET /api/v1/devices`、`PATCH/DELETE /api/v1/devices/:id`、`POST /api/v1/devices/invites { role }` | 设备、加一台 | 确认后才算 |
 | `POST /api/v1/presence { foreground, viewing? }` | 在场（§触1.1） | 不回 seq，不进 `client_ops` |
 | `POST /api/v1/reads { entity, id }` | 已读 | 乐观 |
-| `PUT /api/v1/devices/self/push-token { token }` | FCM 令牌（07） | 确认后才算 |
+| `PUT /api/v1/devices/self/push-token { token }` | FCM 令牌（07）；`null` 清掉 | 确认后才算 |
+| `PUT /api/v1/ease { on }` | 省心一键（§寸6，W3 加） | 确认后才算 |
 | `GET /api/v1/blobs/:sha` | 拉大载荷 | — |
 
-具体字段写在 `protocol/api/` 的 zod schema 里，那里是唯一出处；这张表只是第一版清单，后面只加不删。
+具体字段写在 `protocol/api/` 的 zod schema 里，那里是唯一出处；这张表只是第一版清单，后面只加不删。写路由的类型在 `protocol/api/write.ts` 的 `WRITES`（客户端照它显示）。
+
+W3 定的（`protocol/api/write.ts`、`push.ts`）：
+- `client_op_id`：8–64 个 `[A-Za-z0-9_-]`（UUID）※；帧本身许到 128，写路由按 64 收（04 `client_ops`）。
+- 冲突的 body 一律 `{ error, <实体>: 现在的样子 }`：409 = 版本对不上，或这张卡已经被别处决定了（谁先点算谁，后到的拿到结果）；410 = 已过期、被新稿取代、已作废 ※。
+- 看一眼、问我都走 `decide`：`action: "answer"` + `option_id`（问我也可 `text`）；放行还是拒绝看 agent 给的选项的 `kind`。
+- 一般 thread 默认 `work` ※（可选 `personal`）；主线 thread 跟它的事的域。飞书镜像 thread 发消息回 409（D9 先只读）。
+- 新实体 `read`（id 是 ref）、`ease`（只有一个 id `ease`）；`approval` 加可选的 `snooze`、`snooze_until`，`device` 加可选的 `push`（有没有令牌），`thread` 加可选的 `mainline_id`；bootstrap 加可选的 `ease`、`reads`。全是可选字段，W2 的主和客户端互相解析不坏。
+- FCM 消息的 `data` 是 `PushData`（`ref`、`cat`、`channel`、`personal`、`push_id`）；`personal` 的标题和正文只说「有一条私人的」。
 
 ## `/node/v1`（主 ↔ 节点）
 

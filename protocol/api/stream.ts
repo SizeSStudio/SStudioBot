@@ -20,6 +20,7 @@
 //   sets that count to its `chunk_seq`); otherwise wait for the next snapshot.
 import { z } from "zod";
 import { Approval, Device, Run, Task, Thread, TimelineEntry } from "./entities.ts";
+import { Ease, Read } from "./push.ts";
 
 const seq = z.number().int().nonnegative();
 
@@ -43,6 +44,10 @@ export const BootstrapRes = z.object({
   tasks: z.array(Task),
   /** devices not removed */
   devices: z.array(Device),
+  /** W3: 省心 now */
+  ease: Ease.optional(),
+  /** W3: read marks of what this snapshot shows (threads, pending approvals) */
+  reads: z.array(Read).optional(),
 });
 export type BootstrapRes = z.infer<typeof BootstrapRes>;
 

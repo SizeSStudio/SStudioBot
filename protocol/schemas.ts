@@ -11,6 +11,8 @@ import * as stream from "./api/stream.ts";
 import * as read from "./api/read.ts";
 import * as devices from "./api/devices.ts";
 import * as pair from "./pair.ts";
+import * as write from "./api/write.ts";
+import * as push from "./api/push.ts";
 
 export const SCHEMAS: Record<string, z.ZodType> = {
   "frame.req": F.Req, "frame.res": F.Res, "frame.cancel": F.Cancel, "frame.ev": F.Ev, "frame.delta": F.Delta,
@@ -32,6 +34,17 @@ export const SCHEMAS: Record<string, z.ZodType> = {
   "node.fs.read": node.FsRead, "node.fs.read.res": node.FsReadRes, "node.fs.write": node.FsWrite,
   "api.devices.rename": devices.DeviceRename,
   "api.devices.invite": devices.InviteReq, "api.devices.invite.res": devices.InviteRes, "pair.code": pair.PairCode,
+  // W3: writes
+  "api.client_op_id": write.CLIENT_OP_ID, "api.conflict": write.Conflict,
+  "api.threads.create": write.ThreadCreateReq, "api.threads.patch": write.ThreadPatchReq, "api.thread.res": write.ThreadRes,
+  "api.messages.req": write.MessageReq, "api.messages.res": write.MessageRes, "api.input.res": write.InputRes,
+  "api.runs.stop": write.RunStopReq, "api.runs.stop.res": write.RunStopRes,
+  "api.approvals.decide": write.DecideReq, "api.approval.res": write.ApprovalRes, "api.approvals.draft": write.DraftReq,
+  "api.approvals.redraft": write.RedraftReq, "api.approvals.snooze": write.SnoozeReq, "api.approvals.snooze.res": write.SnoozeRes,
+  "api.presence.req": push.PresenceReq, "api.presence.res": push.PresenceRes,
+  "api.reads.req": push.ReadReq, "api.reads.res": push.ReadRes,
+  "api.push_token.req": push.PushTokenReq, "api.push_token.res": push.PushTokenRes,
+  "api.ease.req": push.EaseReq, "api.ease.res": push.EaseRes, "push.data": push.PushData,
 };
 
 /** Routes implemented so far ("METHOD path"). 02's table is the plan; this is what exists. */

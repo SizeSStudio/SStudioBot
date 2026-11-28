@@ -153,7 +153,7 @@ run_items(id INTEGER PRIMARY KEY, lane, run_id, kind, status, ts, ended, name, b
 ```
 
 - runner 现在把工具参数和结果都丢了，要加结构化回调，转发 pi 的 `message_update`、`tool_execution_start/end`。回调出错不能影响 run，和现在的 `onStream` 一样。worker 那边把 SDK 消息里的工具块也转发出来。
-- **进 `run_items` 和推流之前都要打码**：已知密钥的值和常见密钥格式。工具的输入输出第一次变成持久可见的内容，「密钥只写不读」要守在这里。token 增量按批处理（50～100ms 一批），在行或空白边界上整段替换，不会把密钥切开；批号 `chunk_seq` 递增。
+- **进 `run_items` 和推流之前都要打码**：已知密钥的值和常见密钥格式。工具的输入输出第一次变成持久可见的内容，「密钥只写不读」要守在这里。token 增量按批处理（50～100ms 一批），在空白或中文字符之后切（中文没有空格，否则要等到整条结束），私钥块整块压住，不会把密钥切开；批号 `chunk_seq` 递增。
 
 **连接和续传**（路径照旧，跑在加密通道里，见下面的传输）
 

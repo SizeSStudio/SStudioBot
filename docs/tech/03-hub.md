@@ -4,7 +4,7 @@
 
 ## 启动顺序
 
-`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；W1e 在 outbox 开始投递之前起渠道、timers、Sentinel、sources、分拣（`main.ts` `startChannelSide`），都叫醒同一个派发（`kickInbox`）；关的时候倒过来。W2b 在派发之后起 `api.pump`；push 等 W2。
+`config`（zod 校验，坏了拒绝启动并说哪一行）→ `db`（开库、`user_version`）→ `memory.ensureAgentHome` + seed 同步 → 密钥读进内存、打码接上（`setRedactor`）→ `proxy` → `inbox.recover` → `link`（本机 socket；`relay.enabled` 时连中继）→ `channels` 各插件 start → `outbox`、`push`、`inbox` 派发、`timers`、`sentinel`、`api.pump` 起 → 打印 `hub up` → 上线通知（经管理通知出口）。W1d 起 proxy、recover、`hub.sock`、outbox、派发和审批过期扫描（每分钟）；W1e 在 outbox 开始投递之前起渠道、timers、Sentinel、sources、分拣（`main.ts` `startChannelSide`），都叫醒同一个派发（`kickInbox`）；关的时候倒过来。W2b 在派发之后起 `api.pump`；W3b 在它之后起 `push`。
 
 关停：停收新输入 → 等跑着的 run 到下一个安全点（最多 30 秒）→ 没跑完的按 §底1.2 的重启规则处理 → 关通道 → 关库。
 
@@ -193,14 +193,28 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
 
 ## push（§触1.1 路由表）
 
-- 入口一个函数：`push.enqueue({ cat, ref, lane, domain, text, expires_at? })`。急不急、占不占额度由代码按 `cat` 查表定，模型说了不算。
-- **在场**只在内存：每台 `client` 设备最近一次 `POST /api/v1/presence { foreground, viewing }` 的时间和内容；任何一台在前台且 3 分钟内（`push.presence.away_seconds`）有操作就算在场；`viewing` 指着这一条就不推。
-- 状态机在 `push_queue.state`（04）：`wait` → 到时机 → 在场：`counted`（只计数）；不在场：发 → `sent`；夜里 → `night`（并进早报）。`counted` 的在我走开时（在场变不在场的那一刻）再推。我在任何一端看过、处理过 → `done`，并写 `reads`。
-- 时机：对话中先等（我最后一条后安静 `quiet_minutes`、且没有 run 在回我），最多推迟 `max_delay_minutes`，从入队算；夜间 22:30–08:00 只记不发，`night_allow` 的照发；夜里我发过消息之后 `awake_minutes` 按白天。
-- 发几路：紧急类（`ask`、`approval`、`owner_followup`、`alert_security`、夜里就到期的）FCM 和渠道同发，不要回执（D1）；其余 FCM 收下了就不推渠道，没令牌或令牌失效推渠道（D15）。`personal` 的 FCM 只说「有一条私人的」，渠道只发「客户端有新消息」。
-- **FCM**（veto 8）：HTTP v1，自己签 JWT（服务账号私钥在 `secrets.env`，RS256，`node:crypto`），换 access token 缓存 50 分钟；不用 firebase-admin。`UNREGISTERED`/`INVALID_ARGUMENT` 视为令牌失效：清 `devices.push_token`，这条改推渠道。开关是 `console.yaml` 的 `fcm.enabled`（06），默认关，打开走 `widening()`（Y11）。
-- 已读按人算：`reads` 一行一个 ref，任何设备看过或飞书点开过都算；每台设备只各自记滚动位置（不上主）。
-- 额度：§寸2 的每日主动消息上限（`gate.yaml` `proactive_daily_cap`，我定过的，沿用）按 `push_queue` 里 `quota = 1` 且今天发出的行数算。
+- 代码在 `hub/src/push/`：`table.ts`（路由表）、`presence.ts`（在场）、`queue.ts`（入队、状态机、已读、省心、早报事实）、`fcm.ts`；路由在 `api/push-routes.ts`。`main.ts` 起 `Push`（每 15 秒一轮，入队、在场上报都踢一下）。
+- 入口一个函数：`push.enqueue(db, { cat, ref, lane, domain, text, expires_at?, not_before? })`，在调用方的事务里。急不急、占不占额度、省心时推不推、发到哪个出口组、安卓哪个通知渠道、补不补推都由 `table.ts` 按 `cat` 定，模型说了不算。同一个 `(cat, ref)` 第二次入队不动第一行（同一件事同一状态只判一次）。`submitApproval` 交卡时入队（`ask` 卡 → `ask`，其余 → `approval`，文本「等你拍板 / 过目：标题」）；暂缓沿用 W3a 的同一行。
+- 占额度的 ※：它自己起的才占——`agent_followup`、`notice`、`fyi`、`suggestion`、`reflect`、`tidy`，和暂缓「今晚」那一推；等我回、审批、我定的 follow-up、我发起的任务、告警、早报不占。
+- **在场**只在内存：每台 `client` 设备最近一次 `POST /api/v1/presence { foreground, viewing }` 的时间和内容；任何一台在前台且 `push.presence.away_seconds`（180）内报过就算在场；`push.presence.enabled: false` 时永远不算在场。重启后没人在场，宁可多推。
+- 状态机在 `push_queue.state`（04），每轮按 id 顺序走到期（`not_before` 已过）的 `wait`、`counted`：
+  1. 省心开着、这类省心不推 → `void`，`sent_json` 记 `{via:"ease"}`；
+  2. 在场且正看着（`viewing` 是这一行的 ref、它去掉状态后缀的条目，或 lane 对得上的 `thread:<id>`）→ `done`（`via:"viewing"`）；
+  3. 夜里：`night_allow` 的、或急的且 `expires_at` 早于这夜结束的照发；`agent_followup` 挪到夜间结束（`not_before`）；其余 → `night`；
+  4. 在场没看 → `counted`；我走开（不在前台或 180 秒没报）之后下一轮照常走下去，这就是「走开时再推」；
+  5. 对话中先等：不急的类，我最后一条（任一端我亲手发的 inbox 行）后不到 `quiet_minutes`、或主对话或它自己的 lane 有 run 在跑，就留着，到 `deadline`（入队 + `max_delay_minutes`）为止；
+  6. 占额度的，今天已发的到了 `proactive_daily_cap` → `night`，进早报；
+  7. 发 → `sent`；不补推的类（`tidy`、`fyi`、`suggestion`）直接 `done`。
+  任何开着的行过了 `expires_at` → `void`。启用的 `do: morning` 任务一个都没有时，白天把 `night` 的放回 `wait` ※（不然没人收）。
+- 发几路：急的 FCM 和渠道同发，不要回执（D1）；不急的 FCM 收下了就不推渠道，FCM 关着、没令牌或令牌失效推渠道（D15）。渠道 = `toOutlet(表里的出口组, …, { noClient: true, idem: push:<id> })`：告警进 `admin`，其余进 `main`；`personal` 一律进 `main`。客户端自己从视图里看，不另写 `messages`。
+- 「N 条」= 开着（`wait`、`counted`、`sent`）的行数，含这一条；大于 1 时渠道那句后面带「（等你的共 N 条）」，FCM 放在正文。已读把行关掉，数就跟着变。
+- `personal`：FCM 标题只有「有一条私人的」、正文空，`data.personal = "1"`；渠道只发「客户端有新消息」。
+- **FCM**（veto 8）：HTTP v1，自己签 JWT（RS256，`node:crypto`），换 access token 缓存 50 分钟；不用 firebase-admin。服务账号在 `secrets.env`：`FCM_PROJECT_ID`、`FCM_CLIENT_EMAIL`、`FCM_PRIVATE_KEY` ※（PEM，换行写成 `\n`）。`UNREGISTERED`/`INVALID_ARGUMENT`/404 视为令牌失效：清 `devices.push_token`、记 `device_audit token_cleared`（actor `code`）、发 `device`，这条改推渠道。开关是 `console.yaml` 的 `fcm.enabled`（06），默认关，打开走 `widening()`（Y11）；开关开着且三个密钥都在才算开（`PushTokenRes.fcm_enabled`）。令牌不进日志、不回给客户端、不进 `client_ops`（只进请求的 hash）。眼下没有 Firebase 项目（等你准备），测试用假的发送器。
+- `PUT /api/v1/devices/self/push-token`：只认配对过的 `client` 设备（CLI 404）；变了才写、记 `token_set`/`token_cleared`、发 `device`。
+- 已读按人算：`POST /api/v1/reads` 写 `reads`（thread 的 `upto_ts` 只往后），发 `read`；关掉这个 ref、带状态后缀的同一条目（`task:t42` 关 `task:t42:done`）、thread 读到 `upto_ts` 为止它 lane 上入队的行 → `done`。暂缓过的行看了不关 ※：我要的是到点提醒，看一眼不算。飞书点开的已读等飞书插件接（`via: feishu`）※。bootstrap 带 `ease` 和这次快照里 thread、待批卡的 `reads`。每台设备只各自记滚动位置（不上主）。
+- 额度：§寸2 的每日主动消息上限（`gate.yaml` `proactive_daily_cap`，我定过的，沿用）按 `push_queue` 里 `quota = 1` 且 `sent_at` 在本地今天的行数算。
+- **省心**（§寸6）：kv `ease = {on, since}`。`PUT /api/v1/ease`（客户端一键，`source: console`）和工具 `ease_set`（只在 `typed` 列，且只在 `feishu:dm:owner`、`console:main`，`source: chat`）两条路，都经 `setEase`：真切换了才写、同事务发 `ease`、记一行 `config_changes(file='ease')`。它从不自己切。省心时 `table.ts` 里 `ease: false` 的类（整理卡、知道就好、建议、通知、它自己的 follow-up）不推；等我回、审批、我的 follow-up、任务、告警、早报、周月复盘照推。切到省心时翻「养」的那一下等 §改1 的模块 ※。
+- 早报：`jobs.yaml` 的 `do: morning` 现在由 `main.ts` 给文本（`texts.morning`）：一句开头、待批张数，加 `morningFacts`：「省心中 · 第 N 天」（顶行）、第 3 天起问一次要不要回常态（kv `ease.asked` 记住这次省心问过了）、省心中没推的整理卡数、「夜里来的」（`night` 且到了时间的行，原文；`personal` 只在我的私聊和 `console:main` 里给原文）、知道就好的条数。早报的 inbox 行写下时（`hooks.opened`）这些行 → `done`。其余事实（任务、事、镜头）等 ledgers 的 `morningText` 搬过来 ※。
 
 ## proxy（§办2.2，R7）
 
@@ -265,7 +279,7 @@ interface OutboxRow { id; approval_id; run_id; lane; channel; kind: "text" | "ca
   - 身份：节点只能动 `tasks.node` 等于它自己设备 id 的任务（事件、权限请求、工具调用都查，不是就 403）；主往下发的路由（sessions、turns、permissions/:id、git/checks、worktrees/cleanup）节点向主请求一律 404。本机节点走 `hub.sock`，设备 id `local`，同一个 `api.dispatch`、同一个角色检查。
   - 任务的写（派活、插话、停、取消、换机器、清理 worktree）是 W3a 写层的写路由（`api/task-writes.ts`），客户端经中继和 `hub-admin.sock` 走同一条，都要 `client_op_id`，同 id 换内容 409。派活只写库，在 `withOp` 的事务里；其余要等节点，走 `withOpAsync`（`ops.ts`）※：答案回来后才存进 `client_ops`，同进程里同 id 的并发重试接上同一个调用；本身也可重跑（插话按收件箱键 `device:<id>` + `client_op_id` 去重，停、取消、换机器、清理先看状态）。进程在调完节点、存答案之前崩了，重试会再调一次（换机器会再开一次）。
   - 卡：任务的卡作废时也关掉它的 `push_queue` 行（`closePush`）；客户端 `decide` 问我卡时带的 `answers`（题 → 答）打码后经 `choose()` 交给节点，被拒照旧 fail closed。
-  - 没填节点 = `local`，它不在线就等它，不会自己挑别的机器；派到 `local` 以外的节点写一条通知（`push_queue`，不等我点）。W3b 的推送没做之前，额度、CI 连红、派活的通知只写进 `push_queue` ※，由 W3b 发。
+  - 没填节点 = `local`，它不在线就等它，不会自己挑别的机器；派到 `local` 以外的节点写一条通知（`push_queue`，不等我点）。额度、CI 连红、派活的通知经 `pushNotice` → push 的 `enqueue`（类 `notice`，占不占额度、急不急按路由表），由 push 判在场、夜间、上限后发。
   - hello：先同步对账（hello 里的 `sessions` 没有的、`released` 的 → `interrupted`，卡作废，「需要你处理」），再在回完 hello 之后发出等着的东西（重开、排队的任务、答案）。对账必须同步：放到回包之后，回包和对账之间新开的 session 会被当成丢了。
   - 节点下线：`running`/`waiting` → `waiting_node`，卡留着（进程可能还在）；回来时按 hello 的 `sessions` 还原或进 `interrupted`。我在 `interrupted` 的任务里说话 = 带 `resume_ref` 重开（`attempt + 1`），同时附交接文本 ※，节点续接不上（`fresh`）时直接用，不用再来回一趟。
   - 事件：按 `task:attempt:seq` 幂等（kv），旧 `attempt` 整批丢，比当前新的 409；认不出的 `k` 跳过不报错。文本经 `StreamRedactor` 推 delta；工具结果、消息、diff（上传的 blob 也重新打码另存）都先打码再进 `run_items`、blob。用量写 `usage`，`source = node`。

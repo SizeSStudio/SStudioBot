@@ -49,6 +49,9 @@ import { proxyComplete } from "./triage/complete.ts";
 import { runBackup } from "./backup.ts";
 import { nodeCheck } from "./check.ts";
 import { createApi, type Api } from "./api/index.ts";
+import { Push, morningFacts } from "./push/queue.ts";
+import { httpFcm } from "./push/fcm.ts";
+import { OWNER_LANE } from "./timers/schedule.ts";
 import { useCrypto } from "../../protocol/noise/crypto.ts";
 import { nodeAead, nodeDh } from "../../protocol/noise/node-crypto.ts";
 import { loadOrCreateHubKey, type HubKey } from "./link/keys.ts";
@@ -100,6 +103,15 @@ export const sendApproval = (db: Db) => (a: SendApproval) => submitApproval(db, 
  * sources and triage. Every wake-up goes to the dispatcher (kickInbox). Returns the stop, in reverse order.
  */
 async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: Dispatcher, node: NodeLink, side: { triage?: Triage }): Promise<() => Promise<void>> {
+  // the morning report's facts from push (夜里来的, 省心中 · 第 N 天); what it took is marked once its input is written ※
+  // (the rest of the facts — tasks, matters, lens — come with the ledgers' morningText port)
+  let tookNight: (() => void) | undefined;
+  const morning = (_name: string, j: { lane?: string; text?: string }) => {
+    const f = morningFacts(db, Date.now(), j.lane ?? OWNER_LANE);
+    tookNight = f.commit;
+    const pending = Number(db.one<{ n: number }>("SELECT COUNT(*) AS n FROM approvals WHERE status = 'pending'")?.n ?? 0);
+    return ["【早报：定时任务。下面是代码整理的事实，请据此给我发今天的早报】", j.text, `等我批的审批：${pending} 张`, f.text].filter(Boolean).join("\n\n");
+  };
   const ours = feishuConfigured() && !channel("feishu");
   if (ours) registerChannel(new FeishuChannel());
   const feishu = () => channel("feishu") as FeishuChannel | undefined;
@@ -111,6 +123,8 @@ async function startChannelSide(db: Db, h: Home, proxyBase: string, dispatcher: 
   configureSources({ lark: f?.lark, runner: process.platform === "linux" ? undefined : localPluginRunner });
   const scheduler = new Scheduler({
     onFire: kickInbox, check: nodeCheck(node, h.root),
+    texts: { morning },
+    hooks: { opened: (_n, j) => { if (j.do === "morning") { tookNight?.(); tookNight = undefined; } return undefined; } },
     // the nightly backup (default job `backup`); a thrown error is the job's `failed`, which Sentinel reports
     handlers: { backup: async () => { await runBackup(db, h, backupConf()); } },
   });
@@ -192,7 +206,9 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     const side: { triage?: Triage } = {};
     const redraftTriage = (id: number) => { void side.triage?.redraft(id); };
     const late: { d?: Dispatcher } = {};   // the api is made first (the dispatcher streams into its pump)
-    const api = createApi({
+    // FCM stays off unless console.yaml fcm.enabled and the service account is in secrets.env (Push.fcmEnabled)
+    const push = new Push({ db, fcm: httpFcm(), replying: (l) => !!late.d?.activeRun(l) });
+    const api = createApi({ push,
       db, blobs: h.blobs, hubSha: () => revision().sha, status: () => statusOf({ db, startedAt, hubKey, link }), authorize,
       runs: { activeRun: (l) => late.d?.activeRun(l), stopLane: (l) => late.d?.stopLane(l) ?? false },
       devices: link, redraftTriage, tasks,
@@ -230,6 +246,8 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
     opened.push({ close: () => tasks.stopLoop() });
     api.start();
     opened.push({ close: () => api.stop() });
+    push.start();
+    opened.push({ close: () => push.stop() });
 
     const hub: Hub = {
       h, db, startedAt, admin: undefined as unknown as Server, proxy, outbox, node, dispatcher, runner, api, hubKey, link, nodes, tasks,
@@ -237,6 +255,7 @@ export async function boot(h: Home = homeOf(), o: BootOpts = {}): Promise<Hub> {
         await link.relay?.close();
         tasks.stopLoop();
         clearInterval(sweeper);
+        push.stop();
         api.stop();
         await dispatcher.stop();
         outbox.stop();

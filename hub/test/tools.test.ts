@@ -57,7 +57,7 @@ test("source labels follow ownerTyped (owner@ / job@ / system@ / other@)", () =>
 
 test("columns: what each source sees", () => {
   const names = (c: Col) => toolsFor(c).map((t) => t.name).sort();
-  assert.deepEqual(names("typed"), ["bash", "memory_read", "read_file", "reply", "send", "write_file"]);
+  assert.deepEqual(names("typed"), ["bash", "ease_set", "memory_read", "read_file", "reply", "send", "write_file"]);
   assert.deepEqual(names("system"), ["memory_read", "reply", "send"]);
   assert.deepEqual(names("others"), ["memory_read", "reply"]);
 });

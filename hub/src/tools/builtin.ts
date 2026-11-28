@@ -6,6 +6,7 @@ import { z } from "zod";
 import { replyGated } from "../reply.ts";
 import { registerTool, type ToolCtx } from "./registry.ts";
 import { relToAgentHome } from "./guard.ts";
+import { setEase } from "../push/queue.ts";
 
 // queueReply lives in reply.ts now (the others column needs the commitment check next to it)
 export { queueReply } from "../reply.ts";
@@ -109,5 +110,18 @@ export function registerBuiltinTools() {
       kind: "send", title: `发给 ${to}`, draft: text, channel, as_identity: as,
       target: { chat: to, to, ...(thread ? { thread } : {}), surface: `${channel}:send` },
     }),
+  });
+
+  // §寸6: 省心 switches only in a turn I typed myself, in my own conversation (DM or console:main); never by itself
+  registerTool({
+    name: "ease_set", level: "L1", readOnly: false,
+    cols: { typed: true, system: false, others: false },
+    description: "切省心（on=true）或回常态（on=false）。只在我这一轮亲口说了（比如「这几天省心点」「回常态」）时用；省心只收窄推送，别的都不变。",
+    schema: z.object({ on: z.boolean() }),
+    async exec({ on }, ctx) {
+      if (ctx.lane !== "console:main" && ctx.lane !== "feishu:dm:owner") return "error: 省心只在我的私聊或主对话里切";
+      const e = setEase(ctx.db, on, { actor: `run:${ctx.run_id}`, source: "chat" });
+      return e.on ? `省心开了（第 ${e.day} 天）。只收窄推送；等我回的、审批、任务里程碑、我设的提醒、告警照推。` : "回常态了。";
+    },
   });
 }

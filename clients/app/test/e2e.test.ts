@@ -231,7 +231,7 @@ test("W3 over the real wire: chunked blob pull for HTML and client_op_id write r
   assert.equal(pulledLen, blob.size);
 
   // 2) Writes + client_op_id over real Noise/relay to the W3a hub: the optimistic title shows at once and the hub's
-  // row (seq) settles it; a route that isn't there yet (presence is W3b) rolls back in place
+  // row (seq) settles it; presence (W3b, no client_ops) answers 200
   const th = store.threadByLane(LANE)!;
   const w = new Writes({ conn, store });
   const act = makeActions(w, store, () => saved?.device_id ?? null);
@@ -241,7 +241,7 @@ test("W3 over the real wire: chunked blob pull for HTML and client_op_id write r
   assert.equal(r.ok, true, `patch: ${JSON.stringify(r)}`);
   await until("the hub's row settles it", () => store.base("thread", th.data.id)?.data.title === "乐观改名");
   const pr = await act.presence({ foreground: true, viewing: `thread:${th.data.id}` });
-  if (!pr.ok) assert.equal(pr.status, 404, "presence comes with W3b");
+  assert.equal(pr.ok, true, `presence (W3b): ${JSON.stringify(pr)}`);
   assert.equal(conn.state.s, "live", "connection stays healthy after writes");
   w.clear();
 });

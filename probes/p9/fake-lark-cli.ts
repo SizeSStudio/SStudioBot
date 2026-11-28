@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Test double for lark-cli, only as much as backend-cli.ts uses: `event consume <key>` and `api METHOD path`.
+// Test double for lark-cli, only as much as backend-cli.ts uses: `config init`, `event consume <key>` and `api METHOD path`.
 // It forwards to the mock server named by FAKE_LARK_BASE. It never prints any credential variable.
 import { appendFileSync } from "node:fs";
 
@@ -7,12 +7,16 @@ const [cmd, ...rest] = process.argv.slice(2);
 const base = process.env.FAKE_LARK_BASE!;
 if (process.env.FAKE_LARK_DUMP) {
   appendFileSync(process.env.FAKE_LARK_DUMP, JSON.stringify({
-    cmd, home: process.env.HOME, config_dir: process.env.LARKSUITE_CLI_CONFIG_DIR,
+    cmd, argv: process.argv.slice(2), home: process.env.HOME, config_dir: process.env.LARKSUITE_CLI_CONFIG_DIR,
     has_app_env: !!process.env.LARKSUITE_CLI_APP_ID && !!process.env.LARKSUITE_CLI_APP_SECRET, proxy: process.env.HTTPS_PROXY ?? null,
   }) + "\n");
 }
 
-if (cmd === "event" && rest[0] === "consume") {
+if (cmd === "config" && rest[0] === "init") {
+  const cs: Buffer[] = []; for await (const c of process.stdin) cs.push(c as Buffer);
+  if (process.env.FAKE_LARK_DUMP) appendFileSync(process.env.FAKE_LARK_DUMP, JSON.stringify({ init_secret_on_stdin: Buffer.concat(cs).toString().trim() === process.env.FAKE_EXPECT_SECRET }) + "\n");
+  console.log("{}");
+} else if (cmd === "event" && rest[0] === "consume") {
   const key = rest[1]!;
   const res = await fetch(`${base}/__fake/events?key=${encodeURIComponent(key)}`);
   process.stderr.write(`[event] ready event_key=${key}\n`);

@@ -58,8 +58,19 @@ node run.ts stream --backend cli
 
 **stream**：新建 CardKit 卡片发到群，按 `--rate`（默认 2）次/秒更新 `md` 元素的内容，`--duration-s`（默认 120）秒，`sequence` 严格递增；最后关流式模式。看 `ok`/`failed`/`throttled`（HTTP 429 或 99991400）、`error_codes`、`achieved_per_s`（lark-cli 每次一个进程，预计跟不上 2 次/秒，见 `call_ms`）。
 
+## 共用线上应用真测（2026-11-28 起）
+
+没有单独的测试应用，我定了直接用线上机器人应用测：凭证文件写 `"shared_live_app": true`（代替 `test_app`），并且设 `P9_SHARED_LIVE_APP=1`，两样都有才放行；这时不再因为别的长连接拒绝启动，报告里记 `shared_live_app`、`other_connections_at_start`。代价：旧核心那条长连接还在，飞书把事件和点击随机分给两条，所以点击、消息的「收到几条」只看到一部分，`netcut` 的「漏几条」量不出飞书重投（断线期间的事件都给了旧核心那条）。凭证文件和测试群由主仓库的 `hub/test/live-home.sh`（`live-creds.ts`）在服务器上生成，值不过手：
+
+```
+ssh <server> 'bash -s -- p9 config --backend sdk' < hub/test/live-home.sh      # 主仓库里跑
+ssh <server> 'bash -s -- p9 stream --backend sdk --pipeline --cards 12 --duration-s 90' < hub/test/live-home.sh
+```
+
+新加的：`config`（不用人：服务端下发的 `ClientConfig`、pong 里的配置、数据帧的 `type` 计数）；`stream --pipeline`（不等上一次回来就按点发，新加坡到飞书往返约 250 ms，串行跟不上 2 次/秒）、`--cards N`（N 张卡同时流，看 1000 次/分按应用还是按卡）；每份连着长连接的报告带 `server_config`、`data_frame_types`、`connection_window`。lark-cli 后端在共用时开不了长连接：本机没有 bus、应用已有别的长连接时 `event consume` 拒绝启动。
+
 ## 安全
 
 - 不在日志、报告、错误里放密钥、令牌、ID、消息正文；错误只带路由、HTTP 状态、API 码（`describeError`）。
 - SDK 自带的日志会打出 `AxiosError`（含请求体里的 `app_secret`），所以 `backend-sdk.ts` 传自己的 logger；升级 SDK 时先跑 `npm test` 里「失败令牌」那两条。
-- 不碰 `/srv/sbot`，不用线上应用，`run.ts` 对 `test_app` 不为 true 的凭证文件直接退出。
+- 不碰 `/srv/sbot`（凭证文件在那下面一律拒），`run.ts` 对既不是 `test_app: true`、也不是「`shared_live_app: true` + `P9_SHARED_LIVE_APP=1`」的凭证文件直接退出。

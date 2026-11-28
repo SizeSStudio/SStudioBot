@@ -317,7 +317,7 @@ describe("CLI backend against the fake lark-cli", () => {
   it("runs in an isolated HOME with the credentials only in the child env, parses events, and cleans up", async () => {
     await fresh();
     const dir = mkdtempSync(join(tmpdir(), "p9t-")), dump = join(dir, "dump.jsonl");
-    const b = new CliBackend({ creds, say, bin, env: { FAKE_LARK_BASE: mock.domain, FAKE_LARK_DUMP: dump } });
+    const b = new CliBackend({ creds, say, bin, env: { FAKE_LARK_BASE: mock.domain, FAKE_LARK_DUMP: dump, FAKE_EXPECT_SECRET: SECRET } });
     try {
       const got: Incoming[] = [];
       await b.start((e) => { got.push(e); });
@@ -331,10 +331,15 @@ describe("CLI backend against the fake lark-cli", () => {
       const d = await b.api("POST", "/open-apis/im/v1/messages", { receive_id: "oc_mock" }, { receive_id_type: "chat_id" });
       assert.ok(d.message_id);
       await assert.rejects(b.api("PUT", "/open-apis/cardkit/v1/cards/7000000099/elements/md/content", { sequence: 1 }), (e: any) => e instanceof ApiError && e.apiCode === 300301);
-      const rows = readFileSync(dump, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      const all = readFileSync(dump, "utf8").trim().split("\n").map((l) => JSON.parse(l));
+      // config init once, the secret on stdin, never in argv
+      assert.equal(all.filter((r) => r.cmd === "config").length, 1);
+      assert.equal(all.filter((r) => r.init_secret_on_stdin === true).length, 1);
+      assert.ok(!all.some((r) => JSON.stringify(r.argv ?? []).includes(SECRET)));
+      const rows = all.filter((r) => r.cmd);
       assert.ok(rows.length >= 3);
       for (const r of rows) {
-        assert.equal(r.has_app_env, true);
+        assert.equal(r.has_app_env, false, "credentials only through config init's stdin");
         assert.notEqual(r.home, process.env.HOME);
         assert.ok(r.config_dir.startsWith(r.home), "config dir inside the throw-away home");
         assert.ok(!here.startsWith(r.home) && !r.home.startsWith(here));

@@ -16,14 +16,34 @@ export async function sendCard(b: Backend, chatId: string, card: unknown): Promi
 }
 
 /** Refuse to start while another long connection is online for this app: it would split the events (09 「测试 home 里的飞书」). */
-export async function assertNoOtherConnection(b: Backend, say: Say, allowUnknown = false): Promise<void> {
+export async function assertNoOtherConnection(b: Backend, say: Say, allowUnknown = false, shared = false): Promise<number | undefined> {
   let cnt: number | undefined;
   try { cnt = (await b.api("GET", "/open-apis/event/v1/connection")).online_instance_cnt; } catch (e: any) { say(`connection check failed: ${e.message}`); }
+  if (shared) { say(`shared live app: ${cnt ?? "unknown"} other long connection(s) online; events split with them`); return cnt; }
   if (typeof cnt === "number" && cnt > 0) throw new Error(`the app already has ${cnt} long connection(s) online; stop them or use a dedicated test app`);
   if (typeof cnt !== "number") {
     if (!allowUnknown) throw new Error("could not read the number of online long connections; set P9_ALLOW_UNKNOWN_CONNECTIONS=1 if you are sure this app is only used by the harness");
     say("connection count unknown, continuing because P9_ALLOW_UNKNOWN_CONNECTIONS=1");
   }
+  return cnt;
+}
+
+/** what every report that held a long connection adds: server config, data frame types, the connection window */
+export function wire(b: Backend, from: number) {
+  return { server_config: b.serverConfig?.() ?? "n/a", data_frame_types: b.frameTypes?.() ?? "n/a",
+    connection_window: { from: new Date(from).toISOString(), to: new Date().toISOString() } };
+}
+
+// ---- 4. what the server sends: ClientConfig, frame types ----------------------------------------------------------
+
+export async function runConfig(b: Backend, o: { waitMs: number; say: Say }): Promise<Report> {
+  const from = Date.now();
+  const kinds: Record<string, number> = {};
+  await b.start((e) => { bump(kinds, e.kind); if (e.kind === "card") return { toast: { type: "info", content: "p9 config" } }; });
+  o.say(`connected; holding ${Math.round(o.waitMs / 1000)} s for at least one ping/pong`);
+  await sleep(o.waitMs);
+  return { scenario: "config", backend: b.name, events_by_kind: kinds, ...wire(b, from), timeline: b.timeline().map((x) => `${Math.round((x.at - from) / 100) / 10}s ${x.ev}`),
+    pass: { got_endpoint_config: !!(b.serverConfig?.() as any)?.endpoint }, notes: b.notes() };
 }
 
 // ---- 1. 50 card clicks ----------------------------------------------------------------------------------------------
@@ -31,7 +51,8 @@ export async function assertNoOtherConnection(b: Backend, say: Say, allowUnknown
 export async function runClicks(b: Backend, o: { chatId: string; target: number; timeoutMs: number; dedupe: Deduper; say: Say }): Promise<Report> {
   const { target, say, dedupe } = o;
   const msgId = await sendCard(b, o.chatId, clickCard(0, target));
-  let n = 0, withOp = 0, noOp = 0, finish!: () => void;
+  const from = Date.now();
+  let n = 0, withOp = 0, noOp = 0, others = 0, finish!: () => void;
   const done = new Promise<void>((r) => { finish = r; });
   const handlerMs: number[] = [], deliverMs: number[] = [], updMs: number[] = [];
   const upd = { ok: 0, fail: 0, codes: {} as Record<string, number> };
@@ -39,7 +60,7 @@ export async function runClicks(b: Backend, o: { chatId: string; target: number;
 
   await b.start(async (e: Incoming) => {
     const t0 = Date.now();
-    if (e.kind !== "card" || e.value?.k !== "p9" || e.messageId !== msgId) return;
+    if (e.kind !== "card" || e.value?.k !== "p9" || e.messageId !== msgId) { others++; return; }
     if (dedupe.seen(e.eventId)) return;
     const mine = ++n;
     e.operatorId ? withOp++ : noOp++;
@@ -73,6 +94,7 @@ export async function runClicks(b: Backend, o: { chatId: string; target: number;
     handler_ms: summarize(handlerMs), sdk_ack_ms: ackSdk.length ? summarize(ackSdk) : "n/a (ack precedes delivery)",
     handled_under_3s: `${under3}/${n}`, event_to_handler_ms: summarize(deliverMs),
     card_updates: { ok: upd.ok, failed: upd.fail, codes: upd.codes, ms: summarize(updMs) }, card_readback_shows_final_count: readback,
+    other_events: others, ...wire(b, from),
     pass: { clicks: n >= target, ack_3s: under3 === n && n >= target, operator_id: withOp === n && n >= target, updates: upd.ok === n && upd.fail === 0 && n >= target && readback !== false },
     notes: b.notes(),
   };
@@ -146,7 +168,7 @@ export async function runNetcut(b: Backend, proxy: CutProxy, o: { chatId: string
     proxy: { tunnels_opened: proxy.tunnels, connects_refused_during_cut: proxy.refused },
     messages_by_phase: byPhase,
     delivered_late: { messages_created_during_cut: messagesDuring.length, clicks_created_during_cut: clicksDuring.length },
-    duplicate_event_ids_dropped: dupEventIds, message_ids_delivered_under_two_event_ids: dupMsg,
+    duplicate_event_ids_dropped: dupEventIds, message_ids_delivered_under_two_event_ids: dupMsg, ...wire(b, startedAt),
     note_clicks: "compare clicks_created_during_cut with the number you clicked; callbacks are not redelivered by Feishu (docs), so a shortfall is expected on both backends",
     pass: {
       through_proxy: proxy.tunnels > 0,   // false = the backend ignored the proxy, so nothing was cut and the run proves nothing
@@ -160,34 +182,51 @@ export async function runNetcut(b: Backend, proxy: CutProxy, o: { chatId: string
 
 // ---- 3. CardKit streaming --------------------------------------------------------------------------------------------
 
-export async function runStream(b: Backend, o: { chatId: string; durationMs: number; perSec: number; say: Say }): Promise<Report> {
+export async function runStream(b: Backend, o: { chatId: string; durationMs: number; perSec: number; cards?: number; pipeline?: boolean; say: Say }): Promise<Report> {
   const { say } = o;
+  const cards = Math.max(1, o.cards ?? 1);
   const total = Math.round((o.durationMs / 1000) * o.perSec), gap = 1000 / o.perSec;
-  const created = await b.api("POST", "/open-apis/cardkit/v1/cards", { type: "card_json", data: JSON.stringify(streamCard("start", true)) });
-  const cardId: string = created.card_id;
-  if (!cardId) throw new Error("no card_id");
-  await b.api("POST", "/open-apis/im/v1/messages", { receive_id: o.chatId, msg_type: "interactive", content: JSON.stringify({ type: "card", data: { card_id: cardId } }) }, { receive_id_type: "chat_id" });
-  say(`streaming ${total} updates at ${o.perSec}/s for ${Math.round(o.durationMs / 1000)} s`);
-  let seq = 0, ok = 0, failed = 0, throttled = 0, late = 0;
-  const codes: Record<string, number> = {}, lat: number[] = [];
-  const t0 = Date.now();
-  let text = "";
-  for (let i = 0; i < total; i++) {
-    const wait = t0 + i * gap - Date.now();
-    if (wait > 0) await sleep(wait); else if (wait < -gap) late++;
-    text += `line ${i + 1} ${"·".repeat(20)}\n`;
-    const t = Date.now();
-    try { await b.api("PUT", `/open-apis/cardkit/v1/cards/${cardId}/elements/md/content`, { content: text, sequence: ++seq }); ok++; }
-    catch (e) { failed++; bump(codes, codeOf(e)); if (THROTTLE(e)) throttled++; }
-    lat.push(Date.now() - t);
+  const ids: string[] = [];
+  for (let c = 0; c < cards; c++) {
+    const created = await b.api("POST", "/open-apis/cardkit/v1/cards", { type: "card_json", data: JSON.stringify(streamCard(cards > 1 ? `card ${c + 1}/${cards}` : "start", true)) });
+    if (!created.card_id) throw new Error("no card_id");
+    ids.push(created.card_id);
+    await b.api("POST", "/open-apis/im/v1/messages", { receive_id: o.chatId, msg_type: "interactive", content: JSON.stringify({ type: "card", data: { card_id: created.card_id } }) }, { receive_id_type: "chat_id" });
   }
+  say(`streaming ${total} updates per card at ${o.perSec}/s for ${Math.round(o.durationMs / 1000)} s on ${cards} card(s) (${Math.round(cards * o.perSec * 60)}/min together)`);
+  let ok = 0, failed = 0, throttled = 0, late = 0;
+  let firstThrottleS: number | null = null;
+  const codes: Record<string, number> = {}, lat: number[] = [];
+  const perCard: { ok: number; throttled: number }[] = ids.map(() => ({ ok: 0, throttled: 0 }));
+  const t0 = Date.now();
+  // one sequential loop per card (sequence must strictly increase per card); the cards run side by side
+  const closed = await Promise.all(ids.map(async (cardId, c) => {
+    let seq = 0, text = "";
+    const inflight: Promise<void>[] = [];
+    for (let i = 0; i < total; i++) {
+      const wait = t0 + i * gap + (c * gap) / cards - Date.now();
+      if (wait > 0) await sleep(wait); else if (wait < -gap) late++;
+      text += `line ${i + 1} ${"·".repeat(20)}\n`;
+      const t = Date.now(), body = { content: text, sequence: ++seq };
+      // --pipeline: fire on schedule without waiting for the previous answer (the link is ~250 ms RTT from SG); sequence
+      // still increases per card, but requests may land out of order — the error codes show whether Feishu minds
+      const call = b.api("PUT", `/open-apis/cardkit/v1/cards/${cardId}/elements/md/content`, body).then(() => { ok++; perCard[c]!.ok++; }, (e) => {
+        failed++; bump(codes, codeOf(e));
+        if (THROTTLE(e)) { throttled++; perCard[c]!.throttled++; firstThrottleS ??= Math.round((Date.now() - t0) / 100) / 10; }
+      }).finally(() => { lat.push(Date.now() - t); });
+      if (o.pipeline) inflight.push(call); else await call;
+    }
+    await Promise.all(inflight);
+    try { await b.api("PATCH", `/open-apis/cardkit/v1/cards/${cardId}/settings`, { settings: JSON.stringify({ config: { streaming_mode: false } }), sequence: ++seq }); return true; } catch { return false; }
+  }));
   const elapsed = Date.now() - t0;
-  let closed = true;
-  try { await b.api("PATCH", `/open-apis/cardkit/v1/cards/${cardId}/settings`, { settings: JSON.stringify({ config: { streaming_mode: false } }), sequence: ++seq }); } catch { closed = false; }
+  const planned = total * cards;
   return {
-    scenario: "stream", backend: b.name, planned: total, ok, failed, throttled, error_codes: codes, late_ticks: late,
-    elapsed_s: Math.round(elapsed / 100) / 10, achieved_per_s: Math.round((ok / (elapsed / 1000)) * 100) / 100, call_ms: summarize(lat), streaming_closed: closed,
-    pass: { all_ok: ok === total, not_throttled: throttled === 0, kept_pace: elapsed <= o.durationMs * 1.1 },
+    scenario: "stream", backend: b.name, cards, pipeline: !!o.pipeline, planned, ok, failed, throttled, first_throttle_s: firstThrottleS, error_codes: codes, late_ticks: late,
+    elapsed_s: Math.round(elapsed / 100) / 10, achieved_per_s: Math.round((ok / (elapsed / 1000)) * 100) / 100,
+    achieved_per_min_all_cards: Math.round((ok / (elapsed / 60000))), call_ms: summarize(lat), streaming_closed: closed.every(Boolean),
+    per_card: cards > 1 ? perCard : undefined,
+    pass: { all_ok: ok === planned, not_throttled: throttled === 0, kept_pace: elapsed <= o.durationMs * 1.1 },
     notes: b.notes(),
   };
 }

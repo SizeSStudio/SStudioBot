@@ -6,7 +6,8 @@ import { dirname, resolve } from "node:path";
 
 // ---- credentials: a path only, the file is read here and never echoed -------------------------------------------
 
-export type Creds = { app_id: string; app_secret: string; chat_id: string; test_app: boolean; domain?: string };
+/** shared: the live app, used on purpose (my decision, 08 P9 「真测」): other long connections are allowed and the reports say so */
+export type Creds = { app_id: string; app_secret: string; chat_id: string; test_app: boolean; shared?: boolean; domain?: string };
 
 const DOMAIN_OK = /^(https:\/\/open\.feishu\.cn|https:\/\/open\.larksuite\.com|http:\/\/127\.0\.0\.1:\d+)$/;
 
@@ -23,10 +24,12 @@ export function loadCreds(path: string | undefined): Creds {
   for (const k of ["app_id", "app_secret", "chat_id"]) {
     if (typeof j[k] !== "string" || !j[k]) throw new Error(`credentials file: field ${k} missing`);
   }
-  if (j.test_app !== true) throw new Error('credentials file must say "test_app": true (this harness never runs on the live app)');
+  // the live app only with both a flag in the file and P9_SHARED_LIVE_APP=1: events split with the live core, which I accepted
+  const shared = j.shared_live_app === true && process.env.P9_SHARED_LIVE_APP === "1";
+  if (j.test_app !== true && !shared) throw new Error('credentials file must say "test_app": true, or "shared_live_app": true with P9_SHARED_LIVE_APP=1');
   const domain = j.domain ?? "https://open.feishu.cn";
   if (!DOMAIN_OK.test(domain)) throw new Error("credentials file: domain must be open.feishu.cn, open.larksuite.com or a 127.0.0.1 mock");
-  return { app_id: j.app_id, app_secret: j.app_secret, chat_id: j.chat_id, test_app: true, domain };
+  return { app_id: j.app_id, app_secret: j.app_secret, chat_id: j.chat_id, test_app: !shared, shared, domain };
 }
 
 // ---- redaction ----------------------------------------------------------------------------------------------------
@@ -165,5 +168,9 @@ export interface Backend {
   /** connection life-cycle events seen so far (ready, reconnecting, reconnected, exit, restart …) with wall-clock ms */
   timeline(): { at: number; ev: string }[];
   notes(): string[];
+  /** what the server told the client (SDK only): ClientConfig from the endpoint, then from pongs */
+  serverConfig?(): Record<string, unknown>;
+  /** data frames by their `type` header (SDK only): the SDK hands only `event` to the dispatcher */
+  frameTypes?(): Record<string, number>;
   close(): Promise<void>;
 }

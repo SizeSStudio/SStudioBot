@@ -42,6 +42,31 @@ export class SdkBackend implements Backend {
   private logger: any;
 
   private mark(ev: string) { this.tl.push({ at: Date.now(), ev }); }
+  private frames: Record<string, number> = {};
+  private cfg: Record<string, unknown> = {};
+
+  /** P9 item 4: record each data frame's type header and every config the server sends, before the SDK acts on them */
+  private instrument() {
+    const ws = this.ws;
+    const sec = () => { const c = ws.wsConfig.getWS(); return { PingInterval: c.pingInterval / 1000, ReconnectCount: c.reconnectCount, ReconnectInterval: c.reconnectInterval / 1000, ReconnectNonce: c.reconnectNonce / 1000 }; };
+    const pull = ws.pullConnectConfig?.bind(ws);
+    if (pull) ws.pullConnectConfig = async (...a: unknown[]) => { const r = await pull(...a); if (r?.ok) { this.cfg.endpoint = sec(); this.mark("endpoint"); } return r; };
+    const ctl = ws.handleControlData.bind(ws);
+    ws.handleControlData = async (data: any) => {
+      await ctl(data);
+      const type = data.headers.find((h: any) => h.key === "type")?.value;
+      if (type === "pong" && data.payload?.length) { this.cfg.pong = sec(); this.cfg.pongs = Number(this.cfg.pongs ?? 0) + 1; }
+    };
+    const ev = ws.handleEventData.bind(ws);
+    ws.handleEventData = async (data: any) => {
+      const h = Object.fromEntries(data.headers.map((x: any) => [x.key, x.value]));
+      this.frames[String(h.type)] = (this.frames[String(h.type)] ?? 0) + 1;
+      if (h.type !== "event") this.mark(`frame-${h.type}-ignored-by-sdk`);
+      return ev(data);
+    };
+  }
+  serverConfig() { return this.cfg; }
+  frameTypes() { return this.frames; }
 
   async start(h: Handler): Promise<void> {
     this.handler = h;
@@ -68,6 +93,7 @@ export class SdkBackend implements Backend {
       onReconnecting: () => this.mark("reconnecting"),
       onReconnected: () => this.mark("reconnected"),
     });
+    this.instrument();
     await this.ws.start({ eventDispatcher: dispatcher });
     const to = setTimeout(() => failed(new Error("WSClient not ready in time")), this.o.readyTimeoutMs ?? 30_000);
     try { await up; } finally { clearTimeout(to); }

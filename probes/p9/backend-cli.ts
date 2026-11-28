@@ -1,7 +1,8 @@
 // Backend B: lark-cli as a subprocess. Events: one `event consume <key>` process per key (NDJSON on stdout, restarted
 // with backoff like core/src/feishu.ts). REST: one `lark-cli api` process per call.
-// Everything runs in a throw-away HOME and config dir; the credentials reach only the child's environment (the CLI's
-// env provider) and are never written by us. The CLI acks Feishu before it hands us the line, so the handler's return
+// Everything runs in a throw-away HOME and config dir. The credentials go in once, `config init --app-secret-stdin`, into
+// that config dir: lark-cli 1.0.98 answers REST with token_missing on the env provider (LARKSUITE_CLI_APP_ID/SECRET) and,
+// with those set, refuses `config` (found in the live run). Never in the env, on a command line or printed. The CLI acks Feishu before it hands us the line, so the handler's return
 // value goes nowhere: card updates must use the REST path after the click.
 import { spawn, execFile } from "node:child_process";
 import { mkdtempSync, rmSync, mkdirSync } from "node:fs";
@@ -27,6 +28,7 @@ export class CliBackend implements Backend {
   private callMs: number[] = [];
   private spawned = 0;
   private handler: Handler = () => {};
+  private inited?: Promise<void>;
 
   constructor(o: CliOpts) {
     this.o = o;
@@ -37,7 +39,7 @@ export class CliBackend implements Backend {
     this.env = {
       PATH: process.env.PATH ?? "", HOME: this.dir,
       LARKSUITE_CLI_CONFIG_DIR: join(this.dir, "cfg"), LARKSUITE_CLI_DATA_DIR: join(this.dir, "data"),
-      LARKSUITE_CLI_APP_ID: creds.app_id, LARKSUITE_CLI_APP_SECRET: creds.app_secret,
+      LARKSUITE_CLI_NO_UPDATE_NOTIFIER: "1", LARKSUITE_CLI_NO_SKILLS_NOTIFIER: "1",
       ...(creds.domain!.includes("larksuite") ? { LARKSUITE_CLI_BRAND: "lark" } : {}),
       ...(o.proxyUrl ? { HTTPS_PROXY: o.proxyUrl, HTTP_PROXY: o.proxyUrl } : {}),
       ...(o.env ?? {}),
@@ -46,8 +48,20 @@ export class CliBackend implements Backend {
 
   private mark(ev: string) { this.tl.push({ at: Date.now(), ev }); }
 
+  // the app secret goes in on stdin, into our own config dir; once per backend
+  private init(): Promise<void> {
+    return this.inited ??= new Promise((resolve, reject) => {
+      this.spawned++;
+      const c = execFile(this.o.bin, ["config", "init", "--app-id", this.o.creds.app_id, "--app-secret-stdin",
+        ...(this.o.creds.domain!.includes("larksuite") ? ["--brand", "lark"] : [])], { env: this.env, timeout: 30_000 },
+        (err) => err ? reject(new Error(`lark-cli config init: ${this.redact(describeError(err))}`)) : resolve());
+      c.stdin!.end(this.o.creds.app_secret + "\n");
+    });
+  }
+
   async start(h: Handler): Promise<void> {
     this.handler = h;
+    await this.init();
     const ready = KEYS.map((k) => this.consume(k));
     const to = new Promise<never>((_, rej) => setTimeout(() => rej(new Error("lark-cli event consume not ready in time")), this.o.readyTimeoutMs ?? 30_000).unref());
     await Promise.race([Promise.all(ready), to]);
@@ -93,7 +107,8 @@ export class CliBackend implements Backend {
     return { kind: "message", eventId: String(j.event_id ?? ""), operatorId: j.sender_id || undefined, messageId: j.message_id ?? j.id, chatId: j.chat_id, eventTs, recvAt };
   }
 
-  api(method: string, path: string, data?: unknown, params?: Record<string, string>): Promise<any> {
+  async api(method: string, path: string, data?: unknown, params?: Record<string, string>): Promise<any> {
+    await this.init();
     const route = `${method} ${routeOf(path)}`;
     const args = ["api", method, path, "--as", "bot", "--format", "json"];
     if (params) args.push("--params", JSON.stringify(params));
